@@ -6,3 +6,9 @@ dist
 *.tsbuildinfo
 .env*
 .dev-data
+
+# User data: never commit it, wherever the data folder is placed
+personal-brand.db*
+telegram.json
+/research/
+/Personal Brand/

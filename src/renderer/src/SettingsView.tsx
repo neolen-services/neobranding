@@ -18,7 +18,7 @@ export function SettingsView() {
         provider="anthropic"
         title="Claude API key"
         placeholder="sk-ant-…"
-        description="Video ideas are written by Anthropic's Claude, using your own API key. Your brand details are sent to Anthropic each time you ask for ideas, and each batch costs a few cents on your Anthropic account. Create a key at console.anthropic.com."
+        description="Ideas, analyses and scripts are written by Anthropic's Claude, using your own API key. Your brand details are sent to Anthropic each time you ask for ideas, and each batch costs a few cents on your Anthropic account. Create a key at console.anthropic.com."
       />
       <ApiKeySection
         provider="deepgram"
@@ -65,7 +65,7 @@ function DataFolderSection() {
     <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
       <h2 className="font-display text-lg font-semibold">Your data folder</h2>
       <p className="mt-2 text-sm leading-relaxed opacity-70">
-        Everything you create is kept in this one folder: your brand, video ideas, saved posts with their videos,
+        Everything you create is kept in this one folder: your brand, ideas, saved posts with their videos,
         pictures, transcripts, ratings and notes, and your Telegram link. To move to another computer, copy the whole
         folder across, then choose it here on that computer.
       </p>

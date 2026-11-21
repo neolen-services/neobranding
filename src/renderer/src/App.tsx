@@ -23,7 +23,7 @@ const PAGE_TITLES: Record<Page, string> = {
   dashboard: "Dashboard",
   agent: "Agent",
   brand: "Brand",
-  ideas: "Video ideas",
+  ideas: "Ideas",
   edit: "Edit brand",
   research: "Research",
   settings: "Settings",
@@ -121,20 +121,20 @@ export function App() {
           <button
             type="button"
             onClick={() => go("ideas")}
-            title={sidebarOpen ? undefined : "New video ideas"}
-            aria-label="New video ideas"
+            title={sidebarOpen ? undefined : "New ideas"}
+            aria-label="New ideas"
             className={`mt-2 flex items-center gap-2.5 rounded-lg bg-[var(--ink)] py-2 text-sm font-semibold text-[var(--frame)] hover:opacity-90 ${
               sidebarOpen ? "px-3" : "justify-center"
             }`}
           >
             <Icon d="M12 5v14M5 12h14" />
-            {sidebarOpen && "New video ideas"}
+            {sidebarOpen && "New ideas"}
           </button>
 
           <nav className="mt-4 space-y-1">
             {navItem("dashboard", "Dashboard", <Icon d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z" />)}
             {navItem("agent", "Agent", <Icon d="M5 4l14 8-6 2-2 6z" />)}
-            {navItem("ideas", "Video ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
+            {navItem("ideas", "Ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
           </nav>
 

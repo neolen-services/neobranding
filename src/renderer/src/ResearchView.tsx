@@ -186,10 +186,10 @@ export function ResearchView({ onOpenSettings, focusId }: { onOpenSettings: () =
             <table className="w-full min-w-[700px] table-fixed border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-[var(--line)] font-mono text-xs uppercase tracking-widest opacity-60">
-                  <th className="w-[34%] px-5 py-3 font-normal">Post</th>
+                  <th className="w-[36%] px-5 py-3 font-normal">Post</th>
                   <th className="w-[9%] px-3 py-3 font-normal">Likes</th>
                   <th className="w-[11%] px-3 py-3 font-normal">Comments</th>
-                  <th className="w-[210px] px-3 py-3 font-normal">Rating</th>
+                  <th className="w-[136px] px-3 py-3 font-normal">Rating</th>
                   <th className="px-3 py-3 font-normal">Note</th>
                   <th className="w-[64px] px-5 py-3 font-normal" aria-label="Actions" />
                 </tr>
@@ -436,54 +436,102 @@ function ResearchRow({
   );
 }
 
-/** Six buttons, 0 to 5. Pressing the current rating again clears it. */
+/** Five stars. Hovering previews a rating; pressing the current one again clears it. */
 function RatingPicker({ value, onChange }: { value: number | null; onChange: (rating: number | null) => void }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const shown = hover ?? value ?? 0;
   return (
-    <div className="flex gap-1" role="group" aria-label="Rating from 0 to 5">
-      {[0, 1, 2, 3, 4, 5].map((n) => (
+    <div
+      className="flex items-center"
+      role="group"
+      aria-label={value ? `Rated ${value} out of 5` : "Not rated"}
+      onMouseLeave={() => setHover(null)}
+    >
+      {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
           type="button"
           aria-pressed={value === n}
-          title={value === n ? "Clear rating" : `Rate ${n}`}
-          onClick={() => onChange(value === n ? null : n)}
-          className={`h-7 w-7 rounded-md border text-xs font-semibold tabular-nums ${
-            value === n
-              ? "border-[var(--primary)] bg-[var(--primary)] text-white"
-              : "border-[var(--line)] opacity-70 hover:border-[var(--ink)] hover:opacity-100"
-          }`}
+          aria-label={value === n ? "Clear rating" : `Rate ${n} out of 5`}
+          title={value === n ? "Clear rating" : `Rate ${n} out of 5`}
+          onMouseEnter={() => setHover(n)}
+          onClick={() => {
+            setHover(null);
+            onChange(value === n ? null : n);
+          }}
+          className={`p-0.5 ${n <= shown ? "text-[var(--accent)]" : "text-[var(--ink)] opacity-25 hover:opacity-60"}`}
         >
-          {n}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill={n <= shown ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden>
+            <path d="M12 3l2.6 5.600 6 .800-4.400 4.200 1.100 6-5.300-3-5.300 3 1.100-6L3.400 9.400l6-.800z" />
+          </svg>
         </button>
       ))}
     </div>
   );
 }
 
-/** A note that saves itself when you click away. */
+/**
+ * The note shown as a line of text. Clicking it opens a roomy editor on top of
+ * the table; it saves when you click away or press Ctrl+Enter, and Escape cancels.
+ */
 function NoteField({ value, onSave }: { value: string; onSave: (note: string) => void }) {
   const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
+  const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
+  const cancelled = useRef(false);
+  const width = 340;
 
-  // Pick up changes from elsewhere, but never overwrite what is being typed.
-  useEffect(() => {
-    if (!editing) setDraft(value);
-  }, [value, editing]);
+  const close = (save: boolean) => {
+    setPlace(null);
+    if (save && draft.trim() !== value) onSave(draft.trim());
+  };
 
   return (
-    <textarea
-      rows={2}
-      aria-label="Note"
-      placeholder="Add a note"
-      className={`${fieldClass} resize-y !bg-transparent`}
-      value={draft}
-      onFocus={() => setEditing(true)}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        setEditing(false);
-        if (draft.trim() !== value) onSave(draft);
-      }}
-    />
+    <>
+      <button
+        type="button"
+        title={value || "Add a note"}
+        className={`block w-full rounded-md px-2 py-1 text-left hover:bg-[var(--tint)] ${value ? "" : "opacity-45 hover:opacity-80"}`}
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          setDraft(value);
+          cancelled.current = false;
+          // Fixed to the window so the table's scrolling cannot clip it. It opens just
+          // under the row (or above it near the bottom) so the row itself stays visible.
+          const height = 180;
+          const below = box.bottom + 6;
+          setPlace({
+            left: Math.max(8, Math.min(box.left, window.innerWidth - width - 24)),
+            top: below + height < window.innerHeight ? below : Math.max(8, box.top - height - 6),
+          });
+        }}
+      >
+        <span className="line-clamp-2 break-words">{value || "Add note"}</span>
+      </button>
+      {place && (
+        <div className="fixed z-40 rounded-xl border border-[var(--primary)] bg-[var(--surface)] p-2 shadow-2xl" style={{ ...place, width }}>
+          <textarea
+            autoFocus
+            rows={5}
+            aria-label="Note"
+            placeholder="Why you saved it, what to copy, what to try…"
+            className="block w-full resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed placeholder:opacity-50 focus:outline-none"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={(e) => e.currentTarget.setSelectionRange(draft.length, draft.length)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                cancelled.current = true;
+                close(false);
+              } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                close(true);
+              }
+            }}
+            onBlur={() => !cancelled.current && close(true)}
+          />
+          <p className="px-1.5 pt-1 text-xs opacity-45">Saves when you click away · Esc cancels</p>
+        </div>
+      )}
+    </>
   );
 }
 

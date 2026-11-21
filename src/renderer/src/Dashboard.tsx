@@ -61,8 +61,8 @@ export function Dashboard({
       <div className="grid gap-4 lg:grid-cols-3">
         <Panel title="Content pipeline" className="lg:col-span-2">
           {ideas.length === 0 ? (
-            <Empty action="Suggest video ideas" onAction={onOpenIdeas}>
-              Your pipeline is empty. Get your first batch of video ideas.
+            <Empty action="Suggest ideas" onAction={onOpenIdeas}>
+              Your pipeline is empty. Get your first batch of ideas.
             </Empty>
           ) : (
             <div className="space-y-4">
@@ -98,7 +98,7 @@ export function Dashboard({
         </Panel>
       </div>
 
-      <Panel title="Latest ideas" action="All video ideas" onAction={onOpenIdeas}>
+      <Panel title="Latest ideas" action="All ideas" onAction={onOpenIdeas}>
         {ideas.length === 0 ? (
           <p className="text-sm opacity-60">Ideas you save will appear here.</p>
         ) : (

@@ -3,6 +3,7 @@
   "productName": "Personal Brand",
   "version": "0.1.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Desktop app for building a personal brand on social media.",
   "main": "./out/main/index.js",
   "scripts": {

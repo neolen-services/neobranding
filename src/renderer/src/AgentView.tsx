@@ -15,7 +15,7 @@ import type { AgentChatState, AgentRefs } from "./agentChat";
 const EXAMPLES: [string, string][] = [
   ["Analyse my research", "Analyse the saved posts that are not analysed yet and tell me what they have in common."],
   ["Find what works", "Look at my analysed posts. Which hooks and formats show up most, and which should I copy first?"],
-  ["Create video ideas", "Give me 5 new video ideas based on my research, and tell me which one you would film first."],
+  ["Create ideas", "Give me 5 new video ideas based on my research, and tell me which one you would film first."],
 ];
 
 /** Where a reference chip leads when clicked. */
