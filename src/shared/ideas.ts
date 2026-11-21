@@ -1,15 +1,5 @@
 // Short-video idea types, shared by the main process and the UI.
 
-export const IDEA_STATUSES = ["idea", "scripted", "filmed", "posted"] as const;
-export type IdeaStatus = (typeof IDEA_STATUSES)[number];
-
-export const STATUS_LABELS: Record<IdeaStatus, string> = {
-  idea: "Idea",
-  scripted: "Scripted",
-  filmed: "Filmed",
-  posted: "Posted",
-};
-
 /** What the model suggests for one video. */
 export type IdeaDraft = {
   title: string;
@@ -86,7 +76,6 @@ export type PostedVideo = {
 /** A suggestion the user chose to keep. */
 export type Idea = IdeaDraft & {
   id: string;
-  status: IdeaStatus;
   createdAt: string;
   script?: IdeaScript;
   posted?: PostedVideo;
@@ -140,7 +129,6 @@ export function parseIdea(input: unknown): Idea {
   const id = str(i.id);
   const title = str(i.title);
   if (!id || !title) throw new Error("An idea needs an id and a title.");
-  const status = IDEA_STATUSES.includes(i.status as IdeaStatus) ? (i.status as IdeaStatus) : "idea";
   return {
     id,
     title,
@@ -157,7 +145,6 @@ export function parseIdea(input: unknown): Idea {
     series: str(i.series),
     score: typeof i.score === "number" ? i.score : undefined,
     scoreReason: str(i.scoreReason),
-    status,
     createdAt: str(i.createdAt) || new Date().toISOString(),
     script: parseScript(i.script),
     posted: parsePosted(i.posted),

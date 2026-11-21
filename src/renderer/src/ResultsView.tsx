@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import type { Idea, PostCheck } from "@shared/ideas";
 import { api } from "./api";
 
-const label = "font-mono text-xs uppercase tracking-widest opacity-60";
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 const fmt = (n: number | null) => (n === null ? "–" : compact.format(n));
 
@@ -51,11 +50,10 @@ export function ResultsSection({ idea, onChange }: { idea: Idea; onChange: (idea
   };
 
   return (
-    <div className="mt-4 border-t border-[var(--line)] pt-4 text-sm">
-      <p className={label}>Results</p>
+    <div className="text-sm">
       {!posted ? (
         <form
-          className="mt-2 flex flex-wrap gap-2"
+          className="flex flex-wrap gap-2"
           onSubmit={(e: FormEvent) => {
             e.preventDefault();
             if (url.trim()) void act(api.trackIdea(idea.id, url));
@@ -78,7 +76,7 @@ export function ResultsSection({ idea, onChange }: { idea: Idea; onChange: (idea
         </form>
       ) : (
         <>
-          <dl className="mt-2 grid grid-cols-3 gap-2">
+          <dl className="grid max-w-md grid-cols-3 gap-2">
             {(
               [
                 ["Likes", (c: PostCheck) => c.likes],

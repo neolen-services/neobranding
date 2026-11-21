@@ -13,7 +13,7 @@ const api = {
   saveBrand: (brand: BrandKit): Promise<SaveResult> => ipcRenderer.invoke("brand:save", brand),
 
   listIdeas: (): Promise<Idea[]> => ipcRenderer.invoke("ideas:list"),
-  /** Inserts or replaces an idea (also used to change its status). */
+  /** Inserts or replaces an idea. */
   saveIdea: (idea: Idea): Promise<Idea> => ipcRenderer.invoke("ideas:save", idea),
   deleteIdea: (id: string): Promise<void> => ipcRenderer.invoke("ideas:delete", id),
   generateIdeas: (options: GenerateOptions): Promise<GenerateResult> =>

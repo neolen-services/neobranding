@@ -140,11 +140,7 @@ export function createHandlers(options: HandlerOptions) {
         : undefined;
       const result = await writeScript(key("anthropic"), brand, idea, model);
       if (!result.ok) return result;
-      const saved = parseIdea({
-        ...idea,
-        script: result.script,
-        status: idea.status === "idea" ? "scripted" : idea.status,
-      });
+      const saved = parseIdea({ ...idea, script: result.script });
       db().saveIdea(saved);
       return { ok: true, idea: saved };
     },
@@ -168,7 +164,6 @@ export function createHandlers(options: HandlerOptions) {
       const { likes, comments, views } = numbers;
       const saved = parseIdea({
         ...idea,
-        status: "posted",
         posted: { url, platform: numbers.platform, linkedAt: now, checks: [{ at: now, likes, comments, views }] },
       });
       db().saveIdea(saved);

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
-import { IDEA_STATUSES, STATUS_LABELS, type Idea } from "@shared/ideas";
+import type { Idea } from "@shared/ideas";
 import { api } from "./api";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -22,10 +22,15 @@ export function Dashboard({
 
   if (!ideas) return null;
 
-  const count = (status: Idea["status"]) => ideas.filter((i) => i.status === status).length;
   const thisWeek = ideas.filter((i) => Date.now() - new Date(i.createdAt).getTime() < WEEK_MS).length;
-  const inProduction = count("scripted") + count("filmed");
-  const posted = count("posted");
+  // Counted from what exists, not from a label: a written script, a linked video.
+  const withScript = ideas.filter((i) => i.script).length;
+  const posted = ideas.filter((i) => i.posted).length;
+  const progress: [string, number][] = [
+    ["Saved ideas", ideas.length],
+    ["With a script", withScript],
+    ["Posted and measured", posted],
+  ];
   const coveredPillars = brand.pillars.filter((p) => ideas.some((i) => i.pillar === p.title));
   const uncovered = brand.pillars.filter((p) => !coveredPillars.includes(p));
   const withBio = brand.platforms.filter((p) => p.bio).length;
@@ -37,22 +42,22 @@ export function Dashboard({
           label="Saved ideas"
           value={ideas.length}
           badge={`+${thisWeek} this week`}
-          headline={ideas.length === 0 ? "No ideas saved yet" : `${count("idea")} waiting to be scripted`}
+          headline={ideas.length === 0 ? "No ideas saved yet" : `${ideas.length - withScript} without a script`}
           detail="Every idea you have kept"
         />
         <StatCard
-          label="In production"
-          value={inProduction}
-          badge={`${count("scripted")} scripted · ${count("filmed")} filmed`}
-          headline={inProduction === 0 ? "Nothing in progress" : "Videos being made"}
-          detail="Scripted or filmed, not yet posted"
+          label="Scripts"
+          value={withScript}
+          badge={ideas.length ? `${Math.round((withScript / ideas.length) * 100)}% of ideas` : "0% of ideas"}
+          headline={withScript === 0 ? "No scripts written yet" : "Ready to film"}
+          detail="Ideas with a written script"
         />
         <StatCard
           label="Posted"
           value={posted}
           badge={ideas.length ? `${Math.round((posted / ideas.length) * 100)}% of ideas` : "0% of ideas"}
           headline={posted === 0 ? "No videos posted yet" : "Videos published"}
-          detail="Ideas you marked as posted"
+          detail="Ideas with your video's link attached"
         />
         <StatCard
           label="Pillars covered"
@@ -71,12 +76,11 @@ export function Dashboard({
             </Empty>
           ) : (
             <div className="space-y-4">
-              {IDEA_STATUSES.map((s) => {
-                const n = count(s);
+              {progress.map(([name, n]) => {
                 return (
-                  <div key={s}>
+                  <div key={name}>
                     <div className="mb-1.5 flex justify-between text-sm">
-                      <span className="font-medium">{STATUS_LABELS[s]}</span>
+                      <span className="font-medium">{name}</span>
                       <span className="font-mono opacity-60">{n}</span>
                     </div>
                     <div className="h-2 overflow-hidden rounded-full bg-[var(--tint)]">
@@ -117,9 +121,11 @@ export function Dashboard({
                     {[idea.pillar, idea.platform].filter(Boolean).join(" · ")}
                   </p>
                 </div>
-                <span className="shrink-0 rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium">
-                  {STATUS_LABELS[idea.status]}
-                </span>
+                {idea.score != null && (
+                  <span className="shrink-0 rounded-full border border-[var(--line)] px-2.5 py-0.5 text-xs font-medium">
+                    Score {idea.score}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
