@@ -1,0 +1,104 @@
+// Research types, shared by the main process and the UI.
+import type { PostAnalysis } from "./analysis";
+
+export type ResearchPlatform = "instagram" | "youtube";
+
+/** Sites the research tool accepts today, by hostname. */
+const PLATFORM_HOSTS: Record<ResearchPlatform, string[]> = {
+  instagram: ["instagram.com", "instagr.am"],
+  youtube: ["youtube.com"],
+};
+
+/** What to tell someone whose link is not accepted. */
+export const SUPPORTED_LINKS_HINT =
+  "Paste an Instagram link (reel, video, photo or carousel) or a YouTube Shorts link. Other links are not supported yet.";
+
+export const PLATFORM_LABELS: Record<ResearchPlatform, string> = {
+  instagram: "Instagram",
+  youtube: "YouTube Shorts",
+};
+
+/** One file of a saved post. A carousel has several. */
+export type ResearchMedia = {
+  kind: "video" | "image";
+  /** File name inside the post's folder. */
+  file: string;
+  /** Poster image for a video, or "". */
+  posterFile: string;
+};
+
+/** The sound a video uses: a licensed song, or the creator's own recording. */
+export type ResearchAudio = {
+  kind: "music" | "original";
+  /** Song title, or the name of the original sound (often just "Original audio"). */
+  title: string;
+  /** The song's artist, or the account the original sound belongs to. */
+  artist: string;
+  /** Whether the site marks this sound as trending. */
+  trending: boolean;
+  /** A page listing other videos that use the same sound, or "". */
+  url: string;
+};
+
+/** A post saved for research: its videos and pictures, with the text published alongside. */
+export type ResearchItem = {
+  id: string;
+  platform: ResearchPlatform;
+  /** The link the user pasted. */
+  sourceUrl: string;
+  /** The canonical link reported by the site. */
+  pageUrl: string;
+  title: string;
+  /** The post's caption or description, as published. */
+  caption: string;
+  hashtags: string[];
+  author: string;
+  authorHandle: string;
+  /** ISO date the post was published, or "" if unknown. */
+  publishedAt: string;
+  durationSeconds: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  viewCount: number | null;
+  /** The post's videos and pictures, in the order they appear. */
+  media: ResearchMedia[];
+  /** What is said in the post's videos, from speech-to-text. "" until transcribed. */
+  transcript: string;
+  /** Why the last transcription attempt failed, or "". */
+  transcriptError: string;
+  /** The sound used. null: none found. Missing: saved before the app looked for it. */
+  audio?: ResearchAudio | null;
+  /** Claude's breakdown of the post. Missing until it has been analysed. */
+  analysis?: PostAnalysis;
+  /** The user's own score from 0 to 5, or null if not rated yet. */
+  rating: number | null;
+  /** The user's own note about the post. */
+  note: string;
+  savedAt: string;
+};
+
+/** The parts of a saved post the user can edit. */
+export type ResearchEdit = { rating?: number | null; note?: string };
+
+export type ResearchResult = { ok: true; item: ResearchItem } | { ok: false; error: string };
+
+/** Returns the platform for a link, or null if the link is not supported yet. */
+export function detectPlatform(url: string): ResearchPlatform | null {
+  let host: string;
+  let path: string;
+  try {
+    const parsed = new URL(url.trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    host = parsed.hostname.toLowerCase().replace(/^(www|m)\./, "");
+    path = parsed.pathname;
+  } catch {
+    return null;
+  }
+  for (const [platform, hosts] of Object.entries(PLATFORM_HOSTS)) {
+    if (!hosts.some((h) => host === h || host.endsWith(`.${h}`))) continue;
+    // On YouTube only Shorts are accepted for now, not regular videos.
+    if (platform === "youtube" && !/^\/shorts\/[\w-]+/.test(path)) return null;
+    return platform as ResearchPlatform;
+  }
+  return null;
+}

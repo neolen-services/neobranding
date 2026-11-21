@@ -1,76 +1,92 @@
-import { emptyBrandKit, parseBrandKit, type BrandKit, type SaveResult } from "@shared/brand";
-import { parseIdea, type GenerateOptions, type GenerateResult, type Idea } from "@shared/ideas";
+import type { BrandKit } from "@shared/brand";
+import type { Idea } from "@shared/ideas";
+import { API_PROVIDERS } from "@shared/settings";
 
 type Api = Window["api"];
 
 // Stand-in used when the UI is opened in a plain browser (for development and
-// preview), where the Electron bridge does not exist. Data lives in the
-// browser's localStorage, separate from the desktop app's SQLite file, and
-// idea generation goes through the dev server (see electron.vite.config.ts).
-const BRAND_KEY = "personal-brand:brand";
-const IDEAS_KEY = "personal-brand:ideas";
-const API_KEY_KEY = "personal-brand:anthropic-api-key";
+// preview), where the Electron bridge does not exist. Every call goes to the
+// dev server, which runs the same handlers as the desktop app against the same
+// data folder (see electron.vite.config.ts and src/main/handlers.ts).
+async function rpc<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const response = await fetch("/api/rpc", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel, args }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error ?? "The request failed.");
+  return body.result as T;
+}
 
-const readBrand = (): BrandKit | null => {
-  const raw = localStorage.getItem(BRAND_KEY);
-  return raw ? { ...emptyBrandKit(), ...JSON.parse(raw) } : null;
-};
-const readIdeas = (): Idea[] => JSON.parse(localStorage.getItem(IDEAS_KEY) ?? "[]");
-const writeIdeas = (ideas: Idea[]) => localStorage.setItem(IDEAS_KEY, JSON.stringify(ideas));
+/**
+ * Earlier versions of the browser stand-in kept the brand, ideas and keys in
+ * this browser's localStorage. Move them into the data folder once.
+ */
+const MIGRATED_FLAG = "personal-brand:moved-to-data-folder";
+async function moveBrowserData(): Promise<void> {
+  if (localStorage.getItem(MIGRATED_FLAG)) return;
+  try {
+    const brand = localStorage.getItem("personal-brand:brand");
+    if (brand && !(await rpc<BrandKit | null>("brand:get"))) await rpc("brand:save", JSON.parse(brand));
+
+    const ideas: Idea[] = JSON.parse(localStorage.getItem("personal-brand:ideas") ?? "[]");
+    const saved = new Set((await rpc<Idea[]>("ideas:list")).map((i) => i.id));
+    for (const idea of ideas) if (!saved.has(idea.id)) await rpc("ideas:save", idea);
+
+    for (const provider of API_PROVIDERS) {
+      const name = `personal-brand:${provider}-api-key`;
+      const key = localStorage.getItem(name);
+      if (key && !(await rpc<boolean>("settings:hasApiKey", provider))) {
+        const result = await rpc<{ ok: boolean }>("settings:setApiKey", provider, key);
+        if (!result.ok) throw new Error("A key could not be moved."); // Keep it here and retry next time.
+      }
+      localStorage.removeItem(name);
+    }
+    localStorage.setItem(MIGRATED_FLAG, new Date().toISOString());
+  } catch {
+    // Try again next time the app is opened.
+  }
+}
+
+/** Calls are held until the one-time move has finished, so nothing reads half-moved data. */
+let ready: Promise<void> | undefined;
+const call = <T>(channel: string, ...args: unknown[]): Promise<T> =>
+  (ready ??= moveBrowserData()).then(() => rpc<T>(channel, ...args));
 
 const browserApi: Api = {
-  async getBrand() {
-    return readBrand();
-  },
-  async saveBrand(input): Promise<SaveResult> {
-    try {
-      const brand = parseBrandKit(input);
-      localStorage.setItem(BRAND_KEY, JSON.stringify(brand));
-      return { ok: true, brand };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Could not save the brand." };
-    }
-  },
+  getBrand: () => call("brand:get"),
+  saveBrand: (brand) => call("brand:save", brand),
 
-  async listIdeas() {
-    return readIdeas().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  },
-  async saveIdea(input) {
-    const idea = parseIdea(input);
-    writeIdeas([idea, ...readIdeas().filter((i) => i.id !== idea.id)]);
-    return idea;
-  },
-  async deleteIdea(id) {
-    writeIdeas(readIdeas().filter((i) => i.id !== id));
-  },
-  async generateIdeas(options: GenerateOptions): Promise<GenerateResult> {
-    const brand = readBrand();
-    if (!brand) return { ok: false, error: "Create your brand first." };
-    try {
-      const response = await fetch("/api/generate-ideas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKey: localStorage.getItem(API_KEY_KEY) ?? "",
-          brand,
-          options,
-          existingTitles: readIdeas().map((i) => i.title),
-        }),
-      });
-      return await response.json();
-    } catch {
-      return { ok: false, error: "Could not reach the dev server to generate ideas." };
-    }
-  },
+  listIdeas: () => call("ideas:list"),
+  saveIdea: (idea) => call("ideas:save", idea),
+  deleteIdea: (id) => call("ideas:delete", id),
+  generateIdeas: (options) => call("ideas:generate", options),
+  writeScript: (id) => call("ideas:script", id),
+  trackIdea: (id, url) => call("ideas:track", id, url),
+  checkIdea: (id) => call("ideas:check", id),
 
-  async hasApiKey() {
-    return Boolean(localStorage.getItem(API_KEY_KEY));
-  },
-  async setApiKey(key) {
-    if (key) localStorage.setItem(API_KEY_KEY, key);
-    else localStorage.removeItem(API_KEY_KEY);
-    return { ok: true };
-  },
+  listResearch: () => call("research:list"),
+  addResearch: (url) => call("research:add", url),
+  transcribeResearch: (id) => call("research:transcribe", id),
+  analyzeResearch: (id) => call("research:analyze", id),
+  refreshResearchAudio: (id) => call("research:audio", id),
+  updateResearch: (id, edit) => call("research:update", id, edit),
+  deleteResearch: (id) => call("research:delete", id),
+  researchFileUrl: (id, file) => `/media/research/${id}/${file}`,
+
+  telegramStatus: () => call("telegram:status"),
+  syncTelegram: () => call("telegram:sync"),
+  unlinkTelegram: () => call("telegram:unlink"),
+
+  hasApiKey: (provider) => call("settings:hasApiKey", provider),
+  setApiKey: (provider, key) => call("settings:setApiKey", provider, key),
+
+  dataFolder: () => call("data:info"),
+  openDataFolder: () => call("data:open"),
+  changeDataFolder: (path) => call("data:change", path),
+  browseForFolder: async () => "",
+  canBrowseForFolder: false,
 };
 
 export const api: Api = window.api ?? browserApi;

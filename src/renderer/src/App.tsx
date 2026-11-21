@@ -5,10 +5,11 @@ import { BrandForm } from "./BrandForm";
 import { BrandView } from "./BrandView";
 import { Dashboard } from "./Dashboard";
 import { IdeasView } from "./IdeasView";
+import { ResearchView } from "./ResearchView";
 import { SettingsView } from "./SettingsView";
 import { brandVars } from "./theme";
 
-type Page = "dashboard" | "brand" | "ideas" | "edit" | "settings";
+type Page = "dashboard" | "brand" | "ideas" | "edit" | "research" | "settings";
 
 type Screen =
   | { name: "loading" }
@@ -21,6 +22,7 @@ const PAGE_TITLES: Record<Page, string> = {
   brand: "Brand",
   ideas: "Video ideas",
   edit: "Edit brand",
+  research: "Research",
   settings: "Settings",
 };
 
@@ -33,6 +35,8 @@ export function App() {
       .getBrand()
       .then((brand) => setScreen(brand ? { name: "dashboard", brand } : { name: "onboarding" }))
       .catch((e) => setScreen({ name: "error", message: String(e?.message ?? e) }));
+    // Start listening for links sent to the Telegram bot, if one is set up.
+    void api.syncTelegram();
   }, []);
 
   if (screen.name === "loading") return null;
@@ -69,40 +73,53 @@ export function App() {
         type="button"
         aria-current={current ? "page" : undefined}
         onClick={() => go(name)}
-        className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-          current ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"
-        }`}
+        // When minimised only the icon shows, so the name moves to a tooltip.
+        title={sidebarOpen ? undefined : label}
+        aria-label={label}
+        className={`flex w-full items-center gap-3 rounded-lg py-2 text-left text-sm font-medium ${
+          sidebarOpen ? "px-3" : "justify-center"
+        } ${current ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"}`}
       >
         {icon}
-        {label}
+        {sidebarOpen && label}
       </button>
     );
   };
 
   return (
     <div style={brandVars(brand)} className="flex h-full bg-[var(--frame)] text-[var(--ink)]">
-      {sidebarOpen && (
-        <aside className="flex w-60 shrink-0 flex-col p-3 text-white">
-          <div className="flex items-center gap-2.5 px-3 py-3">
-            <span className="h-3 w-3 rounded-full bg-[var(--accent)]" />
-            <span className="truncate font-display font-semibold">{brand.name}</span>
+      {/* The menu is either full width or minimised to a strip of icons. */}
+      {
+        <aside className={`flex shrink-0 flex-col text-white ${sidebarOpen ? "w-60 p-3" : "w-14 px-2 py-3"}`}>
+          <div className={`flex items-center gap-2.5 py-3 ${sidebarOpen ? "px-3" : "justify-center"}`} title={brand.name}>
+            <span className="h-3 w-3 shrink-0 rounded-full bg-[var(--accent)]" />
+            {sidebarOpen && <span className="truncate font-display font-semibold">{brand.name}</span>}
           </div>
 
           <button
             type="button"
             onClick={() => go("ideas")}
-            className="mt-2 flex items-center gap-2.5 rounded-lg bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-[var(--frame)] hover:opacity-90"
+            title={sidebarOpen ? undefined : "New video ideas"}
+            aria-label="New video ideas"
+            className={`mt-2 flex items-center gap-2.5 rounded-lg bg-[var(--ink)] py-2 text-sm font-semibold text-[var(--frame)] hover:opacity-90 ${
+              sidebarOpen ? "px-3" : "justify-center"
+            }`}
           >
             <Icon d="M12 5v14M5 12h14" />
-            New video ideas
+            {sidebarOpen && "New video ideas"}
           </button>
 
           <nav className="mt-4 space-y-1">
             {navItem("dashboard", "Dashboard", <Icon d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z" />)}
             {navItem("ideas", "Video ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
+            {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
           </nav>
 
-          <p className="mt-6 px-3 text-xs font-medium text-white/40">Brand</p>
+          {sidebarOpen ? (
+            <p className="mt-6 px-3 text-xs font-medium text-white/40">Brand</p>
+          ) : (
+            <div className="mx-2 mt-4 border-t border-white/10" />
+          )}
           <nav className="mt-2 space-y-1">
             {navItem("brand", "Brand kit", <Icon d="M12 3l2.5 5.5L20 9.3l-4 4 1 5.7-5-2.8-5 2.8 1-5.7-4-4 5.5-.8z" />)}
           </nav>
@@ -115,14 +132,15 @@ export function App() {
             )}
           </nav>
         </aside>
-      )}
+      }
 
       {/* The content sits on a rounded panel inset from the dark frame. */}
       <div className="m-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-[var(--bg)]">
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--surface)] px-4 py-3">
           <button
             type="button"
-            aria-label={sidebarOpen ? "Hide menu" : "Show menu"}
+            aria-label={sidebarOpen ? "Minimise menu" : "Expand menu"}
+            title={sidebarOpen ? "Minimise menu" : "Expand menu"}
             aria-expanded={sidebarOpen}
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="rounded-md p-1.5 hover:bg-[var(--tint)]"
@@ -138,7 +156,8 @@ export function App() {
             <Dashboard brand={brand} onOpenIdeas={() => go("ideas")} onOpenBrand={() => go("brand")} />
           )}
           {page === "brand" && <BrandView brand={brand} onEdit={() => go("edit")} />}
-          {page === "ideas" && <IdeasView brand={brand} onOpenSettings={() => go("settings")} />}
+          {page === "ideas" && <IdeasView brand={brand} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />}
+          {page === "research" && <ResearchView onOpenSettings={() => go("settings")} />}
           {page === "settings" && <SettingsView />}
           {page === "edit" && (
             <BrandForm

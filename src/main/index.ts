@@ -1,18 +1,37 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
 import { join } from "node:path";
-import { parseBrandKit, type SaveResult } from "@shared/brand";
-import { parseIdea, type GenerateOptions, type GenerateResult } from "@shared/ideas";
-import {
-  closeDb,
-  deleteIdea,
-  getApiKey,
-  getBrand,
-  listIdeas,
-  saveBrand,
-  saveIdea,
-  setApiKey,
-} from "./db";
-import { generateIdeas } from "./generate";
+import { pathToFileURL } from "node:url";
+import { createHandlers } from "./handlers";
+import { researchFilePath } from "./research";
+import type { Secrets } from "./store";
+
+// Saved posts are served to the UI as media://research/<id>/<file>.
+protocol.registerSchemesAsPrivileged([
+  { scheme: "media", privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+]);
+
+/**
+ * API keys are encrypted with the operating system's keychain (DPAPI on
+ * Windows). A key encrypted on one computer cannot be read on another, so
+ * after moving the data folder the keys have to be entered again.
+ */
+const osSecrets: Secrets = {
+  encrypt(plain) {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("This computer cannot store the key securely.");
+    return `os:${safeStorage.encryptString(plain).toString("base64")}`;
+  },
+  decrypt(stored) {
+    try {
+      // "plain:" values were saved by the browser version of the app.
+      if (stored.startsWith("plain:")) return Buffer.from(stored.slice(6), "base64").toString("utf8");
+      // Values without a prefix were saved before prefixes existed.
+      const encrypted = stored.startsWith("os:") ? stored.slice(3) : stored;
+      return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+    } catch {
+      return "";
+    }
+  },
+};
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -45,45 +64,40 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle("brand:get", () => getBrand());
-
-  ipcMain.handle("brand:save", (_event, input: unknown): SaveResult => {
-    try {
-      const brand = parseBrandKit(input);
-      saveBrand(brand);
-      return { ok: true, brand };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Could not save the brand." };
-    }
+  const userData = app.getPath("userData");
+  const core = createHandlers({
+    toolsDir: join(userData, "bin"),
+    secrets: osSecrets,
+    // Earlier versions kept the database and saved posts in the app's own folder.
+    legacyDirs: [userData],
+    openFolder: (path) => void shell.openPath(path),
   });
 
-  ipcMain.handle("ideas:list", () => listIdeas());
-  ipcMain.handle("ideas:save", (_event, input: unknown) => {
-    const idea = parseIdea(input);
-    saveIdea(idea);
-    return idea;
-  });
-  ipcMain.handle("ideas:delete", (_event, id: unknown) => deleteIdea(String(id)));
+  for (const [channel, handler] of Object.entries(core.handlers)) {
+    ipcMain.handle(channel, (_event, ...args) => handler(...args));
+  }
 
-  ipcMain.handle(
-    "ideas:generate",
-    async (_event, options: GenerateOptions): Promise<GenerateResult> => {
-      const brand = getBrand();
-      if (!brand) return { ok: false, error: "Create your brand first." };
-      return generateIdeas(getApiKey(), brand, options, listIdeas().map((i) => i.title));
-    },
-  );
-
-  // The key itself never goes back to the UI, only whether one is saved.
-  ipcMain.handle("settings:hasApiKey", () => getApiKey() !== "");
-  ipcMain.handle("settings:setApiKey", (_event, key: unknown) => {
-    try {
-      setApiKey(typeof key === "string" ? key.trim() : "");
-      return { ok: true as const };
-    } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : "Could not save the key." };
-    }
+  // Lets the user pick a data folder with the system's folder chooser.
+  ipcMain.handle("data:browse", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Choose your data folder",
+      defaultPath: core.dataDir(),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? "" : (result.filePaths[0] ?? "");
   });
+
+  protocol.handle("media", (request) => {
+    const url = new URL(request.url);
+    const [id, file] = url.pathname.split("/").filter(Boolean);
+    const path = url.hostname === "research" ? researchFilePath(core.dataDir(), id ?? "", file ?? "") : null;
+    if (!path) return new Response("Not found", { status: 404 });
+    // Forward the request headers so the player can seek with Range requests.
+    return net.fetch(pathToFileURL(path).toString(), { headers: request.headers });
+  });
+
+  core.start();
+  app.on("will-quit", core.close);
 
   createWindow();
 
@@ -95,5 +109,3 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-
-app.on("will-quit", closeDb);
