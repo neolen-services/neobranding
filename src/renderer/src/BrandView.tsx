@@ -1,5 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { BIO_LIMITS, type BrandKit } from "@shared/brand";
+import { brandVars } from "./theme";
 
 const TOPIC_COLORS = ["var(--secondary)", "var(--primary)", "var(--accent)"];
 
@@ -12,30 +13,21 @@ const TOPIC_COLORS = ["var(--secondary)", "var(--primary)", "var(--accent)"];
 type Tone = "white" | "paper" | "tint" | "dark";
 
 const BAND: Record<Tone, string> = {
-  white: "bg-white",
+  white: "bg-[var(--surface)]",
   paper: "bg-[var(--bg)]",
   tint: "bg-[var(--tint)]",
-  dark: "bg-[var(--ink)] text-white",
+  dark: "bg-[var(--frame)] text-white",
 };
 
 const CARD: Record<Tone, string> = {
   white: "border border-[var(--line)] bg-[var(--bg)]",
-  paper: "border border-[var(--line)] bg-white shadow-sm",
-  tint: "border border-[var(--line)] bg-white shadow-sm",
+  paper: "border border-[var(--line)] bg-[var(--surface)] shadow-sm",
+  tint: "border border-[var(--line)] bg-[var(--surface)] shadow-sm",
   dark: "border border-white/10 bg-white/5",
 };
 
 export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => void }) {
-  const color = (role: string) => brand.colors.find((c) => c.role === role)?.hex ?? "#000000";
-  const vars = {
-    "--primary": color("primary"),
-    "--secondary": color("secondary"),
-    "--accent": color("accent"),
-    "--ink": color("text"),
-    "--bg": color("background"),
-    "--tint": "color-mix(in srgb, var(--ink) 4%, var(--bg))",
-    "--line": "color-mix(in srgb, var(--ink) 10%, var(--bg))",
-  } as CSSProperties;
+  const vars = brandVars(brand);
 
   const topicColor = (topic: string) =>
     TOPIC_COLORS[Math.max(brand.topics.indexOf(topic), 0) % TOPIC_COLORS.length];
@@ -134,7 +126,7 @@ export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => vo
               <div key={p.platform} className={`rounded-2xl p-5 ${CARD.paper}`}>
                 <div className="flex items-baseline justify-between gap-3">
                   <h3 className="font-display text-xl font-semibold">{p.platform}</h3>
-                  <span className="truncate text-sm font-medium text-[var(--secondary)]">{p.handle}</span>
+                  <span className="truncate text-sm font-medium text-[var(--secondary-text)]">{p.handle}</span>
                 </div>
                 {p.focus && <p className="mt-1 text-sm opacity-70">{p.focus}</p>}
                 {p.bio && (
@@ -145,7 +137,7 @@ export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => vo
                     {limit && (
                       <p
                         className={`mt-2 text-right font-mono text-xs ${
-                          length > limit ? "font-semibold text-red-600" : "opacity-50"
+                          length > limit ? "font-semibold text-red-400" : "opacity-50"
                         }`}
                       >
                         {length} / {limit} characters
@@ -181,7 +173,7 @@ export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => vo
   });
 
   return (
-    <div style={vars} className="min-h-full bg-white text-[var(--ink)]">
+    <div style={vars} className="min-h-full bg-[var(--surface)] text-[var(--ink)]">
       {/* Light hero: the background colour with two soft glows of brand colour. */}
       <header
         className="border-b border-[var(--line)]"
@@ -208,7 +200,7 @@ export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => vo
           </div>
           <h1 className="mt-8 font-display text-6xl font-bold tracking-tight">{brand.name}</h1>
           {brand.tagline && (
-            <p className="mt-3 font-display text-3xl text-[var(--primary)]">{brand.tagline}</p>
+            <p className="mt-3 font-display text-3xl text-[var(--accent)]">{brand.tagline}</p>
           )}
           {brand.positioning && (
             <p className="mt-6 max-w-2xl text-lg leading-relaxed opacity-75">{brand.positioning}</p>
@@ -220,7 +212,7 @@ export function BrandView({ brand, onEdit }: { brand: BrandKit; onEdit: () => vo
         <section key={band.title} className={BAND[band.tone]}>
           <div className="mx-auto max-w-5xl px-6 py-14">
             <h2 className="mb-6 flex items-center gap-3 font-mono text-xs uppercase tracking-widest">
-              <span className={band.tone === "dark" ? "text-[var(--accent)]" : "text-[var(--primary)]"}>
+              <span className={band.tone === "dark" ? "text-[var(--accent)]" : "text-[var(--accent)]"}>
                 {String(i + 1).padStart(2, "0")}
               </span>
               <span className="h-px w-8 bg-current opacity-30" />

@@ -3,7 +3,7 @@ import { api } from "./api";
 import { BIO_LIMITS, GOAL_OPTIONS, PLATFORM_OPTIONS, type BrandKit } from "@shared/brand";
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600";
+  "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm placeholder:opacity-50 focus:border-[var(--primary)] focus:outline-none focus:ring-1 focus:ring-[var(--primary)]";
 
 type Props = {
   /** "onboarding" shows one step at a time; "edit" shows everything on one page. */
@@ -218,7 +218,7 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
             const limit = BIO_LIMITS[p.platform];
             const length = [...p.bio].length;
             return (
-              <div key={p.platform} className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
+              <div key={p.platform} className="space-y-2 rounded-xl bg-[var(--surface)] p-4 shadow-sm">
                 <p className="font-display font-semibold">{p.platform}</p>
                 <input
                   className={inputClass}
@@ -240,7 +240,7 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
                   onChange={(e) => platforms.update(i, { ...p, bio: e.target.value })}
                 />
                 {limit && (
-                  <p className={`text-right text-xs ${length > limit ? "font-semibold text-red-600" : "text-slate-500"}`}>
+                  <p className={`text-right text-xs ${length > limit ? "font-semibold text-red-400" : "opacity-60"}`}>
                     {length} / {limit} characters
                   </p>
                 )}
@@ -260,11 +260,11 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
               <input
                 type="color"
                 aria-label={`${c.role} colour`}
-                className="h-10 w-12 shrink-0 cursor-pointer rounded border border-slate-300 bg-white"
+                className="h-10 w-12 shrink-0 cursor-pointer rounded border border-[var(--line)] bg-[var(--surface)]"
                 value={/^#[0-9a-fA-F]{6}$/.test(c.hex) ? c.hex : "#000000"}
                 onChange={(e) => colors.update(i, { ...c, hex: e.target.value.toUpperCase() })}
               />
-              <span className="w-24 shrink-0 text-sm capitalize text-slate-600">{c.role}</span>
+              <span className="w-24 shrink-0 text-sm capitalize opacity-70">{c.role}</span>
               <input
                 className={`${inputClass} min-w-0 flex-1`}
                 aria-label={`${c.role} colour name`}
@@ -319,14 +319,14 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
     <button
       type="submit"
       disabled={saving}
-      className="rounded-full bg-teal-700 px-6 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+      className="rounded-full bg-[var(--primary)] px-6 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
     >
       {saving ? "Saving…" : label}
     </button>
   );
-  const secondaryClass = "rounded-full px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-200";
+  const secondaryClass = "rounded-full px-4 py-2.5 text-sm font-medium opacity-70 hover:bg-[var(--tint)]";
   const errorNote = error && (
-    <p role="alert" className="mr-auto text-sm font-medium text-red-600">
+    <p role="alert" className="mr-auto text-sm font-medium text-red-400">
       {error}
     </p>
   );
@@ -335,16 +335,16 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
     const current = sections[step];
     return (
       <form onSubmit={onSubmit} className="mx-auto flex min-h-full max-w-2xl flex-col px-6 py-10">
-        <p className="text-sm font-semibold uppercase tracking-widest text-teal-700">
+        <p className="text-sm font-semibold uppercase tracking-widest text-[var(--accent)]">
           Create your brand · Step {step + 1} of {sections.length}
         </p>
         <div className="mt-3 flex gap-1.5" aria-hidden>
           {sections.map((_, i) => (
-            <span key={i} className={`h-1.5 flex-1 rounded-full ${i <= step ? "bg-teal-700" : "bg-slate-300"}`} />
+            <span key={i} className={`h-1.5 flex-1 rounded-full ${i <= step ? "bg-[var(--primary)]" : "bg-[var(--line)]"}`} />
           ))}
         </div>
         <h1 className="mt-8 font-display text-4xl font-bold">{current.title}</h1>
-        <p className="mt-2 text-slate-600">{current.hint}</p>
+        <p className="mt-2 opacity-70">{current.hint}</p>
         {/* key resets focus and scroll position per step */}
         <div key={step} className="mt-8 flex-1 space-y-5">
           {current.body}
@@ -368,13 +368,13 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
       <div className="mt-8 space-y-12">
         {sections.map((s) => (
           <section key={s.title}>
-            <h2 className="border-b border-slate-300 pb-2 font-display text-xl font-semibold">{s.title}</h2>
-            <p className="mt-2 text-sm text-slate-600">{s.hint}</p>
+            <h2 className="border-b border-[var(--line)] pb-2 font-display text-xl font-semibold">{s.title}</h2>
+            <p className="mt-2 text-sm opacity-70">{s.hint}</p>
             <div className="mt-4 space-y-4">{s.body}</div>
           </section>
         ))}
       </div>
-      <div className="sticky bottom-0 -mx-6 mt-10 flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-100/95 px-6 py-4 backdrop-blur">
+      <div className="sticky bottom-0 -mx-6 mt-10 flex items-center justify-end gap-3 border-t border-[var(--line)] bg-[var(--bg)] px-6 py-4 backdrop-blur">
         {errorNote}
         <button type="button" className={secondaryClass} onClick={onCancel}>
           Cancel
@@ -388,8 +388,8 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
 function Field({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="block text-sm font-medium text-slate-800">{label}</span>
-      {help && <span className="block text-xs text-slate-500">{help}</span>}
+      <span className="block text-sm font-medium ">{label}</span>
+      {help && <span className="block text-xs opacity-60">{help}</span>}
       <span className="mt-1.5 block">{children}</span>
     </label>
   );
@@ -403,8 +403,8 @@ function Chip({ selected, onClick, children }: { selected: boolean; onClick: () 
       onClick={onClick}
       className={`rounded-full border px-4 py-2 text-sm font-medium ${
         selected
-          ? "border-teal-700 bg-teal-700 text-white"
-          : "border-slate-300 bg-white text-slate-700 hover:border-teal-600"
+          ? "border-[var(--primary)] bg-[var(--primary)] text-white"
+          : "border-[var(--line)] bg-[var(--surface)]  hover:border-[var(--primary)]"
       }`}
     >
       {children}
@@ -417,7 +417,7 @@ function AddButton({ onClick, children }: { onClick: () => void; children: React
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-xl border border-dashed border-slate-400 py-3 text-sm font-medium text-teal-700 hover:border-teal-600 hover:bg-white"
+      className="w-full rounded-xl border border-dashed border-[var(--line)] py-3 text-sm font-medium text-[var(--accent)] hover:border-[var(--primary)] hover:bg-[var(--surface)]"
     >
       + {children}
     </button>
@@ -426,13 +426,13 @@ function AddButton({ onClick, children }: { onClick: () => void; children: React
 
 function Row({ onRemove, children }: { onRemove: () => void; children: ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-xl bg-white p-3 shadow-sm">
+    <div className="flex items-start gap-2 rounded-xl bg-[var(--surface)] p-3 shadow-sm">
       <div className="min-w-0 flex-1 space-y-2">{children}</div>
       <button
         type="button"
         onClick={onRemove}
         aria-label="Remove"
-        className="shrink-0 rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100 hover:text-red-600"
+        className="shrink-0 rounded-lg px-2 py-1 opacity-50 hover:bg-[var(--tint)] hover:text-red-400"
       >
         ✕
       </button>
@@ -470,20 +470,20 @@ function TagInput({ values, onChange }: { values: string[]; onChange: (values: s
   return (
     <div className={`${inputClass} flex flex-wrap items-center gap-1.5`}>
       {values.map((v) => (
-        <span key={v} className="flex items-center gap-1 rounded-full bg-teal-50 py-0.5 pl-2.5 pr-1 text-teal-800">
+        <span key={v} className="flex items-center gap-1 rounded-full bg-[var(--tint)] py-0.5 pl-2.5 pr-1 ">
           {v}
           <button
             type="button"
             aria-label={`Remove ${v}`}
             onClick={() => onChange(values.filter((x) => x !== v))}
-            className="rounded-full px-1 text-teal-600 hover:bg-teal-100"
+            className="rounded-full px-1 opacity-70 hover:bg-[var(--line)]"
           >
             ✕
           </button>
         </span>
       ))}
       <input
-        className="min-w-24 flex-1 bg-transparent py-0.5 outline-none placeholder:text-slate-400"
+        className="min-w-24 flex-1 bg-transparent py-0.5 outline-none placeholder:opacity-50"
         value={draft}
         placeholder={values.length ? "" : "Add a topic"}
         onChange={(e) => onDraftChange(e.target.value)}
