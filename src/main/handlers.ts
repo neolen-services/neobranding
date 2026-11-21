@@ -5,16 +5,16 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseBrandKit, type SaveResult } from "../shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "../shared/data";
-import { checkIsDue, parseIdea, type GenerateOptions, type IdeaResult, type ScriptResult } from "../shared/ideas";
+import { parseIdea, type GenerateOptions, type ScriptResult } from "../shared/ideas";
 import type { ResearchEdit } from "../shared/research";
 import { isApiProvider, type ApiProvider } from "../shared/settings";
+import { agentProgress, deleteAgentChat, getAgentChat, listAgentChats, sendToAgent, type AgentContext } from "./agent";
 import { generateIdeas } from "./generate";
 import { adoptLegacyData, copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
 import {
   addResearch,
   analyzeResearch,
   deleteResearch,
-  fetchPostNumbers,
   listResearch,
   refreshResearchAudio,
   setToolsDir,
@@ -49,48 +49,12 @@ export function createHandlers(options: HandlerOptions) {
   const key = (provider: ApiProvider) => db().getApiKey(provider);
   const connectTelegram = () => startTelegram(dataDir, key("telegram"), () => key("deepgram"));
 
+  const agent: AgentContext = { dataDir: () => dataDir, store: db, key };
+
   const findIdea = (id: unknown) =>
     db()
       .listIdeas()
       .find((i) => i.id === String(id));
-
-  async function checkIdea(id: string): Promise<IdeaResult> {
-    const idea = findIdea(id);
-    if (!idea?.posted) return { ok: false, error: "This idea has no published video linked." };
-    const numbers = await fetchPostNumbers(dataDir, idea.posted.url);
-    if (!numbers.ok) return numbers;
-    // Read the idea again: it may have been edited while the numbers were being fetched.
-    const current = findIdea(id);
-    if (!current?.posted || current.posted.url !== idea.posted.url) return { ok: false, error: "The link was changed." };
-    const { likes, comments, views } = numbers;
-    const saved = parseIdea({
-      ...current,
-      posted: {
-        ...current.posted,
-        checks: [...current.posted.checks, { at: new Date().toISOString(), likes, comments, views }],
-      },
-    });
-    db().saveIdea(saved);
-    return { ok: true, idea: saved };
-  }
-
-  /** Re-reads the numbers of every published video whose next check is due, one at a time. */
-  let checking = false;
-  async function checkDuePosts(): Promise<void> {
-    if (checking) return;
-    checking = true;
-    try {
-      const due = db()
-        .listIdeas()
-        .filter((i) => i.posted && checkIsDue(i.posted));
-      for (const idea of due) await checkIdea(idea.id).catch(() => undefined);
-    } catch {
-      // Try again at the next tick.
-    } finally {
-      checking = false;
-    }
-  }
-  let checkTimer: ReturnType<typeof setInterval> | undefined;
 
   const dataInfo = (): DataFolderInfo => ({
     path: dataDir,
@@ -145,32 +109,12 @@ export function createHandlers(options: HandlerOptions) {
       return { ok: true, idea: saved };
     },
 
-    /**
-     * Links the user's own published video to an idea and reads its numbers.
-     * An empty link removes the video and its history from the idea.
-     */
-    "ideas:track": async (id: unknown, link: unknown): Promise<IdeaResult> => {
-      const idea = findIdea(id);
-      if (!idea) return { ok: false, error: "That idea no longer exists." };
-      const url = String(link ?? "").trim();
-      if (!url) {
-        const saved = parseIdea({ ...idea, posted: undefined });
-        db().saveIdea(saved);
-        return { ok: true, idea: saved };
-      }
-      const numbers = await fetchPostNumbers(dataDir, url);
-      if (!numbers.ok) return numbers;
-      const now = new Date().toISOString();
-      const { likes, comments, views } = numbers;
-      const saved = parseIdea({
-        ...idea,
-        posted: { url, platform: numbers.platform, linkedAt: now, checks: [{ at: now, likes, comments, views }] },
-      });
-      db().saveIdea(saved);
-      return { ok: true, idea: saved };
-    },
-    /** Reads the numbers of an idea's published video again and adds them to its history. */
-    "ideas:check": (id: unknown): Promise<IdeaResult> => checkIdea(String(id)),
+    "agent:list": () => listAgentChats(agent),
+    "agent:get": (id: unknown) => getAgentChat(agent, String(id)),
+    /** Runs until the agent has answered, which can take minutes if it analyses posts or writes ideas. */
+    "agent:send": (chatId: unknown, text: unknown) => sendToAgent(agent, String(chatId), String(text ?? "")),
+    "agent:progress": (chatId: unknown) => agentProgress(String(chatId)),
+    "agent:delete": (id: unknown) => deleteAgentChat(agent, String(id)),
 
     "research:list": () => listResearch(dataDir),
     "research:add": (url: unknown) => addResearch(dataDir, String(url), key("deepgram")),
@@ -242,16 +186,8 @@ export function createHandlers(options: HandlerOptions) {
     /** The folder in use right now (it can change while the app runs). */
     dataDir: () => dataDir,
     /** Starts background work: listening for Telegram links. */
-    start: () => {
-      void connectTelegram();
-      // Shortly after opening, then every hour while the app stays open.
-      setTimeout(() => void checkDuePosts(), 20_000).unref?.();
-      checkTimer ??= setInterval(() => void checkDuePosts(), 60 * 60 * 1000);
-      checkTimer.unref?.();
-    },
+    start: () => void connectTelegram(),
     close: () => {
-      clearInterval(checkTimer);
-      checkTimer = undefined;
       store?.close();
       store = null;
     },

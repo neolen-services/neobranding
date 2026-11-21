@@ -11,8 +11,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { analyzePost } from "./analyze";
 import { Readable } from "node:stream";
@@ -521,52 +520,6 @@ export async function refreshResearchAudio(dataDir: string, id: string): Promise
     return { ok: true, item: updated };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "The sound could not be looked up." };
-  } finally {
-    await rm(work, { recursive: true, force: true });
-  }
-}
-
-export type PostNumbers =
-  | { ok: true; platform: string; likes: number | null; comments: number | null; views: number | null }
-  | { ok: false; error: string };
-
-/** Reads a post's public numbers (likes, comments, views) without downloading or saving it. */
-export async function fetchPostNumbers(dataDir: string, url: string): Promise<PostNumbers> {
-  const platform = detectPlatform(url);
-  if (!platform) return { ok: false, error: SUPPORTED_LINKS_HINT };
-
-  const work = await mkdtemp(join(tmpdir(), "personal-brand-numbers-"));
-  try {
-    const ytDlp = await ensureYtDlp(dataDir);
-    const { stderr } = await run(
-      ytDlp,
-      [
-        "--no-progress",
-        "--no-warnings",
-        "--js-runtimes",
-        `node:${process.execPath}`,
-        "--ignore-no-formats-error",
-        "--skip-download",
-        "--write-info-json",
-        "--output",
-        join(work, "%(playlist_index|1)s.%(ext)s"),
-        "--",
-        url.trim(),
-      ],
-      work,
-    );
-    const files = await readdir(work);
-    // A carousel writes one file for the whole post ("0") and one per slide; the post's own numbers are on "0".
-    const infoFile = files.includes("0.info.json") ? "0.info.json" : files.find((f) => f.endsWith(".info.json"));
-    if (!infoFile) return { ok: false, error: explain(stderr, PLATFORM_LABELS[platform]) };
-    const info = JSON.parse(await readFile(join(work, infoFile), "utf8")) as Record<string, unknown>;
-    const numbers = { likes: num(info.like_count), comments: num(info.comment_count), views: num(info.view_count) };
-    if (numbers.likes === null && numbers.comments === null && numbers.views === null) {
-      return { ok: false, error: `${PLATFORM_LABELS[platform]} did not show any numbers for this post.` };
-    }
-    return { ok: true, platform: PLATFORM_LABELS[platform], ...numbers };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "The numbers could not be read." };
   } finally {
     await rm(work, { recursive: true, force: true });
   }

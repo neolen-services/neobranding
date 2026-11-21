@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   detectPlatform,
   PLATFORM_LABELS,
@@ -17,14 +17,15 @@ const primaryButton =
 const quietButton =
   "rounded-full border border-[var(--line)] px-4 py-1.5 text-sm font-medium hover:border-[var(--ink)] disabled:opacity-50";
 
-export function ResearchView({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function ResearchView({ onOpenSettings, focusId }: { onOpenSettings: () => void; /** A post to open on arrival. */ focusId?: string }) {
   const [items, setItems] = useState<ResearchItem[] | null>(null);
   const [hasDeepgram, setHasDeepgram] = useState<boolean | null>(null);
   const [url, setUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [sort, setSort] = useState<Sort>("saved");
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(focusId ?? null);
+  const focused = useRef(false);
   const [platform, setPlatform] = useState<ResearchPlatform | "all">("all");
   const [page, setPage] = useState(1);
   const [pendingDelete, setPendingDelete] = useState<ResearchItem | null>(null);
@@ -73,6 +74,14 @@ export function ResearchView({ onOpenSettings }: { onOpenSettings: () => void })
     (items ?? []).filter((i) => platform === "all" || i.platform === platform),
     sort,
   );
+  // Once the posts have loaded, turn to the page that holds the post we were sent to.
+  useEffect(() => {
+    if (!focusId || focused.current || !items) return;
+    focused.current = true;
+    const index = items.findIndex((i) => i.id === focusId);
+    if (index >= 0) setPage(Math.floor(index / PAGE_SIZE) + 1);
+  }, [focusId, items]);
+
   const pageCount = Math.max(Math.ceil(matching.length / PAGE_SIZE), 1);
   const currentPage = Math.min(page, pageCount); // Deleting the last post on a page steps back one.
   const firstIndex = (currentPage - 1) * PAGE_SIZE;

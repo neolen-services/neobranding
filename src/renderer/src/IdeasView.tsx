@@ -5,7 +5,6 @@ import { MIN_ANALYSED_POSTS, type GenerateOptions, type Idea, type IdeaDraft } f
 import type { ResearchItem } from "@shared/research";
 import { AnalyseAll } from "./AnalysisView";
 import { api } from "./api";
-import { latestCheck, ResultsSection } from "./ResultsView";
 import { SCRIPT_COST, ScriptBlock } from "./ScriptView";
 
 const fieldClass =
@@ -15,20 +14,21 @@ const primaryButton =
 const quietButton =
   "rounded-full border border-[var(--line)] bg-[var(--surface)] px-4 py-2 text-sm font-medium hover:border-[var(--primary)] disabled:opacity-50";
 
-const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
-
 type Suggestion = IdeaDraft & { key: string };
-type Sort = "newest" | "score" | "likes";
-type Tab = "idea" | "script" | "results";
+type Sort = "newest" | "score";
+type Tab = "idea" | "script";
 
 export function IdeasView({
   brand,
   onOpenSettings,
   onOpenResearch,
+  focusId,
 }: {
   brand: BrandKit;
   onOpenSettings: () => void;
   onOpenResearch: () => void;
+  /** An idea to open on arrival. */
+  focusId?: string;
 }) {
   const [posts, setPosts] = useState<ResearchItem[]>([]);
   const [round, setRound] = useState<{ considered: number; costUsd: number } | null>(null);
@@ -42,7 +42,7 @@ export function IdeasView({
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [series, setSeries] = useState("");
   const [sort, setSort] = useState<Sort>("newest");
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(focusId ?? null);
   const [pendingDelete, setPendingDelete] = useState<Idea | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
 
@@ -98,19 +98,9 @@ export function IdeasView({
   const analysed = posts.filter((p) => p.analysis);
   const ready = analysed.length >= MIN_ANALYSED_POSTS;
   const seriesNames = [...new Set(ideas.map((i) => i.series ?? "").filter(Boolean))].sort();
-  const likesOf = (idea: Idea) => latestCheck(idea)?.likes ?? null;
 
   const inSeries = series ? ideas.filter((i) => i.series === series) : ideas;
-  const visible =
-    sort === "newest"
-      ? inSeries
-      : [...inSeries].sort((a, b) =>
-          sort === "score" ? (b.score ?? -1) - (a.score ?? -1) : (likesOf(b) ?? -1) - (likesOf(a) ?? -1),
-        );
-  const measuredLikes = inSeries.map(likesOf).filter((n): n is number => n !== null);
-  const averageLikes = measuredLikes.length
-    ? compact.format(measuredLikes.reduce((a, b) => a + b, 0) / measuredLikes.length)
-    : "";
+  const visible = sort === "newest" ? inSeries : [...inSeries].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
 
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -141,7 +131,6 @@ export function IdeasView({
             <Count label="Analysed" value={`${analysed.length} of ${posts.length}`} />
             <Count label="Ideas saved" value={ideas.length} />
             <Count label="Scripts" value={ideas.filter((i) => i.script).length} />
-            <Count label="Posted" value={ideas.filter((i) => i.posted).length} />
           </dl>
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" className="text-sm underline opacity-60 hover:opacity-100" aria-expanded={helpOpen} onClick={() => setHelpOpen(!helpOpen)}>
@@ -174,10 +163,6 @@ export function IdeasView({
             <li>
               On an idea's Script tab, Claude writes three opening lines, a second-by-second script, the kind of sound
               and a caption ({SCRIPT_COST}, written once and saved).
-            </li>
-            <li>
-              After posting, paste your video's link on the Results tab. The app reads its numbers, re-reads them daily
-              for two weeks and then weekly while it is open, and the next round of ideas learns from them.
             </li>
           </ol>
         )}
@@ -300,7 +285,6 @@ export function IdeasView({
             <p className="text-sm opacity-60">
               {plural(inSeries.length, "idea", "ideas")}
               {series && ` in “${series}”`}
-              {averageLikes && ` · average ${averageLikes} likes over ${plural(measuredLikes.length, "posted video", "posted videos")}`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -320,7 +304,6 @@ export function IdeasView({
             <select className={`${fieldClass} !w-auto`} aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               <option value="newest">Newest first</option>
               <option value="score">Highest score</option>
-              <option value="likes">Most likes</option>
             </select>
           </div>
         </div>
@@ -337,14 +320,12 @@ export function IdeasView({
                   <th className="px-5 py-2 font-normal">Idea</th>
                   <th className="w-44 px-3 py-2 font-normal">Series</th>
                   <th className="w-20 px-3 py-2 font-normal">Score</th>
-                  <th className="w-20 px-3 py-2 font-normal">Likes</th>
                   <th className="w-14 px-3 py-2" aria-label="Delete" />
                 </tr>
               </thead>
               <tbody>
                 {visible.map((idea) => {
                   const open = openId === idea.id;
-                  const likes = likesOf(idea);
                   return (
                     <Fragment key={idea.id}>
                       <tr className={`border-b border-[var(--line)] ${open ? "bg-[var(--tint)]" : "hover:bg-[var(--tint)]"}`}>
@@ -356,7 +337,6 @@ export function IdeasView({
                         </td>
                         <td className="truncate px-3 py-3 opacity-80">{idea.series || "–"}</td>
                         <td className="px-3 py-3 tabular-nums">{idea.score ?? "–"}</td>
-                        <td className="px-3 py-3 tabular-nums">{likes === null ? "–" : compact.format(likes)}</td>
                         <td className="px-3 py-3">
                           <button
                             type="button"
@@ -373,7 +353,7 @@ export function IdeasView({
                       </tr>
                       {open && (
                         <tr className="border-b border-[var(--line)]">
-                          <td colSpan={5} className="bg-[var(--bg)] px-5 py-5">
+                          <td colSpan={4} className="bg-[var(--bg)] px-5 py-5">
                             <OpenIdea idea={idea} onChange={replaceIdea} />
                           </td>
                         </tr>
@@ -394,7 +374,7 @@ export function IdeasView({
   );
 }
 
-/** One saved idea, opened: the idea itself, its script, and how it did once posted. */
+/** One saved idea, opened: the idea itself and its script. */
 function OpenIdea({ idea, onChange }: { idea: Idea; onChange: (idea: Idea) => void }) {
   const [tab, setTab] = useState<Tab>("idea");
   const [writing, setWriting] = useState(false);
@@ -417,7 +397,6 @@ function OpenIdea({ idea, onChange }: { idea: Idea; onChange: (idea: Idea) => vo
   const tabs: [Tab, string][] = [
     ["idea", "Idea"],
     ["script", "Script"],
-    ["results", "Results"],
   ];
 
   return (
@@ -467,8 +446,6 @@ function OpenIdea({ idea, onChange }: { idea: Idea; onChange: (idea: Idea) => vo
           )}
         </div>
       )}
-
-      {tab === "results" && <ResultsSection idea={idea} onChange={onChange} />}
     </div>
   );
 }
@@ -573,9 +550,7 @@ function ConfirmDelete({ idea, onCancel, onConfirm }: { idea: Idea; onCancel: ()
         </h2>
         <p className="mt-2 text-sm leading-relaxed opacity-75">
           “{idea.title}” will be removed
-          {idea.script || idea.posted
-            ? `, along with its ${[idea.script && "script", idea.posted && "results history"].filter(Boolean).join(" and ")}`
-            : ""}
+          {idea.script ? ", along with its script" : ""}
           . This cannot be undone.
         </p>
         <div className="mt-6 flex justify-end gap-3">

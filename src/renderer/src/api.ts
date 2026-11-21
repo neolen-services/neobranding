@@ -63,8 +63,12 @@ const browserApi: Api = {
   deleteIdea: (id) => call("ideas:delete", id),
   generateIdeas: (options) => call("ideas:generate", options),
   writeScript: (id) => call("ideas:script", id),
-  trackIdea: (id, url) => call("ideas:track", id, url),
-  checkIdea: (id) => call("ideas:check", id),
+
+  listAgentChats: () => call("agent:list"),
+  getAgentChat: (id) => call("agent:get", id),
+  sendToAgent: (chatId, text) => call("agent:send", chatId, text),
+  agentProgress: (chatId) => call("agent:progress", chatId),
+  deleteAgentChat: (id) => call("agent:delete", id),
 
   listResearch: () => call("research:list"),
   addResearch: (url) => call("research:add", url),

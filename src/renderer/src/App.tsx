@@ -1,5 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { emptyBrandKit, type BrandKit } from "@shared/brand";
+import { useAgentChat } from "./agentChat";
+import { AgentChatPanel, IconButton, type OpenReference } from "./AgentView";
 import { api } from "./api";
 import { BrandForm } from "./BrandForm";
 import { BrandView } from "./BrandView";
@@ -9,16 +11,17 @@ import { ResearchView } from "./ResearchView";
 import { SettingsView } from "./SettingsView";
 import { brandVars } from "./theme";
 
-type Page = "dashboard" | "brand" | "ideas" | "edit" | "research" | "settings";
+type Page = "dashboard" | "agent" | "brand" | "ideas" | "edit" | "research" | "settings";
 
 type Screen =
   | { name: "loading" }
   | { name: "error"; message: string }
   | { name: "onboarding" }
-  | { name: Page; brand: BrandKit };
+  | { name: Page; brand: BrandKit; /** A post or idea to open on arrival. */ focus?: string };
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: "Dashboard",
+  agent: "Agent",
   brand: "Brand",
   ideas: "Video ideas",
   edit: "Edit brand",
@@ -29,6 +32,12 @@ const PAGE_TITLES: Record<Page, string> = {
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // The agent's chat lives here so it carries on across screens and in its floating window.
+  const agent = useAgentChat();
+  const [dockOpen, setDockOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  /** The screen to return to when the chat is popped out of the Agent page. */
+  const lastPage = useRef<Page>("dashboard");
 
   useEffect(() => {
     api
@@ -64,7 +73,20 @@ export function App() {
   }
 
   const { brand, name: page } = screen;
-  const go = (name: Page) => setScreen({ name, brand });
+  const go = (name: Page) => {
+    if (page !== "agent") lastPage.current = page;
+    if (name === "agent") void agent.checkKey();
+    setScreen({ name, brand });
+  };
+  const onAgentPage = page === "agent";
+  const openReference: OpenReference = (kind, id) => {
+    if (page !== "agent") lastPage.current = page;
+    setScreen({ name: kind === "post" ? "research" : "ideas", brand, focus: id });
+  };
+  const openDock = () => {
+    void agent.checkKey();
+    setDockOpen(true);
+  };
 
   const navItem = (name: Page, label: string, icon: ReactNode) => {
     const current = page === name || (name === "brand" && page === "edit");
@@ -111,6 +133,7 @@ export function App() {
 
           <nav className="mt-4 space-y-1">
             {navItem("dashboard", "Dashboard", <Icon d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z" />)}
+            {navItem("agent", "Agent", <Icon d="M5 4l14 8-6 2-2 6z" />)}
             {navItem("ideas", "Video ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
           </nav>
@@ -135,7 +158,8 @@ export function App() {
       }
 
       {/* The content sits on a rounded panel inset from the dark frame. */}
-      <div className="m-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-[var(--bg)]">
+      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="m-2 mb-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-[var(--bg)]">
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--surface)] px-4 py-3">
           <button
             type="button"
@@ -151,13 +175,34 @@ export function App() {
           <h1 className="font-display font-semibold">{PAGE_TITLES[page]}</h1>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
+        <main className={`min-h-0 flex-1 ${page === "agent" ? "overflow-hidden" : "overflow-y-auto"}`}>
+          {onAgentPage && (
+            <AgentChatPanel
+              chat={agent}
+              variant="page"
+              onOpenReference={openReference}
+              onOpenSettings={() => go("settings")}
+              actions={
+                <IconButton
+                  label="Open as a small window"
+                  onClick={() => {
+                    setDockOpen(true);
+                    go(lastPage.current);
+                  }}
+                >
+                  <path d="M4 5h16v14H4zM12 12h6v5h-6z" />
+                </IconButton>
+              }
+            />
+          )}
           {page === "dashboard" && (
             <Dashboard brand={brand} onOpenIdeas={() => go("ideas")} onOpenBrand={() => go("brand")} />
           )}
           {page === "brand" && <BrandView brand={brand} onEdit={() => go("edit")} />}
-          {page === "ideas" && <IdeasView brand={brand} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />}
-          {page === "research" && <ResearchView onOpenSettings={() => go("settings")} />}
+          {page === "ideas" && (
+            <IdeasView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />
+          )}
+          {page === "research" && <ResearchView key={screen.focus} focusId={screen.focus} onOpenSettings={() => go("settings")} />}
           {page === "settings" && <SettingsView />}
           {page === "edit" && (
             <BrandForm
@@ -169,8 +214,137 @@ export function App() {
           )}
         </main>
       </div>
+
+        {/* The agent is one click away on every screen. */}
+        <footer className="flex h-10 min-w-0 shrink-0 items-center justify-end gap-1 px-3">
+          {/* One tab for each chat kept open; the newest are shown if there are many. */}
+          {agent.tabs.slice(-4).map((tab) => {
+            const showing = tab.id === agent.chatId && (dockOpen || onAgentPage);
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                title={tab.title}
+                aria-pressed={showing}
+                onClick={() => {
+                  if (showing && !onAgentPage) return setDockOpen(false);
+                  void agent.openChat(tab.id);
+                  if (!onAgentPage) openDock();
+                }}
+                className={`flex min-w-0 max-w-[14rem] items-center gap-2 rounded-lg px-3 py-1 text-sm font-medium ${
+                  showing ? "bg-white/10 text-white" : "text-white/55 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                {(tab.running || tab.unread) && (
+                  <span className={`h-2 w-2 shrink-0 rounded-full bg-[var(--accent)] ${tab.running ? "animate-pulse" : ""}`} />
+                )}
+                <span className="truncate">{tab.title || "Chat"}</span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            title="Start a new chat with the agent"
+            onClick={() => {
+              agent.newChat();
+              if (!onAgentPage) openDock();
+            }}
+            className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-1 text-sm font-medium text-white/85 hover:bg-white/5 hover:text-white"
+          >
+            <Icon d="M5 4l14 8-6 2-2 6z" />
+            Agent
+          </button>
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              aria-label="Chat history"
+              title="Chat history"
+              aria-expanded={historyOpen}
+              onClick={() => setHistoryOpen(!historyOpen)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
+            >
+              <Icon d="M4 12a8 8 0 1 0 2.5-5.800M4 4v4h4M12 8v4l3 2" />
+            </button>
+            {historyOpen && (
+              <>
+                {/* Clicking anywhere else closes the list. */}
+                <div className="fixed inset-0 z-40" onClick={() => setHistoryOpen(false)} />
+                <div className="absolute bottom-9 right-0 z-50 max-h-80 w-96 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1.5 text-[var(--ink)] shadow-2xl">
+                  <p className="px-2.5 py-1.5 text-xs opacity-50">Chat history</p>
+                  {agent.chats.length === 0 && <p className="px-2.5 py-2 text-sm opacity-60">No chats yet.</p>}
+                  {agent.chats.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--tint)]"
+                      onClick={() => {
+                        setHistoryOpen(false);
+                        void agent.openChat(c.id);
+                        if (!onAgentPage) openDock();
+                      }}
+                    >
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full ${
+                          agent.runningIds.has(c.id) ? "animate-pulse bg-[var(--accent)]" : agent.unread.has(c.id) ? "bg-[var(--accent)]" : ""
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{c.title}</span>
+                      <span className="shrink-0 text-xs opacity-50">{agent.runningIds.has(c.id) ? "working" : timeAgo(c.updatedAt)}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </footer>
+      </div>
+
+      {dockOpen && !onAgentPage && (
+        <div
+          role="dialog"
+          aria-label="Agent chat"
+          className="fixed bottom-12 right-4 z-40 flex h-[min(640px,calc(100vh-5rem))] w-[440px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg)] shadow-2xl"
+        >
+          <AgentChatPanel
+            chat={agent}
+            variant="dock"
+            onOpenReference={openReference}
+            onOpenSettings={() => go("settings")}
+            actions={
+              <>
+                <IconButton label="Minimise" onClick={() => setDockOpen(false)}>
+                  <path d="M6 18h12" />
+                </IconButton>
+                <IconButton label="Open on the Agent page" onClick={() => { setDockOpen(false); go("agent"); }}>
+                  <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+                </IconButton>
+                <IconButton
+                  label="Close this chat"
+                  onClick={() => {
+                    setDockOpen(false);
+                    // Takes it off the footer; it stays in the history.
+                    agent.closeTab(agent.chatId);
+                  }}
+                >
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </IconButton>
+              </>
+            }
+          />
+        </div>
+      )}
     </div>
   );
+}
+
+/** "just now", "13min", "2h", "3d", then a date. */
+function timeAgo(iso: string): string {
+  const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}min`;
+  if (minutes < 60 * 24) return `${Math.floor(minutes / 60)}h`;
+  if (minutes < 60 * 24 * 7) return `${Math.floor(minutes / (60 * 24))}d`;
+  return new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
 /** A 20px line icon drawn from a single path. */

@@ -23,13 +23,10 @@ export function Dashboard({
   if (!ideas) return null;
 
   const thisWeek = ideas.filter((i) => Date.now() - new Date(i.createdAt).getTime() < WEEK_MS).length;
-  // Counted from what exists, not from a label: a written script, a linked video.
   const withScript = ideas.filter((i) => i.script).length;
-  const posted = ideas.filter((i) => i.posted).length;
   const progress: [string, number][] = [
     ["Saved ideas", ideas.length],
     ["With a script", withScript],
-    ["Posted and measured", posted],
   ];
   const coveredPillars = brand.pillars.filter((p) => ideas.some((i) => i.pillar === p.title));
   const uncovered = brand.pillars.filter((p) => !coveredPillars.includes(p));
@@ -37,7 +34,7 @@ export function Dashboard({
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
           label="Saved ideas"
           value={ideas.length}
@@ -51,13 +48,6 @@ export function Dashboard({
           badge={ideas.length ? `${Math.round((withScript / ideas.length) * 100)}% of ideas` : "0% of ideas"}
           headline={withScript === 0 ? "No scripts written yet" : "Ready to film"}
           detail="Ideas with a written script"
-        />
-        <StatCard
-          label="Posted"
-          value={posted}
-          badge={ideas.length ? `${Math.round((posted / ideas.length) * 100)}% of ideas` : "0% of ideas"}
-          headline={posted === 0 ? "No videos posted yet" : "Videos published"}
-          detail="Ideas with your video's link attached"
         />
         <StatCard
           label="Pillars covered"

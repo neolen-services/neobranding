@@ -60,39 +60,14 @@ export type IdeaScript = {
   writtenAt: string;
 };
 
-/** The public numbers of a posted video at one moment. null: the site did not show that number. */
-export type PostCheck = { at: string; likes: number | null; comments: number | null; views: number | null };
-
-/** The user's own published video for an idea, with its numbers over time. */
-export type PostedVideo = {
-  url: string;
-  /** Display name of the site, e.g. "Instagram". */
-  platform: string;
-  linkedAt: string;
-  /** Oldest first. */
-  checks: PostCheck[];
-};
-
 /** A suggestion the user chose to keep. */
 export type Idea = IdeaDraft & {
   id: string;
   createdAt: string;
   script?: IdeaScript;
-  posted?: PostedVideo;
 };
 
 export type ScriptResult = { ok: true; idea: Idea } | { ok: false; error: string };
-export type IdeaResult = ScriptResult;
-
-const HOUR = 60 * 60 * 1000;
-/** Numbers are re-read daily for the first two weeks after linking, then weekly. */
-export function checkIsDue(posted: PostedVideo, now = Date.now()): boolean {
-  const last = posted.checks.at(-1);
-  if (!last) return true;
-  const sinceLast = now - Date.parse(last.at);
-  const sinceLinked = now - Date.parse(posted.linkedAt);
-  return sinceLast >= (sinceLinked < 14 * 24 * HOUR ? 24 * HOUR : 7 * 24 * HOUR);
-}
 
 /** Words spoken per second at a natural pace, used to check a script fits its time. */
 export const WORDS_PER_SECOND = 2.5;
@@ -147,27 +122,6 @@ export function parseIdea(input: unknown): Idea {
     scoreReason: str(i.scoreReason),
     createdAt: str(i.createdAt) || new Date().toISOString(),
     script: parseScript(i.script),
-    posted: parsePosted(i.posted),
-  };
-}
-
-function parsePosted(input: unknown): PostedVideo | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const p = input as Record<string, unknown>;
-  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  const url = str(p.url);
-  if (!url) return undefined;
-  return {
-    url,
-    platform: str(p.platform),
-    linkedAt: str(p.linkedAt) || new Date().toISOString(),
-    checks: (Array.isArray(p.checks) ? p.checks : [])
-      .map((c): PostCheck => {
-        const check = (c ?? {}) as Record<string, unknown>;
-        return { at: str(check.at), likes: num(check.likes), comments: num(check.comments), views: num(check.views) };
-      })
-      .filter((c) => c.at),
   };
 }
 

@@ -33,6 +33,11 @@ export function openStore(dataDir: string, secrets: Secrets) {
       data       TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS chats (
+      id         TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -70,6 +75,28 @@ export function openStore(dataDir: string, secrets: Secrets) {
 
     deleteIdea(id: string): void {
       db.prepare("DELETE FROM ideas WHERE id = ?").run(id);
+    },
+
+    /** Agent chats, newest first. Each is stored whole, as the agent module defines it. */
+    listChats<T>(): T[] {
+      const rows = db.prepare("SELECT data FROM chats ORDER BY updated_at DESC").all() as { data: string }[];
+      return rows.map((r) => JSON.parse(r.data));
+    },
+
+    getChat<T>(id: string): T | null {
+      const row = db.prepare("SELECT data FROM chats WHERE id = ?").get(id) as { data: string } | undefined;
+      return row ? JSON.parse(row.data) : null;
+    },
+
+    saveChat(id: string, updatedAt: string, chat: unknown): void {
+      db.prepare(
+        `INSERT INTO chats (id, data, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+      ).run(id, JSON.stringify(chat), updatedAt);
+    },
+
+    deleteChat(id: string): void {
+      db.prepare("DELETE FROM chats WHERE id = ?").run(id);
     },
 
     /** Pass an empty key to remove it. */

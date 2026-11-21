@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { AgentChat, AgentChatSummary, AgentProgress, AgentReply } from "@shared/agent";
 import type { BrandKit, SaveResult } from "@shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "@shared/data";
-import type { GenerateOptions, GenerateResult, Idea, IdeaResult, ScriptResult } from "@shared/ideas";
+import type { GenerateOptions, GenerateResult, Idea, ScriptResult } from "@shared/ideas";
 import type { ResearchEdit, ResearchItem, ResearchResult } from "@shared/research";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
@@ -20,10 +21,14 @@ const api = {
     ipcRenderer.invoke("ideas:generate", options),
   /** Has Claude write a timed script for a saved idea. Costs money each time. */
   writeScript: (id: string): Promise<ScriptResult> => ipcRenderer.invoke("ideas:script", id),
-  /** Links your own published video to an idea and reads its numbers. An empty link removes it. */
-  trackIdea: (id: string, url: string): Promise<IdeaResult> => ipcRenderer.invoke("ideas:track", id, url),
-  /** Reads the numbers of an idea's published video again. */
-  checkIdea: (id: string): Promise<IdeaResult> => ipcRenderer.invoke("ideas:check", id),
+
+  listAgentChats: (): Promise<AgentChatSummary[]> => ipcRenderer.invoke("agent:list"),
+  getAgentChat: (id: string): Promise<AgentChat | null> => ipcRenderer.invoke("agent:get", id),
+  /** Sends a message to the agent (a new chat id starts a new chat) and resolves when it has answered. */
+  sendToAgent: (chatId: string, text: string): Promise<AgentReply> => ipcRenderer.invoke("agent:send", chatId, text),
+  /** What the agent is doing in a chat right now. */
+  agentProgress: (chatId: string): Promise<AgentProgress> => ipcRenderer.invoke("agent:progress", chatId),
+  deleteAgentChat: (id: string): Promise<void> => ipcRenderer.invoke("agent:delete", id),
 
   listResearch: (): Promise<ResearchItem[]> => ipcRenderer.invoke("research:list"),
   /** Downloads the post at the link and, if a Deepgram key is saved, transcribes its videos. */

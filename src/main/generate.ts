@@ -127,44 +127,12 @@ function describeTemplate(code: string, post: ResearchItem): string {
     .join("\n");
 }
 
-/**
- * The creator's own posted videos with their latest numbers, best first, or ""
- * if none have been measured yet.
- */
-function describeOwnResults(ideas: Idea[], templates: { code: string; post: ResearchItem }[]): string {
-  const measured = ideas
-    .map((idea) => ({ idea, last: idea.posted?.checks.at(-1) }))
-    .filter((r) => r.last && (r.last.likes !== null || r.last.views !== null))
-    .sort((a, b) => (b.last!.likes ?? 0) - (a.last!.likes ?? 0))
-    .slice(0, 20);
-  return measured
-    .map(({ idea, last }) => {
-      const code = templates.find((t) => t.post.id === idea.modelledOnId)?.code;
-      const numbers = [
-        last!.likes !== null && `${last!.likes} likes`,
-        last!.comments !== null && `${last!.comments} comments`,
-        last!.views !== null && `${last!.views} views`,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      return [
-        `- "${idea.title}": ${numbers}`,
-        `  Opening line: ${idea.script?.hooks[0] || idea.hook}`,
-        (idea.series || code) &&
-          `  ${[idea.series && `Series: ${idea.series}`, code && `Modelled on ${code}`].filter(Boolean).join(". ")}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-    })
-    .join("\n");
-}
-
 export async function generateIdeas(
   apiKey: string,
   brand: BrandKit,
   posts: ResearchItem[],
   options: GenerateOptions,
-  /** The creator's saved ideas: used to avoid repeats and to learn from the ones already posted. */
+  /** The creator's saved ideas, so new ones do not repeat them. */
   existing: Idea[],
 ): Promise<GenerateResult> {
   const existingTitles = existing.map((i) => i.title);
@@ -199,7 +167,6 @@ export async function generateIdeas(
     .join("\n\n");
 
   const brandText = describeBrand(brand);
-  const ownResults = describeOwnResults(existing, templates);
   const client = new Anthropic({ apiKey });
   const common = {
     model: "claude-opus-5-5",
@@ -220,11 +187,7 @@ export async function generateIdeas(
           role: "user",
           content: `THE CREATOR'S BRAND\n${brandText}\n\nLIBRARY OF POSTS THAT PERFORMED WELL\n${templates
             .map((t) => describeTemplate(t.code, t.post))
-            .join("\n\n")}${
-            ownResults
-              ? `\n\nHOW THE CREATOR'S OWN POSTED VIDEOS DID\n${ownResults}\n\nLean towards the series, templates and kinds of opening that did best for this creator, and away from the ones that did worst. These are few results, so treat them as a hint, not a rule, and still spread the ideas.`
-              : ""
-          }\n\n---\n\n${request}`,
+            .join("\n\n")}\n\n---\n\n${request}`,
         },
       ],
       output_config: { format: betaZodOutputFormat(WriterSchema) },
@@ -242,11 +205,7 @@ export async function generateIdeas(
       messages: [
         {
           role: "user",
-          content: `THE CREATOR\n${brandText}\n\n${
-            ownResults
-              ? `HOW THE CREATOR'S OWN POSTED VIDEOS DID\n${ownResults}\n\nThis is real evidence of what this creator's audience responds to. Let it move your stopScroll score a little where an idea closely resembles one of these, up or down. It is a small sample.\n\n`
-              : ""
-          }IDEAS TO JUDGE\n${drafts
+          content: `THE CREATOR\n${brandText}\n\nIDEAS TO JUDGE\n${drafts
             .map((d, i) =>
               [
                 `Idea ${i + 1}: ${d.title}`,
