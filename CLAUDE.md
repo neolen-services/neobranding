@@ -54,3 +54,8 @@ Each install is for one person. There is no sign-in and no backend. The app talk
 - `npm run dev` — the desktop app.
 - `npm run dev:web` — the interface in a browser, using the same data folder. Run one at a time, or two copies will both read the Telegram bot.
 - `npm run typecheck` — must pass before committing.
+- Set `PERSONAL_BRAND_DATA_DIR` to run on another data folder (demos, screenshots, tests) without touching the real one.
+
+## README screenshots
+
+The pictures in `docs/screenshots/` are taken from a demo data folder of invented content (a fictional creator and fictional posts). When the interface changes, retake them the same way; never use a real user's data folder for a screenshot.

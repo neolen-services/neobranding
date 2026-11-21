@@ -21,7 +21,14 @@ const POINTER_FILE = join(homedir(), ".personal-brand.json");
 
 export const defaultDataDir = () => join(homedir(), "Documents", "Personal Brand");
 
+/**
+ * For demos, screenshots and tests: run the app on another folder without
+ * touching the user's real one, by setting this environment variable.
+ */
+const OVERRIDE = process.env.PERSONAL_BRAND_DATA_DIR?.trim();
+
 export function readDataDir(): string {
+  if (OVERRIDE) return resolve(OVERRIDE);
   try {
     const { dataDir } = JSON.parse(readFileSync(POINTER_FILE, "utf8"));
     if (typeof dataDir === "string" && dataDir) return dataDir;
@@ -32,6 +39,8 @@ export function readDataDir(): string {
 }
 
 export function writeDataDir(dataDir: string): void {
+  // A demo run must never repoint the user's real app.
+  if (OVERRIDE) return;
   writeFileSync(POINTER_FILE, JSON.stringify({ dataDir }, null, 2));
 }
 
