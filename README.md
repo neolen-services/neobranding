@@ -1,6 +1,6 @@
 # Personal Brand
 
-A desktop app that helps one creator build a personal brand with short videos (Reels, Shorts, TikTok). You define your brand, save posts that worked for other creators, let Claude break down why they worked, and turn that into your own ideas and shooting scripts. An in-app agent can do all of it for you from a chat.
+A desktop app that helps one creator build a personal brand with short videos (Reels, Shorts, TikTok). You define your brand, save posts that worked for other creators, let Claude break down why they worked, turn that into your own ideas, and make those ideas into videos scripted scene by scene. An in-app agent can do all of it for you from a chat.
 
 Everything runs on your own computer with your own API keys. There are no accounts and no server.
 
@@ -16,8 +16,11 @@ Everything runs on your own computer with your own API keys. There are no accoun
 | **Research** | Paste an Instagram or YouTube Shorts link and the app saves the video or pictures, the caption, the numbers, the sound used and a transcript. Rate posts and add notes. |
 | **Analysis** | Claude looks at frames, transcript and caption and records the hook, the structure and why the post works. Each post is analysed once and the result is saved. |
 | **Ideas** | Claude writes many ideas, each modelled on one analysed post, then a separate pass judges them and keeps the best. |
-| **Scripts** | Any saved idea can get a timed shooting script: three opening lines, second-by-second beats, on-screen text, sound and caption. |
-| **Agent** | A chat, available on every screen, that can read your brand, research and ideas and carry out the actions above. |
+| **Agent** | A chat, available on every screen, that can read and change your brand, research and ideas and carry out the actions above. Type `@` to point it at your brand kit, all of your research or ideas, or one specific post, idea or audio file. Before it changes or deletes anything it shows you what it wants to do and waits for you to allow it; **Settings → Agent tool permissions** sets which actions ask first. |
+| **Studio** | Turns one or more saved ideas, your own words, or your own version of a saved post into a video script written as scenes. You choose whether it is made with AI only, filmed by you, or a mix, and each scene is marked as made with AI or filmed by you; the claim is checked against your rules, and you approve the script before anything costly is made. Series get a season plan with a running question. AI lines are spoken in each character's voice. With a fal.ai, Google or ElevenLabs key, each scene gets a still picture, then a clip or a lip-synced clip, and you choose which service does which job. |
+| **Cast** | Characters you make once and reuse: personality, way of talking, look and an ElevenLabs voice. |
+| **Audio** | With an ElevenLabs key, the agent can make voiceovers in a voice from your account (including your own cloned voice), sound effects and music, and plays them in the chat. |
+| **Usage** | Shows what the app has used on your services and what for: Claude tokens and their estimated cost, minutes transcribed, and audio generated. |
 | **Telegram** | Send links to your own Telegram bot from your phone and they are saved to Research. |
 
 ## Screenshots
@@ -38,15 +41,17 @@ Everything runs on your own computer with your own API keys. There are no accoun
 
 ![Post analysis](docs/screenshots/analysis.png)
 
-**An idea with its script**
+**A saved idea**
 
-![Idea with a timed script](docs/screenshots/ideas-script.png)
+![A saved idea, opened](docs/screenshots/ideas.png)
 
 ## What you need
 
 - **Node.js 22.13 or newer**, and Git.
 - **An Anthropic API key** for analysis, ideas, scripts and the agent. Create one at [console.anthropic.com](https://console.anthropic.com).
 - Optional: **a Deepgram API key** to transcribe what is said in videos ([deepgram.com](https://deepgram.com)).
+- Optional: **an ElevenLabs API key** so the agent can generate voiceovers, sound effects and music ([elevenlabs.io](https://elevenlabs.io)).
+- Optional: **a fal.ai or Google Gemini API key** to make pictures and clips for scenes in Studio ([fal.ai](https://fal.ai), [aistudio.google.com](https://aistudio.google.com)). ElevenLabs can do this too on its Pro plan.
 - Optional: **a Telegram bot token** to save links from your phone (create a bot with [@BotFather](https://t.me/BotFather)).
 
 The app is developed on Windows. It downloads the tools it needs (yt-dlp, and FFmpeg on Windows and Linux) the first time you save a post. On macOS there is no automatic FFmpeg download, so videos are saved at lower quality.
@@ -69,7 +74,7 @@ npm run dev
 3. **Save posts you like.** In **Research**, paste a link to a public Instagram post (reel, video, photo or carousel) or a YouTube Short. Give the good ones a star rating and a note.
 4. **Analyse them.** Press **Analyse posts**. You need at least five analysed posts before ideas can be written.
 5. **Write ideas.** In **Ideas**, press **Write new ideas**, choose how many to keep, and save the ones you like.
-6. **Write a script.** Open a saved idea, go to the **Script** tab and press **Write script**.
+6. **Make the video.** Open a saved idea and press **Make this video**, or start one in **Studio** from several ideas at once. Studio writes the script as scenes for you to approve.
 
 Or ask the agent: press **Agent** in the bottom-right corner on any screen and type what you want, for example "Analyse my saved posts and give me five ideas".
 
@@ -88,17 +93,20 @@ The app is free. The AI features use your own Anthropic account, so you pay Anth
 |---|---|
 | Analyse one post | $0.05 |
 | One round of ideas (writes many, keeps the best) | $0.25 |
-| One script | $0.06 |
+| One video script in Studio | $0.10 |
 | A question to the agent | $0.05 to $0.15, plus whatever actions it runs |
 
-The app shows the estimated cost on each button before you press it. Saving posts and rating them is free. Transcription uses your Deepgram account.
+The app shows the estimated cost on each button before you press it. Saving posts and rating them is free. Transcription uses your Deepgram account, and generated audio uses your ElevenLabs credits.
 
 ## Your data
 
 Everything you create is kept in **one folder** on your computer, by default `Documents/Personal Brand`:
 
-- `personal-brand.db`: your brand, ideas, scripts, agent chats and saved keys
+- `personal-brand.db`: your brand, ideas, cast, series, videos and their scripts, agent chats and saved keys
+- `videos/` and `cast/`: the pictures and clips made for scenes, and characters' reference pictures
+- `usage.jsonl`: a log of what the app used on your services, shown on the Usage page
 - `research/`: saved posts with their videos, pictures, captions, transcripts, analyses, ratings and notes
+- `audio/`: voiceovers, sound effects and music you generated
 - `telegram.json`: which Telegram chat is linked
 
 **Settings → Your data** shows where the folder is, opens it, and lets you move it.
@@ -110,7 +118,7 @@ Everything you create is kept in **one folder** on your computer, by default `Do
 3. In **Settings → Your data**, choose the copied folder.
 4. Enter your API keys again. On the desktop app, keys are encrypted by the operating system, so they cannot be read on a different computer.
 
-Nothing is sent anywhere except to the services you connect: your brand details and post content go to Anthropic when you use an AI feature, audio goes to Deepgram when a video is transcribed, and links arrive through Telegram if you set up a bot.
+Nothing is sent anywhere except to the services you connect: your brand details and post content go to Anthropic when you use an AI feature, audio goes to Deepgram when a video is transcribed, the text or description for generated audio goes to ElevenLabs, and links arrive through Telegram if you set up a bot.
 
 ## For developers
 
@@ -132,7 +140,7 @@ Built with Electron, React, TypeScript, Tailwind CSS and SQLite (Node's built-in
 - Instagram does not show view counts or video length without a login, so those are often missing.
 - Only Instagram posts and YouTube Shorts links are accepted.
 - Links sent to Telegram are saved only while the app is open.
-- The agent's rules about spending and deleting are instructions it follows, not hard locks.
+- Actions set to "Ask first" cannot run until you allow them. The agent's rules about spending are instructions it follows, not hard locks.
 
 ## Licence
 

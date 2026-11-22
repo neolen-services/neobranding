@@ -5,7 +5,7 @@ import { defineConfig } from "vite";
 import { rendererConfig } from "./electron.vite.config";
 
 export default defineConfig({
-  ...rendererConfig,
+  ...rendererConfig(true),
   root: "src/renderer",
   server: { port: 5173, strictPort: true },
 });

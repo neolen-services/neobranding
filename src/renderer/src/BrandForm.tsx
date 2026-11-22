@@ -11,11 +11,13 @@ type Props = {
   initial: BrandKit;
   onSaved: (brand: BrandKit) => void;
   onCancel?: () => void;
+  /** When editing: show only this section of the form (by position) instead of all of it. */
+  section?: number;
 };
 
 type ListKey = "pillars" | "voice" | "platforms" | "colors";
 
-export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
+export function BrandForm({ mode, initial, onSaved, onCancel, section }: Props) {
   const [kit, setKit] = useState(initial);
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
@@ -285,6 +287,8 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
   ];
 
   const isLastStep = step === sections.length - 1;
+  /** The one section being edited, if the form was opened for just one. */
+  const only = section === undefined ? undefined : sections[section];
 
   async function save() {
     setError("");
@@ -364,9 +368,9 @@ export function BrandForm({ mode, initial, onSaved, onCancel }: Props) {
 
   return (
     <form onSubmit={onSubmit} className="mx-auto max-w-3xl px-6 pt-10">
-      <h1 className="font-display text-3xl font-bold">Edit brand</h1>
+      <h1 className="font-display text-3xl font-bold">{only ? `Edit: ${only.title.replace(/^Your /, "").replace(/^./, (c) => c.toUpperCase())}` : "Edit brand"}</h1>
       <div className="mt-8 space-y-12">
-        {sections.map((s) => (
+        {(only ? [only] : sections).map((s) => (
           <section key={s.title}>
             <h2 className="border-b border-[var(--line)] pb-2 font-display text-xl font-semibold">{s.title}</h2>
             <p className="mt-2 text-sm opacity-70">{s.hint}</p>

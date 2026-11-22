@@ -1,0 +1,287 @@
+// Makes pictures, clips and lip-synced clips with whichever service the user chose,
+// and keeps the results in the data folder.
+// Plain Node code with relative imports only (used by the desktop app and the dev server).
+//
+// Each service is called the way its own documentation described in November 2026:
+//   fal.ai      its official client: files are uploaded to its CDN, models run on its queue
+//   Google      POST /v1beta/interactions, answered in one go with the file as base64 (or a link)
+//   ElevenLabs  POST /v1/flows/image or /v1/flows/video, then polling until a download link is ready
+// Layout under the data folder:
+//   videos/<video id>/<take id>.<ext>     a scene's pictures and clips
+//   cast/<character id>/<take id>.<ext>   a character's reference pictures
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createFalClient } from "@fal-ai/client";
+import { choiceLabel, MEDIA_FILE, MEDIA_PROVIDERS, type MediaChoice, type MediaTask, type Take, type UploadedFile } from "../shared/media";
+import type { ApiProvider } from "../shared/settings";
+import { recordUsage } from "./usage";
+
+export type Media = { bytes: Buffer; mime: string };
+type Keys = (provider: ApiProvider) => string;
+
+// Overridable so the calls can be tested against stand-in servers.
+const FAL_BASE = process.env.FAL_API_BASE?.trim();
+const GOOGLE_API = process.env.GOOGLE_API_BASE?.trim() || "https://generativelanguage.googleapis.com";
+const ELEVEN_API = process.env.ELEVENLABS_API_BASE?.trim() || "https://api.elevenlabs.io";
+
+const MINUTE = 60_000;
+const EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+};
+const MIME_OF: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
+
+const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+const b64 = (m: Media) => m.bytes.toString("base64");
+
+/** Fetches a finished file. `headers` only when the link needs the key (Google's file links do). */
+async function download(url: string, fallbackMime: string, headers?: Record<string, string>): Promise<Media> {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(5 * MINUTE) });
+  if (!response.ok) throw new Error(`The finished file could not be downloaded (HTTP ${response.status}).`);
+  const mime = (response.headers.get("content-type") ?? "").split(";")[0].trim();
+  return { bytes: Buffer.from(await response.arrayBuffer()), mime: EXTENSIONS[mime] ? mime : fallbackMime };
+}
+
+function needKey(keys: Keys, choice: MediaChoice): string {
+  const provider = MEDIA_PROVIDERS[choice.provider];
+  const key = keys(provider.key).trim();
+  if (!key) throw new Error(`Add your ${provider.label} API key in Settings first.`);
+  return key;
+}
+
+// ---------- fal.ai ----------
+
+function falClient(key: string) {
+  return createFalClient({
+    credentials: key,
+    // In tests every request goes to the stand-in server, with the real address kept in a header.
+    ...(FAL_BASE && {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+        const real = new URL(typeof input === "string" || input instanceof URL ? input.toString() : input.url);
+        return fetch(`${FAL_BASE}${real.pathname}${real.search}`, { ...init, headers: { ...(init?.headers as Record<string, string>), "x-real-host": real.host } });
+      },
+    }),
+  });
+}
+
+async function fal(key: string, model: string, input: (upload: (file: Media) => Promise<string>) => Promise<Record<string, unknown>>) {
+  const client = falClient(key);
+  // In tests files travel inside the request; for real they are uploaded to fal's CDN as fal recommends.
+  const upload = (file: Media) =>
+    FAL_BASE ? Promise.resolve(`data:${file.mime};base64,${b64(file)}`) : client.storage.upload(new Blob([new Uint8Array(file.bytes)], { type: file.mime }));
+  try {
+    const result = await client.subscribe(model, { input: await input(upload), pollInterval: 3000 });
+    return result.data as { images?: { url?: string }[]; video?: { url?: string } };
+  } catch (e) {
+    const body = (e as { body?: { detail?: unknown } }).body?.detail;
+    const detail = typeof body === "string" ? body : Array.isArray(body) ? body.map((d) => (d as { msg?: string }).msg).filter(Boolean).join("; ") : "";
+    throw new Error(`fal.ai: ${detail || (e instanceof Error ? e.message : "the request failed")}`);
+  }
+}
+
+// ---------- Google ----------
+
+type GoogleBlock = { type?: string; data?: string; uri?: string; mime_type?: string };
+
+async function google(key: string, body: Record<string, unknown>, want: "image" | "video", extraHeaders: Record<string, string> = {}): Promise<Media> {
+  const response = await fetch(`${GOOGLE_API}/v1beta/interactions`, {
+    method: "POST",
+    headers: { "x-goog-api-key": key, "Content-Type": "application/json", ...extraHeaders },
+    body: JSON.stringify(body),
+    // A clip is made before the request returns, which can take several minutes.
+    signal: AbortSignal.timeout(15 * MINUTE),
+  });
+  const json = (await response.json().catch(() => ({}))) as { error?: { message?: string }; steps?: { type?: string; content?: GoogleBlock[] }[] };
+  if (!response.ok) throw new Error(`Google: ${json.error?.message ?? `the request failed (HTTP ${response.status})`}`);
+  const block = (json.steps ?? []).filter((s) => s.type === "model_output").flatMap((s) => s.content ?? []).find((c) => c.type === want);
+  const fallback = want === "image" ? "image/png" : "video/mp4";
+  if (block?.data) return { bytes: Buffer.from(block.data, "base64"), mime: block.mime_type && EXTENSIONS[block.mime_type] ? block.mime_type : fallback };
+  if (block?.uri) return download(block.uri, fallback, { "x-goog-api-key": key });
+  throw new Error(`Google returned no ${want}. It may have declined the request; try different wording.`);
+}
+
+// ---------- ElevenLabs ----------
+
+const inline = (file: Media) => ({ type: "inline_base64", content_base64: b64(file), mime_type: file.mime });
+
+async function eleven(key: string, kind: "image" | "video", body: Record<string, unknown>): Promise<Media> {
+  // The same tidying as for speech: a key pasted without its "sk_" still works.
+  const cleaned = key.replace(/^["'`]+|["'`]+$/g, "").replace(/\s+/g, "");
+  const headers = { "xi-api-key": /^[A-Za-z0-9]{48}$/.test(cleaned) ? `sk_${cleaned}` : cleaned, "Content-Type": "application/json" };
+  const explain = async (response: Response) => {
+    const json = (await response.json().catch(() => ({}))) as { detail?: { status?: string; message?: string } | { msg?: string }[] | string };
+    const detail = json.detail;
+    if (response.status === 402) return "ElevenLabs: pictures and video need the Pro plan or above on your ElevenLabs account.";
+    if (response.status === 401) return "ElevenLabs rejected the key, or the key has no Image & Video permission. Check it on elevenlabs.io.";
+    const message = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((d) => d.msg).filter(Boolean).join("; ") : detail?.message;
+    return `ElevenLabs: ${message || `the request failed (HTTP ${response.status})`}`;
+  };
+
+  const started = await fetch(`${ELEVEN_API}/v1/flows/${kind}`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(2 * MINUTE) });
+  if (!started.ok) throw new Error(await explain(started));
+  const { id } = (await started.json()) as { id?: string };
+  if (!id) throw new Error("ElevenLabs did not start the generation.");
+
+  // ElevenLabs asks for at least 2 seconds between checks for a picture and 10 for video.
+  const wait = kind === "image" ? 2500 : 10_000;
+  for (let waited = 0; waited < 20 * MINUTE; waited += wait) {
+    await pause(wait);
+    const checked = await fetch(`${ELEVEN_API}/v1/flows/${kind}/${id}`, { headers, signal: AbortSignal.timeout(MINUTE) });
+    if (!checked.ok) throw new Error(await explain(checked));
+    const state = (await checked.json()) as { status?: string; content_url?: string; content_mime_type?: string; error_message?: string };
+    if (state.status === "failed") throw new Error(`ElevenLabs: ${state.error_message || "the generation failed."}`);
+    if (state.status === "completed" && state.content_url) return download(state.content_url, kind === "image" ? "image/png" : "video/mp4");
+  }
+  throw new Error("ElevenLabs took too long. Try again.");
+}
+
+// ---------- The three jobs ----------
+
+const used = (task: MediaTask, choice: MediaChoice, detail: string, seconds?: number) =>
+  recordUsage({ feature: task, detail: `${detail} · ${choiceLabel(task, choice)}`, ...(seconds && { seconds }) });
+
+/** A 9:16 still from a description, using the reference pictures to keep characters and places the same. */
+export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; detail: string }): Promise<Media> {
+  const key = needKey(keys, choice);
+  const { prompt, references } = input;
+  let made: Media;
+  if (choice.provider === "fal") {
+    // fal's "edit" models need at least one picture; without references the same model's plain form is used.
+    const model = references.length ? choice.model : choice.model.replace(/\/edit$/, "");
+    const data = await fal(key, model, async (upload) => ({
+      prompt,
+      aspect_ratio: "9:16",
+      num_images: 1,
+      output_format: "png",
+      ...(references.length && { image_urls: await Promise.all(references.map(upload)) }),
+    }));
+    const url = data.images?.[0]?.url;
+    if (!url) throw new Error("fal.ai returned no picture.");
+    made = await download(url, "image/png");
+  } else if (choice.provider === "google") {
+    made = await google(
+      key,
+      {
+        model: choice.model,
+        input: [{ type: "text", text: prompt }, ...references.map((r) => ({ type: "image", mime_type: r.mime, data: b64(r) }))],
+        response_format: { type: "image", aspect_ratio: "9:16" },
+      },
+      "image",
+      { "Api-Revision": "2026-05-20" },
+    );
+  } else {
+    made = await eleven(key, "image", { model_id: choice.model, prompt, aspect_ratio: "9:16", ...(references.length && { images: references.map(inline) }) });
+  }
+  used("picture", choice, input.detail);
+  return made;
+}
+
+/** A still turned into a moving 9:16 clip of about `seconds`. */
+export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
+  const key = needKey(keys, choice);
+  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), 15);
+  let made: Media;
+  if (choice.provider === "fal") {
+    const kling = /kling/i.test(choice.model);
+    const data = await fal(key, choice.model, async (upload) =>
+      kling
+        ? { prompt: input.prompt, start_image_url: await upload(input.image), duration: String(seconds), generate_audio: false }
+        : { prompt: input.prompt, image_url: await upload(input.image), aspect_ratio: "9:16", resolution: "720p", duration: seconds },
+    );
+    if (!data.video?.url) throw new Error("fal.ai returned no clip.");
+    made = await download(data.video.url, "video/mp4");
+  } else if (choice.provider === "google") {
+    made = await google(
+      key,
+      {
+        model: choice.model,
+        input: [
+          { type: "image", data: b64(input.image), mime_type: input.image.mime },
+          { type: "text", text: input.prompt },
+        ],
+        response_format: { type: "video", aspect_ratio: "9:16", duration: `${seconds}s` },
+        // Without this Google decides for itself how to use the picture; with it the picture is the first frame.
+        generation_config: { video_config: { task: "image_to_video" } },
+      },
+      "video",
+    );
+  } else {
+    // Veo on ElevenLabs makes 4, 6 or 8 seconds only.
+    const allowed = [4, 6, 8].reduce((best, n) => (Math.abs(n - seconds) < Math.abs(best - seconds) ? n : best), 8);
+    made = await eleven(key, "video", {
+      model_id: choice.model,
+      prompt: input.prompt,
+      aspect_ratio: "9:16",
+      duration_secs: /^veo/i.test(choice.model) ? allowed : seconds,
+      start_frame: inline(input.image),
+      generate_audio: false,
+    });
+  }
+  used("clip", choice, input.detail, seconds);
+  return made;
+}
+
+/** A character's still made to speak a recorded line. The clip is as long as the recording. */
+export async function makeLipSync(keys: Keys, choice: MediaChoice, input: { image: Media; audio: Media; detail: string }): Promise<Media> {
+  const key = needKey(keys, choice);
+  let made: Media;
+  if (choice.provider === "fal") {
+    const data = await fal(key, choice.model, async (upload) => ({
+      image_url: await upload(input.image),
+      audio_url: await upload(input.audio),
+      ...(/fabric/i.test(choice.model) && { resolution: "720p" }),
+    }));
+    if (!data.video?.url) throw new Error("fal.ai returned no clip.");
+    made = await download(data.video.url, "video/mp4");
+  } else if (choice.provider === "elevenlabs") {
+    made = await eleven(key, "video", { model_id: choice.model, image: inline(input.image), audio: inline(input.audio), resolution: "720p" });
+  } else {
+    throw new Error("Google cannot lip-sync to a recorded voice. Choose fal.ai or ElevenLabs for lip-sync.");
+  }
+  used("lipsync", choice, input.detail);
+  return made;
+}
+
+// ---------- Files in the data folder ----------
+
+/** Saves a picture or clip under `videos/<owner>` or `cast/<owner>` and returns its record. */
+export async function saveTake(dataDir: string, folder: "videos" | "cast", ownerId: string, media: Media, source: Take["source"], madeWith: string): Promise<Take> {
+  const extension = EXTENSIONS[media.mime];
+  if (!extension) throw new Error("That kind of file is not supported. Use PNG, JPEG, WebP, MP4, MOV or WebM.");
+  if (media.bytes.length === 0) throw new Error("The file is empty.");
+  const id = randomUUID();
+  const file = `${folder}/${ownerId}/${id}.${extension}`;
+  if (!MEDIA_FILE.test(file)) throw new Error("That file cannot be stored.");
+  await mkdir(dirname(join(dataDir, file)), { recursive: true });
+  await writeFile(join(dataDir, file), media.bytes);
+  return { id, file, source, madeWith, createdAt: new Date().toISOString() };
+}
+
+/** Reads a stored take back, to send it on to a service. */
+export async function loadTake(dataDir: string, take: Take): Promise<Media> {
+  const path = mediaFilePath(dataDir, take.file);
+  if (!path) throw new Error("That file is not in the data folder.");
+  return { bytes: await readFile(path), mime: MIME_OF[take.file.split(".").pop()!.toLowerCase()] ?? "application/octet-stream" };
+}
+
+export const deleteTake = (dataDir: string, take: Take) => {
+  const path = mediaFilePath(dataDir, take.file);
+  return path ? rm(path, { force: true }) : Promise.resolve();
+};
+
+/** Resolves a stored media path, or null if it is not a plain stored file. */
+export function mediaFilePath(dataDir: string, file: string): string | null {
+  return MEDIA_FILE.test(file) ? join(dataDir, file) : null;
+}
+
+/** A file handed over from the interface, as bytes. */
+export function fromUpload(upload: UploadedFile | undefined): Media {
+  const mime = String(upload?.mime ?? "").split(";")[0].trim();
+  const bytes = upload?.bytes ? Buffer.from(upload.bytes) : typeof upload?.base64 === "string" ? Buffer.from(upload.base64, "base64") : Buffer.alloc(0);
+  return { bytes, mime };
+}

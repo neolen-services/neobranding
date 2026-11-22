@@ -9,6 +9,7 @@ import {
 } from "@shared/research";
 import { AnalyseAll, PostAnalysisBlock } from "./AnalysisView";
 import { api } from "./api";
+import { MakeVideoButton } from "./StudioView";
 
 const fieldClass =
   "w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm placeholder:opacity-50 focus:border-[var(--primary)] focus:outline-none focus:ring-1 focus:ring-[var(--primary)]";
@@ -17,7 +18,17 @@ const primaryButton =
 const quietButton =
   "rounded-full border border-[var(--line)] px-4 py-1.5 text-sm font-medium hover:border-[var(--ink)] disabled:opacity-50";
 
-export function ResearchView({ onOpenSettings, focusId }: { onOpenSettings: () => void; /** A post to open on arrival. */ focusId?: string }) {
+export function ResearchView({
+  onOpenSettings,
+  focusId,
+  onOpenItem,
+}: {
+  onOpenSettings: () => void;
+  /** A post to open on arrival. */
+  focusId?: string;
+  /** Told which post is open (null for none), so the agent can offer it. */
+  onOpenItem?: (id: string | null) => void;
+}) {
   const [items, setItems] = useState<ResearchItem[] | null>(null);
   const [hasDeepgram, setHasDeepgram] = useState<boolean | null>(null);
   const [url, setUrl] = useState("");
@@ -25,6 +36,11 @@ export function ResearchView({ onOpenSettings, focusId }: { onOpenSettings: () =
   const [error, setError] = useState("");
   const [sort, setSort] = useState<Sort>("saved");
   const [openId, setOpenId] = useState<string | null>(focusId ?? null);
+  useEffect(() => {
+    onOpenItem?.(openId);
+    return () => onOpenItem?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId]);
   const focused = useRef(false);
   const [platform, setPlatform] = useState<ResearchPlatform | "all">("all");
   const [page, setPage] = useState(1);
@@ -635,6 +651,7 @@ function ResearchCard({
             Open original
           </a>
           <span className="opacity-50">Saved {new Date(item.savedAt).toLocaleDateString()}</span>
+          {item.analysis && <MakeVideoButton from={{ postId: item.id }} label="Make my version" />}
           <button type="button" className="ml-auto opacity-60 hover:text-red-400 hover:opacity-100" onClick={onDelete}>
             Delete
           </button>

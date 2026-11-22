@@ -24,7 +24,12 @@ export type BrandKit = {
   voice: VoiceTrait[];
   platforms: PlatformProfile[];
   colors: BrandColor[];
+  /** The ElevenLabs voice the brand speaks with (not to be confused with `voice`, its tone), or null. */
+  speakingVoice: SpeakingVoice | null;
 };
+
+/** A voice from the user's ElevenLabs account. */
+export type SpeakingVoice = { id: string; name: string; /** e.g. "cloned", "premade". */ category: string };
 
 export type SaveResult = { ok: true; brand: BrandKit } | { ok: false; error: string };
 
@@ -73,6 +78,7 @@ export function emptyBrandKit(): BrandKit {
     voice: [],
     platforms: [],
     colors: DEFAULT_COLORS.map((c) => ({ ...c })),
+    speakingVoice: null,
   };
 }
 
@@ -121,5 +127,15 @@ export function parseBrandKit(input: unknown): BrandKit {
       }))
       .filter((p) => p.platform),
     colors,
+    speakingVoice: parseSpeakingVoice(i.speakingVoice),
   };
+}
+
+function parseSpeakingVoice(input: unknown): SpeakingVoice | null {
+  if (!input || typeof input !== "object") return null;
+  const v = input as Record<string, unknown>;
+  const id = str(v.id);
+  // An id is only ever sent on as part of a web address, so keep it to plain characters.
+  if (!/^[\w-]{6,64}$/.test(id)) return null;
+  return { id, name: str(v.name) || "Voice", category: str(v.category) };
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { emptyBrandKit, type BrandKit } from "@shared/brand";
 import { useAgentChat } from "./agentChat";
-import { AgentChatPanel, IconButton, type OpenReference } from "./AgentView";
+import { AgentChatPanel, IconButton, type OpenReference, type ReferenceTarget } from "./AgentView";
 import { api } from "./api";
 import { BrandForm } from "./BrandForm";
 import { BrandView } from "./BrandView";
@@ -9,9 +9,12 @@ import { Dashboard } from "./Dashboard";
 import { IdeasView } from "./IdeasView";
 import { ResearchView } from "./ResearchView";
 import { SettingsView } from "./SettingsView";
+import { UsageView } from "./UsageView";
+import { CastView } from "./CastView";
+import { OpenVideoContext, StudioView } from "./StudioView";
 import { brandVars } from "./theme";
 
-type Page = "dashboard" | "agent" | "brand" | "ideas" | "edit" | "research" | "settings";
+type Page = "dashboard" | "agent" | "brand" | "cast" | "ideas" | "edit" | "research" | "studio" | "usage" | "settings";
 
 type Screen =
   | { name: "loading" }
@@ -26,6 +29,9 @@ const PAGE_TITLES: Record<Page, string> = {
   ideas: "Ideas",
   edit: "Edit brand",
   research: "Research",
+  studio: "Studio",
+  cast: "Cast",
+  usage: "Usage",
   settings: "Settings",
 };
 
@@ -35,6 +41,8 @@ export function App() {
   // The agent's chat lives here so it carries on across screens and in its floating window.
   const agent = useAgentChat();
   const [dockOpen, setDockOpen] = useState(false);
+  /** The post or idea opened on the Research or Ideas page, so the agent can offer it first. */
+  const [openItem, setOpenItem] = useState<ReferenceTarget | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** The screen to return to when the chat is popped out of the Agent page. */
   const lastPage = useRef<Page>("dashboard");
@@ -47,6 +55,14 @@ export function App() {
     // Start listening for links sent to the Telegram bot, if one is set up.
     void api.syncTelegram();
   }, []);
+
+  // The agent can change the brand kit, so read it again whenever the agent has finished working.
+  useEffect(() => {
+    if (agent.revision === 0) return;
+    void api.getBrand().then((fresh) => {
+      if (fresh) setScreen((s) => ("brand" in s ? { ...s, brand: fresh } : s));
+    });
+  }, [agent.revision]);
 
   if (screen.name === "loading") return null;
 
@@ -81,8 +97,21 @@ export function App() {
   const onAgentPage = page === "agent";
   const openReference: OpenReference = (kind, id) => {
     if (page !== "agent") lastPage.current = page;
+    if (kind === "brand") return setScreen({ name: "brand", brand });
+    if (kind === "research" || kind === "ideas") return setScreen({ name: kind, brand });
+    if (kind === "video" || kind === "series") return setScreen({ name: "studio", brand, focus: id });
+    if (kind === "character") return setScreen({ name: "cast", brand });
     setScreen({ name: kind === "post" ? "research" : "ideas", brand, focus: id });
   };
+  // What the page behind the chat shows, most specific first.
+  const onScreen: ReferenceTarget[] =
+    page === "research"
+      ? [...(openItem?.kind === "post" ? [openItem] : []), { kind: "research", id: "all" }]
+      : page === "ideas"
+        ? [...(openItem?.kind === "idea" ? [openItem] : []), { kind: "ideas", id: "all" }]
+        : page === "brand" || page === "edit"
+          ? [{ kind: "brand", id: "kit" }]
+          : [];
   const openDock = () => {
     void agent.checkKey();
     setDockOpen(true);
@@ -136,6 +165,7 @@ export function App() {
             {navItem("agent", "Agent", <Icon d="M5 4l14 8-6 2-2 6z" />)}
             {navItem("ideas", "Ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
+            {navItem("studio", "Studio", <Icon d="M4 9h16v10H4zM4 9l1.500-4 3 4 2-4 3 4 2-4 3 4" />)}
           </nav>
 
           {sidebarOpen ? (
@@ -145,9 +175,11 @@ export function App() {
           )}
           <nav className="mt-2 space-y-1">
             {navItem("brand", "Brand kit", <Icon d="M12 3l2.5 5.5L20 9.3l-4 4 1 5.7-5-2.8-5 2.8 1-5.7-4-4 5.5-.8z" />)}
+            {navItem("cast", "Cast", <Icon d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 2.700-5 6-5s6 2 6 5M16 11a3 3 0 1 0 0-6M21 20c0-2.500-1.700-4.200-4-4.800" />)}
           </nav>
 
           <nav className="mt-auto space-y-1 border-t border-white/10 pt-3">
+            {navItem("usage", "Usage", <Icon d="M4 20V11M10 20V4M16 20v-7M21 20H3" />)}
             {navItem(
               "settings",
               "Settings",
@@ -175,12 +207,14 @@ export function App() {
           <h1 className="font-display font-semibold">{PAGE_TITLES[page]}</h1>
         </header>
 
+        <OpenVideoContext.Provider value={(id) => setScreen({ name: "studio", brand, focus: id })}>
         <main className={`min-h-0 flex-1 ${page === "agent" ? "overflow-hidden" : "overflow-y-auto"}`}>
           {onAgentPage && (
             <AgentChatPanel
               chat={agent}
               variant="page"
               onOpenReference={openReference}
+              onScreen={onScreen}
               onOpenSettings={() => go("settings")}
               actions={
                 <IconButton
@@ -198,21 +232,35 @@ export function App() {
           {page === "dashboard" && (
             <Dashboard brand={brand} onOpenIdeas={() => go("ideas")} onOpenBrand={() => go("brand")} />
           )}
-          {page === "brand" && <BrandView brand={brand} onEdit={() => go("edit")} />}
-          {page === "ideas" && (
-            <IdeasView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />
+          {page === "brand" && (
+            <BrandView
+              brand={brand}
+              onEdit={(section) => setScreen({ name: "edit", brand, focus: section === undefined ? undefined : String(section) })}
+              onChange={(changed) => setScreen({ name: "brand", brand: changed })}
+              onOpenSettings={() => go("settings")}
+            />
           )}
-          {page === "research" && <ResearchView key={screen.focus} focusId={screen.focus} onOpenSettings={() => go("settings")} />}
+          {page === "ideas" && (
+            <IdeasView key={screen.focus} brand={brand} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "idea", id } : null)} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />
+          )}
+          {page === "research" && <ResearchView key={screen.focus} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "post", id } : null)} onOpenSettings={() => go("settings")} />}
+          {page === "studio" && (
+            <StudioView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={() => go("settings")} onOpenCast={() => go("cast")} />
+          )}
+          {page === "cast" && <CastView brand={brand} onOpenSettings={() => go("settings")} onOpenBrand={() => go("brand")} />}
+          {page === "usage" && <UsageView />}
           {page === "settings" && <SettingsView />}
           {page === "edit" && (
             <BrandForm
               mode="edit"
+              section={screen.focus === undefined ? undefined : Number(screen.focus)}
               initial={brand}
               onSaved={(saved) => setScreen({ name: "brand", brand: saved })}
               onCancel={() => go("brand")}
             />
           )}
         </main>
+        </OpenVideoContext.Provider>
       </div>
 
         {/* The agent is one click away on every screen. */}
@@ -309,6 +357,7 @@ export function App() {
             chat={agent}
             variant="dock"
             onOpenReference={openReference}
+              onScreen={onScreen}
             onOpenSettings={() => go("settings")}
             actions={
               <>

@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentChat, AgentChatSummary, AgentMessage } from "@shared/agent";
+import type { AgentApproval, AgentChat, AgentChatSummary, AgentMessage, AgentReply } from "@shared/agent";
+import type { GeneratedAudio } from "@shared/audio";
 import type { Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
+import type { Character, Series, Video } from "@shared/studio";
 import { api } from "./api";
 
 /** What a reference tag in the agent's text points at. */
-export type AgentRefs = { posts: Map<string, ResearchItem>; ideas: Map<string, Idea> };
+export type AgentRefs = {
+  posts: Map<string, ResearchItem>;
+  ideas: Map<string, Idea>;
+  audio: Map<string, GeneratedAudio>;
+  videos: Map<string, Video>;
+  series: Map<string, Series>;
+  characters: Map<string, Character>;
+};
+export const NO_REFS: AgentRefs = { posts: new Map(), ideas: new Map(), audio: new Map(), videos: new Map(), series: new Map(), characters: new Map() };
 
 /** A chat kept open as a tab in the footer. */
 export type AgentTab = { id: string; title: string; running: boolean; /** It has an answer you have not looked at. */ unread: boolean };
@@ -27,6 +37,10 @@ export function useAgentChat() {
   const [chatId, setChatId] = useState<string>(() => crypto.randomUUID());
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [costUsd, setCostUsd] = useState(0);
+  /** Actions the chat being looked at is waiting for a yes or no on. */
+  const [approvals, setApprovals] = useState<AgentApproval[]>([]);
+  /** Goes up each time the agent finishes working, since it may have changed the app's data. */
+  const [revision, setRevision] = useState(0);
   const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(new Set());
   const [status, setStatus] = useState("");
   /** Why each chat's last message failed, if it did. */
@@ -35,7 +49,7 @@ export function useAgentChat() {
   const [open, setOpen] = useState<{ id: string; title: string }[]>([]);
   /** Chats that finished answering while another chat was on screen. */
   const [unread, setUnread] = useState<ReadonlySet<string>>(new Set());
-  const [refs, setRefs] = useState<AgentRefs>({ posts: new Map(), ideas: new Map() });
+  const [refs, setRefs] = useState<AgentRefs>(NO_REFS);
   const current = useRef(chatId);
   current.current = chatId;
 
@@ -44,8 +58,22 @@ export function useAgentChat() {
   const refreshChats = useCallback(() => api.listAgentChats().then(setChats).catch(() => undefined), []);
   /** Re-reads posts and ideas so reference chips can show their names, including ones the agent just made. */
   const refreshRefs = useCallback(async () => {
-    const [posts, ideas] = await Promise.all([api.listResearch().catch(() => []), api.listIdeas().catch(() => [])]);
-    setRefs({ posts: new Map(posts.map((p) => [p.id, p])), ideas: new Map(ideas.map((i) => [i.id, i])) });
+    const [posts, ideas, audio, videos, series, characters] = await Promise.all([
+      api.listResearch().catch(() => []),
+      api.listIdeas().catch(() => []),
+      api.listAudio().catch(() => []),
+      api.listVideos().catch(() => []),
+      api.listSeries().catch(() => []),
+      api.listCast().catch(() => []),
+    ]);
+    setRefs({
+      posts: new Map(posts.map((p) => [p.id, p])),
+      ideas: new Map(ideas.map((i) => [i.id, i])),
+      audio: new Map(audio.map((a) => [a.id, a])),
+      videos: new Map(videos.map((v) => [v.id, v])),
+      series: new Map(series.map((s) => [s.id, s])),
+      characters: new Map(characters.map((c) => [c.id, c])),
+    });
   }, []);
   const checkKey = useCallback(() => api.hasApiKey("anthropic").then(setHasKey), []);
 
@@ -69,6 +97,7 @@ export function useAgentChat() {
   const show = (chat: AgentChat) => {
     setMessages(chat.messages);
     setCostUsd(chat.costUsd);
+    setApprovals(chat.approvals ?? []);
   };
   const addTab = (id: string, title: string) => setOpen((list) => (list.some((t) => t.id === id) ? list : [...list, { id, title }]));
 
@@ -76,6 +105,7 @@ export function useAgentChat() {
     setChatId(crypto.randomUUID());
     setMessages([]);
     setCostUsd(0);
+    setApprovals([]);
   }
 
   /** Looks at another chat. One that is still working keeps working and shows how far it has got. */
@@ -91,6 +121,7 @@ export function useAgentChat() {
     });
     setMessages([]);
     setCostUsd(0);
+    setApprovals([]);
     const chat = await api.getAgentChat(id);
     if (current.current !== id) return;
     if (chat) {
@@ -100,16 +131,12 @@ export function useAgentChat() {
     void refreshRefs();
   }
 
-  async function send(text: string) {
-    const said = text.trim();
-    const id = chatId;
-    if (!said || runningIds.has(id)) return;
+  /** Marks a chat as working while `work` runs, then shows what came back. */
+  async function run(id: string, work: () => Promise<AgentReply>) {
     setErrors(({ [id]: _cleared, ...rest }) => rest);
-    setMessages((list) => [...list, { role: "user", text: said, at: new Date().toISOString() }]);
-    addTab(id, shortTitle(said));
     setRunningIds((ids) => new Set(ids).add(id));
     try {
-      const reply = await api.sendToAgent(id, said);
+      const reply = await work();
       if (!reply.ok) setErrors((all) => ({ ...all, [id]: reply.error }));
       // If another chat is on screen now, this one's answer is read when it is opened again.
       if (current.current === id && reply.chat) show(reply.chat);
@@ -124,7 +151,29 @@ export function useAgentChat() {
       });
       void refreshChats();
       void refreshRefs();
+      setRevision((n) => n + 1);
     }
+  }
+
+  /**
+   * Sends a message. `text` may hold reference tags ([[post:<id>]]…); `plain`
+   * is the same message with names in their place, used for the tab's title.
+   */
+  async function send(text: string, plain = text) {
+    const said = text.trim();
+    const id = chatId;
+    if (!said || runningIds.has(id) || approvals.length > 0) return;
+    setMessages((list) => [...list, { role: "user", text: said, at: new Date().toISOString() }]);
+    addTab(id, shortTitle(plain));
+    await run(id, () => api.sendToAgent(id, said));
+  }
+
+  /** Allows or declines the actions the chat is waiting on (approval id to true or false), then lets the agent carry on. */
+  async function decide(decisions: Record<string, boolean>) {
+    const id = chatId;
+    if (runningIds.has(id) || approvals.length === 0) return;
+    setApprovals([]);
+    await run(id, () => api.decideAgent(id, decisions));
   }
 
   /** Takes a chat off the footer. It stays in the history. */
@@ -162,7 +211,10 @@ export function useAgentChat() {
     status,
     error: errors[chatId] ?? "",
     refs,
+    approvals,
+    revision,
     send,
+    decide,
     newChat,
     openChat,
     closeTab,

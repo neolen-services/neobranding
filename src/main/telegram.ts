@@ -52,6 +52,19 @@ async function loadSaved(dataDir: string): Promise<void> {
   }
 }
 
+/**
+ * Moves past messages another copy of the app on the same data folder has
+ * already taken (the desktop app and the browser version open together).
+ */
+async function adoptStoredOffset(dataDir: string): Promise<void> {
+  try {
+    const stored = Number(JSON.parse(await readFile(stateFile(dataDir), "utf8")).offset);
+    if (stored > saved.offset) saved.offset = stored;
+  } catch {
+    // No file yet, or it is being written: keep what is in memory.
+  }
+}
+
 async function storeSaved(dataDir: string): Promise<void> {
   await mkdir(dataDir, { recursive: true });
   await writeFile(stateFile(dataDir), JSON.stringify(saved, null, 2));
@@ -147,6 +160,7 @@ function describe(e: unknown): string {
 async function listen(dataDir: string, token: string, getDeepgramKey: () => string, signal: AbortSignal) {
   while (!signal.aborted) {
     let updates: Update[];
+    await adoptStoredOffset(dataDir);
     try {
       updates = await call<Update[]>(
         token,
@@ -166,6 +180,8 @@ async function listen(dataDir: string, token: string, getDeepgramKey: () => stri
 
     for (const update of updates) {
       if (signal.aborted) return;
+      await adoptStoredOffset(dataDir);
+      if (update.update_id < saved.offset) continue;
       // Move past the message first, so one that fails is not retried forever.
       saved.offset = update.update_id + 1;
       await storeSaved(dataDir);

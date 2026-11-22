@@ -1,11 +1,13 @@
 import { spawn } from "child_process";
-import { createReadStream, statSync } from "fs";
+import { createReadStream, existsSync, statSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { resolve } from "path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import type { Plugin } from "vite";
+import { audioFilePath } from "./src/main/audio";
+import { mediaFilePath } from "./src/main/media";
 import { createHandlers } from "./src/main/handlers";
 import { researchFilePath } from "./src/main/research";
 import { plainSecrets } from "./src/main/store";
@@ -86,7 +88,7 @@ function openFolder(path: string) {
  * desktop app, against the same data folder, and serves saved media files.
  * The desktop app never uses this; it calls the handlers over IPC.
  */
-function browserDevApi(): Plugin {
+function browserDevApi(listenToTelegram: boolean): Plugin {
   return {
     name: "browser-dev-api",
     configureServer(server) {
@@ -99,6 +101,7 @@ function browserDevApi(): Plugin {
           secrets: plainSecrets,
           legacyDirs: [DEV_DIR],
           openFolder,
+          listenToTelegram,
         }));
 
       server.middlewares.use("/api/rpc", async (req, res) => {
@@ -111,6 +114,27 @@ function browserDevApi(): Plugin {
         } catch (e) {
           sendJson(res, 500, { error: e instanceof Error ? e.message : "The request failed." });
         }
+      });
+
+      // /media/audio/<file>
+      server.middlewares.use("/media/audio", (req, res) => {
+        const [file] = (req.url ?? "").split("?")[0].split("/").filter(Boolean);
+        const path = audioFilePath(getCore().dataDir(), file ?? "");
+        if (!path) {
+          res.statusCode = 404;
+          return res.end("Not found");
+        }
+        sendFile(req, res, path);
+      });
+
+      // /media/studio/videos/<video id>/<file> and /media/studio/cast/<character id>/<file>
+      server.middlewares.use("/media/studio", (req, res) => {
+        const path = mediaFilePath(getCore().dataDir(), (req.url ?? "").split("?")[0].split("/").filter(Boolean).join("/"));
+        if (!path || !existsSync(path)) {
+          res.statusCode = 404;
+          return res.end("Not found");
+        }
+        sendFile(req, res, path);
       });
 
       // /media/research/<id>/<file>
@@ -127,14 +151,18 @@ function browserDevApi(): Plugin {
   };
 }
 
-/** The web page's build settings, shared with vite.web.config.ts. */
-export const rendererConfig = {
+/**
+ * The web page's build settings, shared with vite.web.config.ts.
+ * `listenToTelegram`: whether the browser stand-in reads the Telegram bot. Beside
+ * the desktop app it must not, because the desktop app already does.
+ */
+export const rendererConfig = (listenToTelegram: boolean) => ({
   resolve: { alias: shared },
-  plugins: [react(), tailwindcss(), browserDevApi()],
-};
+  plugins: [react(), tailwindcss(), browserDevApi(listenToTelegram)],
+});
 
 export default defineConfig({
   main: { resolve: { alias: shared } },
   preload: { resolve: { alias: shared } },
-  renderer: rendererConfig,
+  renderer: rendererConfig(false),
 });

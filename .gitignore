@@ -10,5 +10,9 @@ dist
 # User data: never commit it, wherever the data folder is placed
 personal-brand.db*
 telegram.json
+usage.jsonl
 /research/
+/audio/
+/videos/
+/cast/
 /Personal Brand/

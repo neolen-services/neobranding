@@ -82,6 +82,29 @@ export type ResearchEdit = { rating?: number | null; note?: string };
 
 export type ResearchResult = { ok: true; item: ResearchItem } | { ok: false; error: string };
 
+/**
+ * Names the post a link points to, so two links to the same post compare equal
+ * whatever tracking was added to them: "instagram:<code>" or "youtube:<id>".
+ * A link whose shape is not recognised falls back to its address without the
+ * query. Returns null for something that is not a link.
+ */
+export function postKey(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  const platform = detectPlatform(url);
+  // Instagram: /reel/<code>, /reels/<code>, /p/<code>, /tv/<code>, optionally after the account name.
+  const instagram = /^\/(?:[\w.]+\/)?(?:p|reels?|tv)\/([\w-]+)/.exec(parsed.pathname);
+  if (platform === "instagram" && instagram) return `instagram:${instagram[1]}`;
+  const shorts = /^\/shorts\/([\w-]+)/.exec(parsed.pathname);
+  if (platform === "youtube" && shorts) return `youtube:${shorts[1]}`;
+  const host = parsed.hostname.toLowerCase().replace(/^(www|m)\./, "");
+  return `${host}${parsed.pathname.replace(/\/+$/, "")}`;
+}
+
 /** Returns the platform for a link, or null if the link is not supported yet. */
 export function detectPlatform(url: string): ResearchPlatform | null {
   let host: string;

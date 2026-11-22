@@ -11,8 +11,10 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { estimateCostUsd } from "../shared/analysis";
 import type { BrandKit } from "../shared/brand";
+import { recordClaude } from "./usage";
 import { MIN_ANALYSED_POSTS, type GenerateOptions, type GenerateResult, type Idea, type IdeaDraft } from "../shared/ideas";
 import type { ResearchItem } from "../shared/research";
+import type { Production } from "../shared/studio";
 import { describeClaudeError } from "./analyze";
 
 /** Ideas written per idea asked for; the judge cuts them back down. */
@@ -25,6 +27,8 @@ const WriterSchema = z.object({
   ideas: z.array(
     z.object({
       title: z.string(),
+      viewer: z.string(),
+      takeaway: z.string(),
       modelledOn: z.string(),
       hooks: z.array(z.string()),
       outline: z.array(z.string()),
@@ -44,6 +48,8 @@ const JudgeSchema = z.object({
       idea: z.number(),
       bestHook: z.number(),
       stopScroll: z.number(),
+      rightViewer: z.number(),
+      worthSaving: z.number(),
       clarity: z.number(),
       brandFit: z.number(),
       easyToFilm: z.number(),
@@ -56,14 +62,20 @@ const WRITER_SYSTEM = `You write ideas for vertical videos of 30 to 60 seconds (
 
 You are given the creator's brand and a library of posts that already performed well, each with a code (P1, P2, …) and an analysis of its structure. Work by remixing: every idea takes ONE library post as its template, keeps that post's structure (how it opens, how it is built, how it ends) and replaces the subject with something from the creator's own topics, told from the creator's own angle and in their voice.
 
+The aim is not the most views. It is the right followers: people who match the creator's audience and would follow for more. An idea everyone would watch and nobody would save is a bad idea.
+
 Rules:
+- Every opening line names the viewer or their exact problem, so the right person stops and everyone else scrolls on. "If your bread never rises in winter" is right; "You won't believe this baking trick" is wrong.
+- Every idea leaves the viewer one thing they can do or check today.
 - Borrow structure, never content. Do not reuse another creator's lines, story, numbers or claims.
-- The creator must be able to film it alone with a phone this week.
+- Unless the request says how the ideas are made, the creator must be able to film each one alone with a phone this week. When it does say (AI only, filmed by the creator, or a mix), every idea must fit that.
 - Spread the ideas across different templates and across the creator's content pillars. Do not lean on one template.
 - Where the topic is health: keep claims accurate and proportionate, never promise cures or diagnose, and do not present the creator as a medical professional unless their bio says they are one.
 
 For each idea give:
 - title: a short working title for the creator's own list.
+- viewer: exactly who it is for, in a few words (their situation or problem, not "everyone").
+- takeaway: the one thing that viewer can do or check afterwards, in one sentence.
 - modelledOn: the code of the template post, exactly as given (for example "P3").
 - hooks: exactly three different opening lines for the first three seconds, each one sentence, each using the template's kind of hook.
 - outline: four to six beats following the template's skeleton, each one short sentence saying what to say or show.
@@ -80,9 +92,11 @@ For each idea, read its three opening lines and its outline, then give:
 - idea: the idea's number, as given.
 - bestHook: the number (1, 2 or 3) of the strongest opening line.
 - stopScroll: 1 to 10. Would the best opening line make a stranger in the target audience stop scrolling? 5 is "might, might not".
+- rightViewer: 1 to 10. Does the best opening line name this creator's kind of viewer or their exact problem, so the right person stops and the wrong one leaves? A line that would work for any audience scores low, however catchy.
+- worthSaving: 1 to 10. Does the video leave that viewer one specific thing to do or check, worth saving or sending to someone?
 - clarity: 1 to 10. Is it obvious within seconds what the video is about and what the viewer gets?
 - brandFit: 1 to 10. Does it fit this creator's topics, audience and voice?
-- easyToFilm: 1 to 10. Can one person film it with a phone in under an hour?
+- easyToFilm: 1 to 10. How easy is it to make the way it will be made? When you are told how (AI only, filmed by the creator, or a mix), judge it that way: an AI-only idea is not marked down for being impossible to film. When you are not told: can one person film it with a phone in under an hour?
 - reason: one or two sentences saying what is strong and what is weak. Be specific.`;
 
 export function describeBrand(brand: BrandKit): string {
@@ -107,6 +121,13 @@ export function describeBrand(brand: BrandKit): string {
     ...brand.platforms.map((p) => `- ${p.platform}${p.focus ? `: ${p.focus}` : ""}`),
   ].join("\n");
 }
+
+/** What the writer and the judge are told about how the ideas will be made. */
+const HOW_MADE: Record<Production, string> = {
+  ai: "AI only. Every scene is generated and the creator is never on camera or heard. Ideas can use made-up characters, things given a voice, the inside of the body, or anything a phone cannot film. None may need the creator on screen.",
+  me: "Filmed by the creator only, alone with a phone. Nothing is generated: no made-up characters and no scenes a phone cannot film.",
+  mix: "A mix. The creator is on camera for part of it (usually the fact and the closing ask), and AI generates the rest: characters, the inside of the body, anything a phone cannot film.",
+};
 
 /** A post the user rated highly or that has more likes counts for more. */
 const weight = (post: ResearchItem) => (post.rating ?? 3) * 1_000_000_000 + (post.likeCount ?? 0);
@@ -138,13 +159,18 @@ export async function generateIdeas(
   const existingTitles = existing.map((i) => i.title);
   if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
 
-  const analysed = posts.filter((p) => p.analysis).sort((a, b) => weight(b) - weight(a));
-  if (analysed.length < MIN_ANALYSED_POSTS) {
+  // The posts the creator ticked, or every analysed post when they ticked none.
+  const chosen = Array.isArray(options.postIds) ? options.postIds.filter((id): id is string => typeof id === "string") : [];
+  const everyAnalysed = posts.filter((p) => p.analysis);
+  const analysed = (chosen.length ? everyAnalysed.filter((p) => chosen.includes(p.id)) : everyAnalysed).sort((a, b) => weight(b) - weight(a));
+  if (chosen.length && analysed.length === 0) return { ok: false, error: "None of the posts you ticked has been analysed. Analyse them in Research first." };
+  if (!chosen.length && analysed.length < MIN_ANALYSED_POSTS) {
     return {
       ok: false,
-      error: `Analyse at least ${MIN_ANALYSED_POSTS} saved posts first. ${analysed.length} analysed so far.`,
+      error: `Analyse at least ${MIN_ANALYSED_POSTS} saved posts first, or tick the ones to learn from. ${analysed.length} analysed so far.`,
     };
   }
+  const how = options.production ? HOW_MADE[options.production] : "";
   const templates = analysed.slice(0, MAX_TEMPLATES).map((post, i) => ({ code: `P${i + 1}`, post }));
 
   const wanted = Math.min(Math.max(Math.round(options.count) || 5, 1), 10);
@@ -152,6 +178,8 @@ export async function generateIdeas(
 
   const request = [
     `Write ${candidates} ideas.`,
+    how && `How every idea will be made: ${how}`,
+    chosen.length > 0 && `The creator chose these ${analysed.length === 1 ? "post" : `${analysed.length} posts`} to learn from, so every idea is modelled on one of them.`,
     options.pillar && `Every idea must belong to the content pillar "${options.pillar}".`,
     options.platform && `Every idea must be made for ${options.platform}.`,
     options.series &&
@@ -198,6 +226,8 @@ export async function generateIdeas(
       return { ok: false, error: "The ideas came back incomplete. Try asking for fewer." };
     }
 
+    recordClaude("ideas", written.usage, "Writing ideas");
+
     // 2. Judge.
     const judged = await client.beta.messages.parse({
       ...common,
@@ -205,10 +235,12 @@ export async function generateIdeas(
       messages: [
         {
           role: "user",
-          content: `THE CREATOR\n${brandText}\n\nIDEAS TO JUDGE\n${drafts
+          content: `THE CREATOR\n${brandText}\n\n${how ? `HOW THESE IDEAS WILL BE MADE\n${how}\n\n` : ""}IDEAS TO JUDGE\n${drafts
             .map((d, i) =>
               [
                 `Idea ${i + 1}: ${d.title}`,
+                `  For: ${d.viewer}`,
+                `  The viewer leaves with: ${d.takeaway}`,
                 ...d.hooks.map((h, n) => `  Opening line ${n + 1}: ${h}`),
                 `  Outline: ${d.outline.join(" / ")}`,
                 `  Closing ask: ${d.cta}`,
@@ -220,6 +252,7 @@ export async function generateIdeas(
       output_config: { format: betaZodOutputFormat(JudgeSchema) },
     });
     const scores = new Map((judged.parsed_output?.scores ?? []).map((s) => [Math.round(s.idea) - 1, s]));
+    recordClaude("ideas", judged.usage, "Judging ideas");
     const costUsd = estimateCostUsd(written.usage) + estimateCostUsd(judged.usage);
     const clamp = (n: number) => Math.min(Math.max(n, 1), 10);
 
@@ -228,14 +261,23 @@ export async function generateIdeas(
         const s = scores.get(i);
         const template = templates.find((t) => t.code === d.modelledOn.trim().toUpperCase());
         const best = s ? Math.min(Math.max(Math.round(s.bestHook) - 1, 0), d.hooks.length - 1) : 0;
-        // Stopping the scroll matters most; the rest decide between ideas that both do.
+        // Stopping the right viewer and leaving them something worth saving count for most; the rest break ties.
         const score = s
           ? Math.round(
-              (clamp(s.stopScroll) * 0.5 + clamp(s.clarity) * 0.15 + clamp(s.brandFit) * 0.2 + clamp(s.easyToFilm) * 0.15) * 10,
+              (clamp(s.stopScroll) * 0.3 +
+                clamp(s.rightViewer ?? 5) * 0.2 +
+                clamp(s.worthSaving ?? 5) * 0.2 +
+                clamp(s.brandFit) * 0.1 +
+                clamp(s.clarity) * 0.1 +
+                clamp(s.easyToFilm) * 0.1) *
+                10,
             )
           : undefined;
         return {
           title: d.title,
+          viewer: d.viewer,
+          takeaway: d.takeaway,
+          production: options.production,
           hook: d.hooks[best] ?? "",
           altHooks: d.hooks.filter((_, n) => n !== best),
           outline: d.outline,

@@ -5,7 +5,11 @@
 // another computer:
 //   personal-brand.db   brand, video ideas and saved keys (SQLite)
 //   research/           saved posts: videos, pictures, captions, transcripts, ratings, notes
+//   audio/              audio made with ElevenLabs: voiceovers, sound effects, music
 //   telegram.json       which Telegram chat is linked
+//   videos/             pictures and clips made for scenes
+//   cast/               characters' reference pictures
+//   usage.jsonl         a log of what the app used on the user's services (tokens, cost)
 //
 // The folder defaults to Documents/Personal Brand. If the user picks another
 // folder, its path is remembered in a small pointer file in their home folder.
@@ -15,7 +19,7 @@ import { join, resolve } from "node:path";
 
 export const DB_FILE = "personal-brand.db";
 /** The files and folders that make up the user's data. */
-export const DATA_ENTRIES = [DB_FILE, "research", "telegram.json"];
+export const DATA_ENTRIES = [DB_FILE, "research", "audio", "telegram.json", "usage.jsonl", "videos", "cast"];
 
 const POINTER_FILE = join(homedir(), ".personal-brand.json");
 

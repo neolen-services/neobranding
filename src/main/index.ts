@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { audioFilePath } from "./audio";
+import { mediaFilePath } from "./media";
 import { createHandlers } from "./handlers";
 import { researchFilePath } from "./research";
 import type { Secrets } from "./store";
@@ -68,6 +70,7 @@ app.whenReady().then(() => {
   const core = createHandlers({
     toolsDir: join(userData, "bin"),
     secrets: osSecrets,
+    listenToTelegram: true,
     // Earlier versions kept the database and saved posts in the app's own folder.
     legacyDirs: [userData],
     openFolder: (path) => void shell.openPath(path),
@@ -90,7 +93,16 @@ app.whenReady().then(() => {
   protocol.handle("media", (request) => {
     const url = new URL(request.url);
     const [id, file] = url.pathname.split("/").filter(Boolean);
-    const path = url.hostname === "research" ? researchFilePath(core.dataDir(), id ?? "", file ?? "") : null;
+    // media://research/<id>/<file> is a saved post's file; media://audio/<file> is generated audio;
+    // media://studio/videos/<video id>/<file> and media://studio/cast/<character id>/<file> are pictures and clips.
+    const path =
+      url.hostname === "research"
+        ? researchFilePath(core.dataDir(), id ?? "", file ?? "")
+        : url.hostname === "audio"
+          ? audioFilePath(core.dataDir(), id ?? "")
+          : url.hostname === "studio"
+            ? mediaFilePath(core.dataDir(), url.pathname.split("/").filter(Boolean).join("/"))
+            : null;
     if (!path) return new Response("Not found", { status: 404 });
     // Forward the request headers so the player can seek with Range requests.
     return net.fetch(pathToFileURL(path).toString(), { headers: request.headers });

@@ -23,31 +23,19 @@ export function Dashboard({
   if (!ideas) return null;
 
   const thisWeek = ideas.filter((i) => Date.now() - new Date(i.createdAt).getTime() < WEEK_MS).length;
-  const withScript = ideas.filter((i) => i.script).length;
-  const progress: [string, number][] = [
-    ["Saved ideas", ideas.length],
-    ["With a script", withScript],
-  ];
   const coveredPillars = brand.pillars.filter((p) => ideas.some((i) => i.pillar === p.title));
   const uncovered = brand.pillars.filter((p) => !coveredPillars.includes(p));
   const withBio = brand.platforms.filter((p) => p.bio).length;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <StatCard
           label="Saved ideas"
           value={ideas.length}
           badge={`+${thisWeek} this week`}
-          headline={ideas.length === 0 ? "No ideas saved yet" : `${ideas.length - withScript} without a script`}
+          headline={ideas.length === 0 ? "No ideas saved yet" : `Latest: ${ideas[0].title}`}
           detail="Every idea you have kept"
-        />
-        <StatCard
-          label="Scripts"
-          value={withScript}
-          badge={ideas.length ? `${Math.round((withScript / ideas.length) * 100)}% of ideas` : "0% of ideas"}
-          headline={withScript === 0 ? "No scripts written yet" : "Ready to film"}
-          detail="Ideas with a written script"
         />
         <StatCard
           label="Pillars covered"
@@ -58,49 +46,22 @@ export function Dashboard({
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Panel title="Content pipeline" className="lg:col-span-2">
-          {ideas.length === 0 ? (
-            <Empty action="Suggest ideas" onAction={onOpenIdeas}>
-              Your pipeline is empty. Get your first batch of ideas.
-            </Empty>
-          ) : (
-            <div className="space-y-4">
-              {progress.map(([name, n]) => {
-                return (
-                  <div key={name}>
-                    <div className="mb-1.5 flex justify-between text-sm">
-                      <span className="font-medium">{name}</span>
-                      <span className="font-mono opacity-60">{n}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-[var(--tint)]">
-                      <div
-                        className="h-full rounded-full bg-[var(--primary)]"
-                        style={{ width: `${(n / ideas.length) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Panel>
-
-        <Panel title="Brand" action="Open brand" onAction={onOpenBrand}>
-          <dl className="space-y-3 text-sm">
-            <Row label="Topics">{brand.topics.join(", ") || "None"}</Row>
-            <Row label="Content pillars">{brand.pillars.length}</Row>
-            <Row label="Voice traits">{brand.voice.length}</Row>
-            <Row label="Platforms">
-              {brand.platforms.length} ({withBio} with a bio)
-            </Row>
-          </dl>
-        </Panel>
-      </div>
+      <Panel title="Brand" action="Open brand" onAction={onOpenBrand}>
+        <dl className="space-y-3 text-sm">
+          <Row label="Topics">{brand.topics.join(", ") || "None"}</Row>
+          <Row label="Content pillars">{brand.pillars.length}</Row>
+          <Row label="Voice traits">{brand.voice.length}</Row>
+          <Row label="Platforms">
+            {brand.platforms.length} ({withBio} with a bio)
+          </Row>
+        </dl>
+      </Panel>
 
       <Panel title="Latest ideas" action="All ideas" onAction={onOpenIdeas}>
         {ideas.length === 0 ? (
-          <p className="text-sm opacity-60">Ideas you save will appear here.</p>
+          <Empty action="Suggest ideas" onAction={onOpenIdeas}>
+            No ideas saved yet. Get your first batch.
+          </Empty>
         ) : (
           <ul className="divide-y divide-[var(--line)]">
             {ideas.slice(0, 5).map((idea) => (

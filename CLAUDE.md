@@ -17,7 +17,24 @@ It is licensed under the PolyForm Noncommercial License 1.0.0 (see `LICENSE`): a
 - Never commit a data folder, a database file, downloaded media, or `.env` files. If a new kind of local file appears, add it to `.gitignore` in the same change.
 - Tests, fixtures and screenshots must use invented data, not a real user's.
 - Do not put machine-specific paths (`C:\Users\…`, `/Users/…`, a real home folder) in code, comments or docs.
-- Before committing, check the diff for the items above.
+- Before committing or pushing, do the whole check in "Before every commit and push" below.
+
+## Before every commit and push
+
+A push makes everything in it public at once, and a secret that has been pushed must be treated as leaked even if it is deleted a minute later. So check first, every time, and never push and tidy up afterwards.
+
+1. **List what is going.** Run `git status` and read the list, new files included. Nothing from a data folder may be in it: no database, no `usage.jsonl`, no `telegram.json`, no downloaded or generated media, no `.env`.
+2. **Search the added lines and every new file** for:
+   - keys and tokens: Anthropic (`sk-ant-`), ElevenLabs (`sk_`), Google (`AIza`), fal.ai, Deepgram, Telegram bot tokens, GitHub tokens, private keys, bearer tokens, passwords;
+   - personal data: email addresses, phone numbers, real people's names, account names and handles;
+   - machine paths: a home folder, a drive path, a temporary folder.
+3. **Open every image that changed.** Screenshots must show the invented demo data, never a real user's brand, posts, ideas or chats.
+4. **Read every prompt, placeholder and example that was added.** None may carry one person's brand, niche or wording. An example inside a prompt counts: it is sent for every user.
+5. **Keys used in tests or docs must be plainly fake**, and never a real key with a few characters changed.
+6. **If anything turns up, remove it before committing.** If a real key or token was ever committed, even only on this computer, tell the owner so it can be revoked: deleting the line does not take it out of the history.
+7. **Say what was checked** when reporting the commit or push, and anything that was found and removed.
+
+Push only when the owner asks for it.
 
 ## All user data lives in one folder
 
@@ -38,9 +55,11 @@ The only things allowed outside the data folder:
 
 Known limit, keep it documented: API keys are saved in the data folder but encrypted by the operating system on the desktop app, so they cannot be read on another computer. After moving the folder, the user enters their keys again. Do not weaken this to make keys portable.
 
+Every request the app makes to a paid service is added to `usage.jsonl` in the data folder (see `src/main/usage.ts`); the Usage page reads it. When you add a new call to Claude, Deepgram, ElevenLabs or another paid service, record it with `recordClaude` or `recordUsage` in the same change.
+
 ## No accounts, no server
 
-Each install is for one person. There is no sign-in and no backend. The app talks only to the services the user connects with their own keys (Anthropic, Deepgram, Telegram) and to the sites it downloads posts from. Do not add analytics, telemetry, or any call that sends user data somewhere the user did not set up.
+Each install is for one person. There is no sign-in and no backend. The app talks only to the services the user connects with their own keys (Anthropic, Deepgram, ElevenLabs, fal.ai, Google, Telegram) and to the sites it downloads posts from. Do not add analytics, telemetry, or any call that sends user data somewhere the user did not set up.
 
 ## How the code is laid out
 

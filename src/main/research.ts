@@ -9,16 +9,18 @@
 //   research/<id>/N.<ext>       part N of the post: a video (with poster N.jpg) or a picture
 //   research/<id>/meta.json     the ResearchItem
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { analyzePost } from "./analyze";
+import { recordUsage } from "./usage";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import {
   detectPlatform,
+  postKey,
   PLATFORM_LABELS,
   SUPPORTED_LINKS_HINT,
   type ResearchAudio,
@@ -227,13 +229,52 @@ function collectMedia(files: string[]): ResearchMedia[] {
     .filter((m): m is ResearchMedia => m !== null);
 }
 
+const ALREADY_SAVED = "This post is already saved.";
+// A marker older than this was left by a copy of the app that stopped mid-save.
+const CLAIM_STALE_MS = DOWNLOAD_TIMEOUT_MS + 10 * 60 * 1000;
+
+/**
+ * Marks a post as being saved by creating research/.saving-<hash>. Creating a
+ * folder either succeeds or fails as a whole, so of two saves started at the
+ * same moment exactly one gets it. Returns the function that removes the
+ * marker, or null if someone else is saving this post right now.
+ */
+async function claimPost(dataDir: string, key: string): Promise<(() => Promise<void>) | null> {
+  await mkdir(researchDir(dataDir), { recursive: true });
+  const marker = join(researchDir(dataDir), `.saving-${createHash("sha1").update(key).digest("hex").slice(0, 16)}`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await mkdir(marker);
+      return () => rm(marker, { recursive: true, force: true });
+    } catch {
+      const age = await stat(marker).then((s) => Date.now() - s.mtimeMs, () => 0);
+      if (age < CLAIM_STALE_MS) return null;
+      await rm(marker, { recursive: true, force: true });
+    }
+  }
+  return null;
+}
+
 export async function addResearch(dataDir: string, sourceUrl: string, deepgramKey: string): Promise<ResearchResult> {
   const url = sourceUrl.trim();
   const platform = detectPlatform(url);
   if (!platform) return { ok: false, error: SUPPORTED_LINKS_HINT };
 
-  const existing = (await listResearch(dataDir)).find((i) => i.sourceUrl === url || i.pageUrl === url);
-  if (existing) return { ok: false, error: "This post is already saved." };
+  // The same post can arrive under different links (tracking added by "copy
+  // link" or by sharing), so posts are compared by what they point to.
+  const key = postKey(url) ?? url;
+  const alreadySaved = async () =>
+    (await listResearch(dataDir)).some((i) => postKey(i.pageUrl) === key || postKey(i.sourceUrl) === key);
+  if (await alreadySaved()) return { ok: false, error: ALREADY_SAVED };
+
+  // Only one save of a post runs at a time, even across two copies of the app
+  // on the same data folder; the check above alone would let both through.
+  const release = await claimPost(dataDir, key);
+  if (!release) return { ok: false, error: "This post is already being saved." };
+  if (await alreadySaved()) {
+    await release();
+    return { ok: false, error: ALREADY_SAVED };
+  }
 
   const id = randomUUID();
   const dir = join(researchDir(dataDir), id);
@@ -326,6 +367,8 @@ export async function addResearch(dataDir: string, sourceUrl: string, deepgramKe
   } catch (e) {
     await rm(dir, { recursive: true, force: true });
     return { ok: false, error: e instanceof Error ? e.message : "The post could not be downloaded." };
+  } finally {
+    await release();
   }
 }
 
@@ -340,8 +383,8 @@ const MIME_TYPES: Record<string, string> = {
   mkv: "video/x-matroska",
 };
 
-/** Sends one video file to Deepgram. Returns the spoken text, or throws a readable Error. */
-async function transcribeFile(path: string, deepgramKey: string): Promise<string> {
+/** Sends one video file to Deepgram. Returns the spoken text and how many seconds were transcribed, or throws a readable Error. */
+async function transcribeFile(path: string, deepgramKey: string): Promise<{ text: string; seconds: number }> {
   const video = await readFile(path);
   let response: Response;
   try {
@@ -365,9 +408,13 @@ async function transcribeFile(path: string, deepgramKey: string): Promise<string
   if (!response.ok) throw new Error(`Deepgram could not transcribe this video (HTTP ${response.status}).`);
 
   const body = (await response.json()) as {
+    metadata?: { duration?: number };
     results?: { channels?: { alternatives?: { transcript?: string }[] }[] };
   };
-  return body.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
+  return {
+    text: body.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "",
+    seconds: typeof body.metadata?.duration === "number" ? body.metadata.duration : 0,
+  };
 }
 
 /** Transcribes every video in the post and stores the text. Never throws. */
@@ -378,7 +425,9 @@ async function transcribe(dataDir: string, item: ResearchItem, deepgramKey: stri
   try {
     const texts: string[] = [];
     for (const video of videos) {
-      texts.push(await transcribeFile(join(researchDir(dataDir), item.id, video.file), deepgramKey));
+      const heard = await transcribeFile(join(researchDir(dataDir), item.id, video.file), deepgramKey);
+      recordUsage({ feature: "transcript", detail: item.author || item.authorHandle, seconds: heard.seconds });
+      texts.push(heard.text);
     }
     transcript =
       videos.length > 1

@@ -3,6 +3,15 @@ import type { Idea } from "@shared/ideas";
 import { API_PROVIDERS } from "@shared/settings";
 
 type Api = Window["api"];
+import type { UploadedFile } from "@shared/media";
+
+/** Bytes cannot travel in JSON, so a file goes to the dev server as base64. */
+function asJson(file: UploadedFile): UploadedFile {
+  if (!file.bytes) return file;
+  let binary = "";
+  for (let i = 0; i < file.bytes.length; i += 0x8000) binary += String.fromCharCode(...file.bytes.subarray(i, i + 0x8000));
+  return { mime: file.mime, base64: btoa(binary) };
+}
 
 // Stand-in used when the UI is opened in a plain browser (for development and
 // preview), where the Electron bridge does not exist. Every call goes to the
@@ -61,14 +70,56 @@ const browserApi: Api = {
   listIdeas: () => call("ideas:list"),
   saveIdea: (idea) => call("ideas:save", idea),
   deleteIdea: (id) => call("ideas:delete", id),
+  listSuggestions: () => call("ideas:suggestions"),
+  dismissSuggestions: (keys) => call("ideas:dismiss", keys),
   generateIdeas: (options) => call("ideas:generate", options),
-  writeScript: (id) => call("ideas:script", id),
 
   listAgentChats: () => call("agent:list"),
   getAgentChat: (id) => call("agent:get", id),
   sendToAgent: (chatId, text) => call("agent:send", chatId, text),
+  decideAgent: (chatId, decisions) => call("agent:decide", chatId, decisions),
+  agentPermissions: () => call("agent:permissions"),
+  setAgentPermissions: (changes) => call("agent:setPermissions", changes),
   agentProgress: (chatId) => call("agent:progress", chatId),
   deleteAgentChat: (id) => call("agent:delete", id),
+
+  listAudio: () => call("audio:list"),
+  listVoices: () => call("audio:voices"),
+  voicePreview: (voiceId) => call("audio:voicePreview", voiceId),
+  audioFileUrl: (file) => `/media/audio/${file}`,
+
+  listCast: () => call("cast:list"),
+  saveCharacter: (character) => call("cast:save", character),
+  deleteCharacter: (id) => call("cast:delete", id),
+  listSeries: () => call("series:list"),
+  saveSeries: (series) => call("series:save", series),
+  deleteSeries: (id) => call("series:delete", id),
+  planSeries: (title, about, options) => call("series:plan", title, about, options),
+  createSeries: (from) => call("series:create", from),
+  planSeason: (id) => call("series:planSeason", id),
+  suggestIdeas: (kind, id, note, conceptId) => call("studio:suggest", kind, id, note, conceptId ?? ""),
+  approveIdea: (kind, id, conceptId) => call("studio:approveIdea", kind, id, conceptId),
+  listVideos: () => call("videos:list"),
+  createVideo: (from) => call("videos:create", from),
+  saveVideo: (video) => call("videos:save", video),
+  deleteVideo: (id) => call("videos:delete", id),
+  writeVideo: (id, note) => call("videos:write", id, note),
+  approveVideo: (id) => call("videos:approve", id),
+  voiceVideo: (id) => call("videos:voices", id),
+  recordVideoResults: (id, results) => call("videos:results", id, results),
+  mediaSettings: () => call("media:settings"),
+  setMediaSettings: (changes) => call("media:setSettings", changes),
+  makeCharacterPicture: (id, choice) => call("cast:picture", id, choice),
+  addCharacterPicture: (id, file) => call("cast:addPicture", id, asJson(file)),
+  changeCharacterPicture: (id, takeId, action) => call("cast:changePicture", id, takeId, action),
+  makeScenePicture: (videoId, sceneId, choice, note) => call("scene:picture", videoId, sceneId, choice, note),
+  makeSceneClip: (videoId, sceneId, choice) => call("scene:clip", videoId, sceneId, choice),
+  makeSceneLipSync: (videoId, sceneId, choice) => call("scene:lipsync", videoId, sceneId, choice),
+  addSceneFile: (videoId, sceneId, file) => call("scene:addFile", videoId, sceneId, asJson(file)),
+  changeTake: (videoId, sceneId, takeId, action) => call("scene:changeTake", videoId, sceneId, takeId, action),
+  studioFileUrl: (file) => `/media/studio/${file}`,
+
+  usage: (since) => call("usage:get", since),
 
   listResearch: () => call("research:list"),
   addResearch: (url) => call("research:add", url),

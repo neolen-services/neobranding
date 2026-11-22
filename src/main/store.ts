@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { emptyBrandKit, type BrandKit } from "../shared/brand";
-import type { Idea } from "../shared/ideas";
+import { parseIdea, type Idea } from "../shared/ideas";
 import type { ApiProvider } from "../shared/settings";
 import { DB_FILE } from "./location";
 
@@ -17,6 +17,9 @@ import { DB_FILE } from "./location";
 export type Secrets = { encrypt(plain: string): string; decrypt(stored: string): string };
 
 export type Store = ReturnType<typeof openStore>;
+
+/** Tables that each hold one kind of Studio record. The name is never taken from outside this code. */
+export type StudioTable = "characters" | "series" | "videos";
 
 export function openStore(dataDir: string, secrets: Secrets) {
   mkdirSync(dataDir, { recursive: true });
@@ -37,6 +40,21 @@ export function openStore(dataDir: string, secrets: Secrets) {
       id         TEXT PRIMARY KEY,
       data       TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS characters (
+      id         TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS series (
+      id         TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS videos (
+      id         TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
@@ -62,7 +80,14 @@ export function openStore(dataDir: string, secrets: Secrets) {
 
     listIdeas(): Idea[] {
       const rows = db.prepare("SELECT data FROM ideas ORDER BY created_at DESC").all() as { data: string }[];
-      return rows.map((r) => JSON.parse(r.data));
+      // Read through parseIdea so a row saved by an older version comes back in today's shape, without fields that no longer exist.
+      return rows.flatMap((r) => {
+        try {
+          return [parseIdea(JSON.parse(r.data))];
+        } catch {
+          return [];
+        }
+      });
     },
 
     /** Inserts the idea, or replaces it if the id already exists. */
@@ -115,6 +140,36 @@ export function openStore(dataDir: string, secrets: Secrets) {
         | { value: string }
         | undefined;
       return row ? secrets.decrypt(row.value) : "";
+    },
+
+    /** The Studio's records (the cast, series and videos), newest first. Each is stored whole. */
+    listDocs<T>(table: StudioTable): T[] {
+      const rows = db.prepare(`SELECT data FROM ${table} ORDER BY created_at DESC`).all() as { data: string }[];
+      return rows.map((r) => JSON.parse(r.data));
+    },
+
+    /** Inserts the record, or replaces it if the id already exists. */
+    saveDoc<T extends { id: string; createdAt: string }>(table: StudioTable, doc: T): void {
+      db.prepare(
+        `INSERT INTO ${table} (id, data, created_at) VALUES (?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
+      ).run(doc.id, JSON.stringify(doc), doc.createdAt);
+    },
+
+    deleteDoc(table: StudioTable, id: string): void {
+      db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+    },
+
+    /** A setting that is not a secret, or "" if it was never saved. */
+    getSetting(name: string): string {
+      const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(name) as { value: string } | undefined;
+      return row?.value ?? "";
+    },
+
+    setSetting(name: string, value: string): void {
+      db.prepare(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+      ).run(name, value);
     },
 
     close(): void {

@@ -5,10 +5,22 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseBrandKit, type SaveResult } from "../shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "../shared/data";
-import { parseIdea, type GenerateOptions, type ScriptResult } from "../shared/ideas";
+import { randomUUID } from "node:crypto";
+import { MAX_SUGGESTIONS, parseIdea, type GenerateOptions, type IdeaSuggestion } from "../shared/ideas";
 import type { ResearchEdit } from "../shared/research";
 import { isApiProvider, type ApiProvider } from "../shared/settings";
-import { agentProgress, deleteAgentChat, getAgentChat, listAgentChats, sendToAgent, type AgentContext } from "./agent";
+import {
+  agentProgress,
+  decideAgent,
+  deleteAgentChat,
+  getAgentChat,
+  getAgentPermissions,
+  listAgentChats,
+  sendToAgent,
+  setAgentPermissions,
+  type AgentContext,
+} from "./agent";
+import { listAudio, listVoices, voicePreview } from "./audio";
 import { generateIdeas } from "./generate";
 import { adoptLegacyData, copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
 import {
@@ -21,9 +33,14 @@ import {
   transcribeResearch,
   updateResearch,
 } from "./research";
-import { writeScript } from "./script";
 import { openStore, type Secrets, type Store } from "./store";
+import { studioOps } from "./studioOps";
+import type { NewSeries, NewVideo, SeriesStart } from "../shared/studio";
+import type { UploadedFile } from "../shared/media";
 import { startTelegram, telegramStatus, unlinkTelegram } from "./telegram";
+import { readUsage, setUsageDir } from "./usage";
+
+const SUGGESTIONS_SETTING = "idea_suggestions";
 
 export type HandlerOptions = {
   /** Where downloaded tools (yt-dlp, FFmpeg) are kept. Not user data, so outside the data folder. */
@@ -33,6 +50,11 @@ export type HandlerOptions = {
   legacyDirs: string[];
   /** Shows a folder in the system's file manager. */
   openFolder: (path: string) => void;
+  /**
+   * False when another copy of the app on the same data folder is the one
+   * reading the Telegram bot. Two readers would each save the same link.
+   */
+  listenToTelegram: boolean;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,14 +65,25 @@ export function createHandlers(options: HandlerOptions) {
   let store: Store | null = null;
 
   setToolsDir(options.toolsDir);
+  // The folder can change while the app runs, so the log asks for it each time.
+  setUsageDir(() => dataDir);
   for (const legacy of options.legacyDirs) adoptLegacyData(legacy, dataDir);
 
   const db = () => (store ??= openStore(dataDir, options.secrets));
   const key = (provider: ApiProvider) => db().getApiKey(provider);
-  const connectTelegram = () => startTelegram(dataDir, key("telegram"), () => key("deepgram"));
+  const connectTelegram = async () =>
+    options.listenToTelegram ? startTelegram(dataDir, key("telegram"), () => key("deepgram")) : telegramStatus();
 
   const agent: AgentContext = { dataDir: () => dataDir, store: db, key };
 
+  const suggestions = (): IdeaSuggestion[] => {
+    try {
+      const saved: unknown = JSON.parse(db().getSetting(SUGGESTIONS_SETTING) || "[]");
+      return Array.isArray(saved) ? saved.filter((s) => s && typeof s.key === "string" && typeof s.title === "string") : [];
+    } catch {
+      return [];
+    }
+  };
   const findIdea = (id: unknown) =>
     db()
       .listIdeas()
@@ -62,7 +95,45 @@ export function createHandlers(options: HandlerOptions) {
     isDefault: resolve(dataDir) === resolve(defaultDataDir()),
   });
 
+  // The cast, series and videos. The agent uses the same operations.
+  const studio = studioOps(agent);
+
   const handlers: Handlers = {
+    "cast:list": () => studio.cast(),
+    "cast:save": (input: unknown) => studio.saveCharacter(input),
+    "cast:delete": (id: unknown) => studio.deleteCharacter(id),
+
+    "series:list": () => studio.series(),
+    "series:save": (input: unknown) => studio.saveSeries(input),
+    "series:delete": (id: unknown) => studio.deleteSeries(id),
+    "series:plan": (title: unknown, about: unknown, options?: NewSeries) => studio.plan(title, about, options),
+
+    "series:create": (input: SeriesStart) => studio.createSeries(input),
+    "series:planSeason": (id: unknown) => studio.planSeason(id),
+    /** The idea step, for a video or a series: suggest ideas (or change one), and settle on one. */
+    "studio:suggest": (kind: unknown, id: unknown, note: unknown, conceptId: unknown) => studio.suggest(kind, id, note, conceptId),
+    "studio:approveIdea": (kind: unknown, id: unknown, conceptId: unknown) => studio.approveIdea(kind, id, conceptId),
+
+    "videos:list": () => studio.videos(),
+    "videos:create": (input: NewVideo) => studio.createVideo(input),
+    "videos:save": (input: unknown) => studio.saveVideo(input),
+    "videos:delete": (id: unknown) => studio.deleteVideo(id),
+    "videos:write": (id: unknown, note: unknown) => studio.writeScript(id, note),
+    "videos:approve": (id: unknown) => studio.approve(id),
+    "videos:voices": (id: unknown) => studio.voices(id),
+    "videos:results": (id: unknown, results: unknown) => studio.recordResults(id, results),
+    // Pictures, clips and lip-sync. `choice` picks the service for this one request; without it the Settings default is used.
+    "media:settings": () => studio.mediaSettings(),
+    "media:setSettings": (input: unknown) => studio.setMediaSettings(input),
+    "cast:picture": (id: unknown, choice: unknown) => studio.characterPicture(id, choice),
+    "cast:addPicture": (id: unknown, file: UploadedFile) => studio.addCharacterPicture(id, file),
+    "cast:changePicture": (id: unknown, takeId: unknown, action: unknown) => studio.changeCharacterPicture(id, takeId, action),
+    "scene:picture": (videoId: unknown, sceneId: unknown, choice: unknown, note: unknown) => studio.scenePicture(videoId, sceneId, choice, note),
+    "scene:clip": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneClip(videoId, sceneId, choice),
+    "scene:lipsync": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneLipSync(videoId, sceneId, choice),
+    "scene:addFile": (videoId: unknown, sceneId: unknown, file: UploadedFile) => studio.addSceneFile(videoId, sceneId, file),
+    "scene:changeTake": (videoId: unknown, sceneId: unknown, takeId: unknown, action: unknown) => studio.changeTake(videoId, sceneId, takeId, action),
+
     "brand:get": () => db().getBrand(),
     "brand:save": (input: unknown): SaveResult => {
       try {
@@ -81,40 +152,48 @@ export function createHandlers(options: HandlerOptions) {
       return idea;
     },
     "ideas:delete": (id: unknown) => db().deleteIdea(String(id)),
+    /** Runs a round of ideas. What comes back is also kept as suggestions waiting for the creator, so leaving the page loses nothing. */
     "ideas:generate": async (generateOptions: GenerateOptions) => {
       const brand = db().getBrand();
       if (!brand) return { ok: false, error: "Create your brand first." };
-      return generateIdeas(
+      const result = await generateIdeas(
         key("anthropic"),
         brand,
         await listResearch(dataDir),
         generateOptions,
         db().listIdeas(),
       );
+      if (result.ok) {
+        const suggestedAt = new Date().toISOString();
+        const fresh = result.ideas.map((idea): IdeaSuggestion => ({ ...idea, key: randomUUID(), suggestedAt }));
+        db().setSetting(SUGGESTIONS_SETTING, JSON.stringify([...fresh, ...suggestions()].slice(0, MAX_SUGGESTIONS)));
+      }
+      return result;
     },
-
-    /** Writes a timed script for a saved idea and stores it with the idea. */
-    "ideas:script": async (id: unknown): Promise<ScriptResult> => {
-      const brand = db().getBrand();
-      if (!brand) return { ok: false, error: "Create your brand first." };
-      const idea = findIdea(id);
-      if (!idea) return { ok: false, error: "That idea no longer exists." };
-      const model = idea.modelledOnId
-        ? (await listResearch(dataDir)).find((p) => p.id === idea.modelledOnId && p.analysis)
-        : undefined;
-      const result = await writeScript(key("anthropic"), brand, idea, model);
-      if (!result.ok) return result;
-      const saved = parseIdea({ ...idea, script: result.script });
-      db().saveIdea(saved);
-      return { ok: true, idea: saved };
+    /** The suggestions the creator has neither saved nor dismissed, newest round first. */
+    "ideas:suggestions": () => suggestions(),
+    /** Takes suggestions off the waiting list (after saving them as ideas, or to throw them away). Returns what is left. */
+    "ideas:dismiss": (keys: unknown) => {
+      const gone = new Set(Array.isArray(keys) ? keys.map(String) : []);
+      const left = suggestions().filter((s) => !gone.has(s.key));
+      db().setSetting(SUGGESTIONS_SETTING, JSON.stringify(left));
+      return left;
     },
 
     "agent:list": () => listAgentChats(agent),
     "agent:get": (id: unknown) => getAgentChat(agent, String(id)),
     /** Runs until the agent has answered, which can take minutes if it analyses posts or writes ideas. */
     "agent:send": (chatId: unknown, text: unknown) => sendToAgent(agent, String(chatId), String(text ?? "")),
+    /** Answers the approvals a chat is paused on (approval id to true or false) and carries on. */
+    "agent:decide": (chatId: unknown, decisions: unknown) => decideAgent(agent, String(chatId), decisions),
     "agent:progress": (chatId: unknown) => agentProgress(String(chatId)),
+    "agent:permissions": () => getAgentPermissions(agent),
+    "agent:setPermissions": (changes: unknown) => setAgentPermissions(agent, changes),
     "agent:delete": (id: unknown) => deleteAgentChat(agent, String(id)),
+
+    "audio:list": () => listAudio(dataDir),
+    "audio:voices": () => listVoices(key("elevenlabs")),
+    "audio:voicePreview": (voiceId: unknown) => voicePreview(key("elevenlabs"), String(voiceId)),
 
     "research:list": () => listResearch(dataDir),
     "research:add": (url: unknown) => addResearch(dataDir, String(url), key("deepgram")),
@@ -123,6 +202,10 @@ export function createHandlers(options: HandlerOptions) {
     "research:audio": (id: unknown) => refreshResearchAudio(dataDir, String(id)),
     "research:update": (id: unknown, edit: ResearchEdit) => updateResearch(dataDir, String(id), edit ?? {}),
     "research:delete": (id: unknown) => deleteResearch(dataDir, String(id)),
+
+    /** What the app has used since `since` (an ISO time, or "" for everything). */
+    "usage:get": async (since: unknown) =>
+      readUsage(dataDir, typeof since === "string" ? since : "", { posts: await listResearch(dataDir), ideas: db().listIdeas() }),
 
     "telegram:status": () => telegramStatus(),
     "telegram:sync": () => connectTelegram(),

@@ -1,5 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { AGENT_TOOL_GROUPS, AGENT_TOOLS, type AgentPermissions, type AgentToolGroup, type ToolPermission } from "@shared/agent";
 import type { DataFolderInfo } from "@shared/data";
+import { MEDIA_PROVIDERS, MEDIA_TASKS, type MediaChoice, type MediaSettings, type MediaTask } from "@shared/media";
+import { ServicePicker, useMediaKeys } from "./ServicePicker";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
 import { api } from "./api";
@@ -26,9 +29,231 @@ export function SettingsView() {
         placeholder="Deepgram API key"
         description="Deepgram turns the speech in videos you save for research into text. Each video you transcribe is uploaded to Deepgram and billed to your Deepgram account by the minute. Create a key at console.deepgram.com."
       />
+      <ApiKeySection
+        provider="elevenlabs"
+        title="ElevenLabs API key"
+        placeholder="ElevenLabs API key"
+        description="ElevenLabs makes audio: voiceovers in a voice from your account (including your own cloned voice), sound effects and music. For now it is used by the agent: ask it for a voiceover, a sound effect or a music track. The text or description is sent to ElevenLabs and uses your ElevenLabs credits. Create a key at elevenlabs.io under Developers, API keys."
+      />
+      <ApiKeySection
+        provider="fal"
+        title="fal.ai API key"
+        placeholder="fal.ai key"
+        description="fal.ai makes pictures, clips and lip-synced clips for scenes in Studio, with many models on one key. The pictures, descriptions and voice recordings a scene needs are sent to fal.ai, where each file is kept at a web address anyone with the link can open. Billed to your fal.ai account. Create a key at fal.ai under API keys."
+      />
+      <ApiKeySection
+        provider="google"
+        title="Google Gemini API key"
+        placeholder="Gemini API key"
+        description="Google's own picture and video models for scenes in Studio. The pictures and descriptions a scene needs are sent to Google and billed to your Google account. Google cannot lip-sync to a recorded voice. Create a key at aistudio.google.com."
+      />
+      <MediaSection />
       <TelegramSection />
+      <AgentPermissionsSection />
       <DataFolderSection />
     </div>
+  );
+}
+
+/** Which service makes pictures, clips and lip-synced clips unless you choose another on the spot. */
+function MediaSection() {
+  const keys = useMediaKeys();
+  const [settings, setSettings] = useState<MediaSettings | null>(null);
+  const [custom, setCustom] = useState<Partial<Record<MediaTask, string>>>({});
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.mediaSettings().then(setSettings);
+  }, []);
+  if (!settings) return null;
+
+  const save = async (task: MediaTask, choice: MediaChoice) => {
+    setError("");
+    try {
+      const saved = await api.setMediaSettings({ [task]: choice });
+      setSettings(saved);
+      // A model id the app could not accept comes back unchanged.
+      if (saved[task].model !== choice.model) setError("That model id has characters that cannot be used.");
+      else setCustom((all) => ({ ...all, [task]: undefined }));
+    } catch {
+      setError("The choice could not be saved.");
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
+      <h2 className="font-display text-lg font-semibold">Pictures and video</h2>
+      <p className="mt-2 text-sm leading-relaxed opacity-70">
+        Choose which service does each job by default. You can pick a different one for a single picture or clip in
+        Studio and Cast. Services rename and retire models often: if one stops working, type its new id here.
+      </p>
+      <div className="mt-5 space-y-5">
+        {(Object.keys(MEDIA_TASKS) as MediaTask[]).map((task) => (
+          <div key={task} className="rounded-xl border border-[var(--line)] p-4">
+            <p className="font-medium">{MEDIA_TASKS[task].label}</p>
+            <p className="text-sm opacity-60">{MEDIA_TASKS[task].description}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <ServicePicker task={task} label="Default" value={settings[task]} keys={keys} onChange={(choice) => void save(task, choice)} />
+              {keys[settings[task].provider] === false && <span className="text-sm text-[var(--accent)]">No {MEDIA_PROVIDERS[settings[task].provider].label} key saved yet.</span>}
+            </div>
+            {custom[task] === undefined ? (
+              <button type="button" className="mt-3 text-sm underline opacity-60 hover:opacity-100" onClick={() => setCustom({ ...custom, [task]: settings[task].model })}>
+                Use another model id
+              </button>
+            ) : (
+              <form
+                className="mt-3 flex flex-wrap gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void save(task, { provider: settings[task].provider, model: (custom[task] ?? "").trim() });
+                }}
+              >
+                <input
+                  aria-label={`Model id for ${MEDIA_TASKS[task].label} on ${MEDIA_PROVIDERS[settings[task].provider].label}`}
+                  className={`${fieldClass} min-w-0 flex-1 font-mono`}
+                  value={custom[task]}
+                  onChange={(e) => setCustom({ ...custom, [task]: e.target.value })}
+                />
+                <button type="submit" className={primaryButton}>
+                  Use on {MEDIA_PROVIDERS[settings[task].provider].label}
+                </button>
+                <button type="button" className={quietButton} onClick={() => setCustom({ ...custom, [task]: undefined })}>
+                  Cancel
+                </button>
+              </form>
+            )}
+          </div>
+        ))}
+      </div>
+      <ul className="mt-5 space-y-1 text-sm opacity-60">
+        {(Object.keys(MEDIA_PROVIDERS) as (keyof typeof MEDIA_PROVIDERS)[]).map((provider) => (
+          <li key={provider}>
+            <span className="font-medium">{MEDIA_PROVIDERS[provider].label}:</span> {MEDIA_PROVIDERS[provider].note}
+          </li>
+        ))}
+      </ul>
+      {error && (
+        <p role="alert" className="mt-3 text-sm font-medium text-red-400">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+const PERMISSION_LABELS: Record<ToolPermission, string> = { allow: "Always allow", ask: "Ask first" };
+
+/** One "Always allow / Ask first" choice. `value` is "" when a group's tools differ. */
+function PermissionSelect({ label, value, onChange }: { label: string; value: ToolPermission | ""; onChange: (value: ToolPermission) => void }) {
+  return (
+    <select
+      aria-label={label}
+      className="shrink-0 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-2.5 py-1.5 text-sm font-medium focus:border-[var(--primary)] focus:outline-none"
+      value={value}
+      onChange={(e) => onChange(e.target.value as ToolPermission)}
+    >
+      {value === "" && (
+        <option value="" disabled>
+          Mixed
+        </option>
+      )}
+      <option value="allow">{PERMISSION_LABELS.allow}</option>
+      <option value="ask">{PERMISSION_LABELS.ask}</option>
+    </select>
+  );
+}
+
+/** Which of the agent's actions run straight away and which wait for a yes in the chat. */
+function AgentPermissionsSection() {
+  const [permissions, setPermissions] = useState<AgentPermissions | null>(null);
+  const [open, setOpen] = useState<ReadonlySet<AgentToolGroup>>(new Set(["change"]));
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.agentPermissions().then(setPermissions);
+  }, []);
+
+  if (!permissions) return null;
+
+  const change = async (changes: AgentPermissions) => {
+    setError("");
+    // Show the choice at once; the saved set replaces it when it comes back.
+    setPermissions({ ...permissions, ...changes });
+    try {
+      setPermissions(await api.setAgentPermissions(changes));
+    } catch {
+      setPermissions(permissions);
+      setError("The change could not be saved.");
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
+      <h2 className="font-display text-lg font-semibold">Agent tool permissions</h2>
+      <p className="mt-2 text-sm leading-relaxed opacity-70">
+        Choose what the agent may do on its own. With “Always allow” it just does it. With “Ask first” the chat stops
+        and shows you exactly what it wants to do, and nothing happens until you allow it. These choices are kept in
+        your data folder.
+      </p>
+
+      <div className="mt-5 space-y-3">
+        {AGENT_TOOL_GROUPS.map((group) => {
+          const tools = AGENT_TOOLS.filter((t) => t.group === group.id);
+          const values = new Set(tools.map((t) => permissions[t.name]));
+          const expanded = open.has(group.id);
+          return (
+            <div key={group.id} className="rounded-xl border border-[var(--line)]">
+              <div className="flex items-center gap-3 p-3">
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                  onClick={() =>
+                    setOpen((ids) => {
+                      const next = new Set(ids);
+                      if (!next.delete(group.id)) next.add(group.id);
+                      return next;
+                    })
+                  }
+                >
+                  <span aria-hidden className={`text-[0.6rem] opacity-60 transition-transform ${expanded ? "rotate-90" : ""}`}>
+                    ▶
+                  </span>
+                  <span className="min-w-0">
+                    <span className="font-medium">{group.title}</span>
+                    <span className="ml-2 rounded-full bg-[var(--tint)] px-2 py-0.5 text-xs font-medium">{tools.length}</span>
+                    <span className="block text-sm opacity-60">{group.description}</span>
+                  </span>
+                </button>
+                <PermissionSelect
+                  label={`${group.title}: all`}
+                  value={values.size === 1 ? [...values][0] : ""}
+                  onChange={(value) => void change(Object.fromEntries(tools.map((t) => [t.name, value])))}
+                />
+              </div>
+              {expanded && (
+                <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+                  {tools.map((tool) => (
+                    <li key={tool.name} className="flex items-center gap-3 py-3 pl-9 pr-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">{tool.title}</p>
+                        <p className="text-sm opacity-60">{tool.description}</p>
+                      </div>
+                      <PermissionSelect label={tool.title} value={permissions[tool.name]} onChange={(value) => void change({ [tool.name]: value })} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {error && (
+        <p role="alert" className="mt-3 text-sm font-medium text-red-400">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -66,7 +291,7 @@ function DataFolderSection() {
       <h2 className="font-display text-lg font-semibold">Your data folder</h2>
       <p className="mt-2 text-sm leading-relaxed opacity-70">
         Everything you create is kept in this one folder: your brand, ideas, saved posts with their videos,
-        pictures, transcripts, ratings and notes, and your Telegram link. To move to another computer, copy the whole
+        pictures, transcripts, ratings and notes, the audio, pictures and clips you generate, your cast and videos, and your Telegram link. To move to another computer, copy the whole
         folder across, then choose it here on that computer.
       </p>
 

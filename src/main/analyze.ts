@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { estimateCostUsd, HOOK_TYPES, VIDEO_FORMATS, type PostAnalysis } from "../shared/analysis";
 import type { ResearchItem } from "../shared/research";
+import { recordClaude } from "./usage";
 
 const exec = promisify(execFile);
 const EXE = process.platform === "win32" ? ".exe" : "";
@@ -199,6 +200,7 @@ export async function analyzePost(
       messages: [{ role: "user", content }],
       output_config: { format: betaZodOutputFormat(AnalysisSchema) },
     });
+    recordClaude("analysis", response.usage, item.author || item.authorHandle);
     if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to analyse this post." };
     if (!response.parsed_output) return { ok: false, error: "The analysis came back incomplete. Try again." };
 

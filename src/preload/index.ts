@@ -1,9 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AgentChat, AgentChatSummary, AgentProgress, AgentReply } from "@shared/agent";
+import type { AgentChat, AgentChatSummary, AgentPermissions, AgentProgress, AgentReply } from "@shared/agent";
+import type { GeneratedAudio, VoicePreviewResult, VoicesResult } from "@shared/audio";
 import type { BrandKit, SaveResult } from "@shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "@shared/data";
-import type { GenerateOptions, GenerateResult, Idea, ScriptResult } from "@shared/ideas";
+import type { GenerateOptions, GenerateResult, Idea, IdeaSuggestion } from "@shared/ideas";
 import type { ResearchEdit, ResearchItem, ResearchResult } from "@shared/research";
+import type { UsageReport } from "@shared/usage";
+import type { MediaChoice, MediaSettings, UploadedFile } from "@shared/media";
+import type { TakeResult } from "@shared/studio";
+import type { Character, NewSeries, NewVideo, Series, SeriesStart, StudioResult, Video, VideoResults, VideoVoicesResult } from "@shared/studio";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
 
@@ -17,18 +22,92 @@ const api = {
   /** Inserts or replaces an idea. */
   saveIdea: (idea: Idea): Promise<Idea> => ipcRenderer.invoke("ideas:save", idea),
   deleteIdea: (id: string): Promise<void> => ipcRenderer.invoke("ideas:delete", id),
+  /** Suggested ideas waiting to be saved or dismissed. */
+  listSuggestions: (): Promise<IdeaSuggestion[]> => ipcRenderer.invoke("ideas:suggestions"),
+  /** Takes suggestions off the waiting list; returns what is left. */
+  dismissSuggestions: (keys: string[]): Promise<IdeaSuggestion[]> => ipcRenderer.invoke("ideas:dismiss", keys),
   generateIdeas: (options: GenerateOptions): Promise<GenerateResult> =>
     ipcRenderer.invoke("ideas:generate", options),
-  /** Has Claude write a timed script for a saved idea. Costs money each time. */
-  writeScript: (id: string): Promise<ScriptResult> => ipcRenderer.invoke("ideas:script", id),
 
   listAgentChats: (): Promise<AgentChatSummary[]> => ipcRenderer.invoke("agent:list"),
   getAgentChat: (id: string): Promise<AgentChat | null> => ipcRenderer.invoke("agent:get", id),
   /** Sends a message to the agent (a new chat id starts a new chat) and resolves when it has answered. */
   sendToAgent: (chatId: string, text: string): Promise<AgentReply> => ipcRenderer.invoke("agent:send", chatId, text),
+  /** Allows or declines the actions a chat is waiting on (approval id to true or false), then carries on. */
+  decideAgent: (chatId: string, decisions: Record<string, boolean>): Promise<AgentReply> =>
+    ipcRenderer.invoke("agent:decide", chatId, decisions),
+  /** Which agent actions run without asking and which ask first. */
+  agentPermissions: (): Promise<AgentPermissions> => ipcRenderer.invoke("agent:permissions"),
+  /** Changes the named actions' permission and returns the full set. */
+  setAgentPermissions: (changes: AgentPermissions): Promise<AgentPermissions> =>
+    ipcRenderer.invoke("agent:setPermissions", changes),
   /** What the agent is doing in a chat right now. */
   agentProgress: (chatId: string): Promise<AgentProgress> => ipcRenderer.invoke("agent:progress", chatId),
   deleteAgentChat: (id: string): Promise<void> => ipcRenderer.invoke("agent:delete", id),
+
+  /** Audio made with ElevenLabs, newest first. */
+  listAudio: (): Promise<GeneratedAudio[]> => ipcRenderer.invoke("audio:list"),
+  /** The ElevenLabs voices this account can use. */
+  listVoices: (): Promise<VoicesResult> => ipcRenderer.invoke("audio:voices"),
+  /** A short sample of one voice. */
+  voicePreview: (voiceId: string): Promise<VoicePreviewResult> => ipcRenderer.invoke("audio:voicePreview", voiceId),
+  /** Address the UI can play a generated audio file from. */
+  audioFileUrl: (file: string): string => `media://audio/${file}`,
+
+  // Studio: the cast, series and the videos being made.
+  listCast: (): Promise<Character[]> => ipcRenderer.invoke("cast:list"),
+  saveCharacter: (character: Partial<Character>): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:save", character),
+  deleteCharacter: (id: string): Promise<void> => ipcRenderer.invoke("cast:delete", id),
+  listSeries: (): Promise<Series[]> => ipcRenderer.invoke("series:list"),
+  saveSeries: (series: Series): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:save", series),
+  deleteSeries: (id: string): Promise<void> => ipcRenderer.invoke("series:delete", id),
+  /** Has Claude plan a season. Costs a few cents. */
+  planSeries: (title: string, about: string, options?: NewSeries): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:plan", title, about, options),
+  /** Starts a series without a plan; its idea is settled first. Free. */
+  createSeries: (from: SeriesStart): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:create", from),
+  /** Has Claude plan the season of a series whose idea is settled. Costs a few cents. */
+  planSeason: (id: string): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:planSeason", id),
+  /** Has Claude suggest five ideas for a video or series, or change one (with its id and a note). Costs a few cents. */
+  suggestIdeas: <K extends "video" | "series">(kind: K, id: string, note: string, conceptId?: string): Promise<StudioResult<K extends "video" ? Video : Series>> =>
+    ipcRenderer.invoke("studio:suggest", kind, id, note, conceptId ?? ""),
+  /** Settles the idea of a video or series: a suggested one, or "" for the creator's own words. */
+  approveIdea: <K extends "video" | "series">(kind: K, id: string, conceptId: string): Promise<StudioResult<K extends "video" ? Video : Series>> =>
+    ipcRenderer.invoke("studio:approveIdea", kind, id, conceptId),
+  listVideos: (): Promise<Video[]> => ipcRenderer.invoke("videos:list"),
+  createVideo: (from: NewVideo): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:create", from),
+  saveVideo: (video: Video): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:save", video),
+  deleteVideo: (id: string): Promise<void> => ipcRenderer.invoke("videos:delete", id),
+  /** Has Claude write the script, or rewrite it as the note asks. Costs a few cents. */
+  writeVideo: (id: string, note: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:write", id, note),
+  approveVideo: (id: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approve", id),
+  /** Speaks the AI lines that have no audio yet. Uses ElevenLabs credits. */
+  voiceVideo: (id: string): Promise<VideoVoicesResult> => ipcRenderer.invoke("videos:voices", id),
+
+  // Pictures, clips and lip-sync. `choice` picks the service for this one request; without it the default in Settings is used.
+  mediaSettings: (): Promise<MediaSettings> => ipcRenderer.invoke("media:settings"),
+  setMediaSettings: (changes: Partial<MediaSettings>): Promise<MediaSettings> => ipcRenderer.invoke("media:setSettings", changes),
+  makeCharacterPicture: (id: string, choice?: MediaChoice): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:picture", id, choice),
+  addCharacterPicture: (id: string, file: UploadedFile): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:addPicture", id, file),
+  /** "first" makes it the main reference; "remove" deletes it. */
+  changeCharacterPicture: (id: string, takeId: string, action: "first" | "remove"): Promise<StudioResult<Character>> =>
+    ipcRenderer.invoke("cast:changePicture", id, takeId, action),
+  makeScenePicture: (videoId: string, sceneId: string, choice?: MediaChoice, note?: string): Promise<TakeResult> =>
+    ipcRenderer.invoke("scene:picture", videoId, sceneId, choice, note),
+  makeSceneClip: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:clip", videoId, sceneId, choice),
+  makeSceneLipSync: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:lipsync", videoId, sceneId, choice),
+  /** Adds a clip you filmed, or a picture you chose, to a scene. */
+  addSceneFile: (videoId: string, sceneId: string, file: UploadedFile): Promise<TakeResult> => ipcRenderer.invoke("scene:addFile", videoId, sceneId, file),
+  /** "use" makes it the one the scene uses; "remove" deletes it. */
+  changeTake: (videoId: string, sceneId: string, takeId: string, action: "use" | "remove"): Promise<TakeResult> =>
+    ipcRenderer.invoke("scene:changeTake", videoId, sceneId, takeId, action),
+  /** Address the UI can show a stored picture or clip from. */
+  studioFileUrl: (file: string): string => `media://studio/${file}`,
+
+  /** Saves how a posted video did. */
+  recordVideoResults: (id: string, results: VideoResults): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:results", id, results),
+
+  /** What the app has used on your services since `since` (an ISO time, or "" for everything). */
+  usage: (since: string): Promise<UsageReport> => ipcRenderer.invoke("usage:get", since),
 
   listResearch: (): Promise<ResearchItem[]> => ipcRenderer.invoke("research:list"),
   /** Downloads the post at the link and, if a Deepgram key is saved, transcribes its videos. */

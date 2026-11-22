@@ -2,15 +2,18 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { REFERENCE_PATTERN, type AgentMessage } from "@shared/agent";
+import { REFERENCE_PATTERN, type AgentApproval, type AgentMessage, type ReferenceKind } from "@shared/agent";
 import { formatUsd } from "@shared/analysis";
-import type { AgentChatState, AgentRefs } from "./agentChat";
+import { AUDIO_KIND_LABELS } from "@shared/audio";
+import { NO_REFS, type AgentChatState, type AgentRefs } from "./agentChat";
+import { api } from "./api";
 
 const EXAMPLES: [string, string][] = [
   ["Analyse my research", "Analyse the saved posts that are not analysed yet and tell me what they have in common."],
@@ -19,20 +22,41 @@ const EXAMPLES: [string, string][] = [
 ];
 
 /** Where a reference chip leads when clicked. */
-export type OpenReference = (kind: "post" | "idea", id: string) => void;
+export type OpenReference = (kind: Exclude<ReferenceKind, "audio">, id: string) => void;
 
-const RefContext = createContext<{ refs: AgentRefs; open: OpenReference }>({
-  refs: { posts: new Map(), ideas: new Map() },
+/** Something that can be pointed at. */
+export type ReferenceTarget = { kind: ReferenceKind; id: string };
+
+const RefContext = createContext<{ refs: AgentRefs; open: OpenReference; /** What the screen behind the chat is showing. */ onScreen: ReferenceTarget[] }>({
+  onScreen: [],
+  refs: NO_REFS,
   open: () => undefined,
 });
 
 const refName = (refs: AgentRefs, kind: string, id: string) =>
+  kind === "video"
+    ? (refs.videos.get(id)?.title ?? "a video that no longer exists")
+    : kind === "series"
+      ? (refs.series.get(id)?.title ?? "a series that no longer exists")
+      : kind === "character"
+        ? (refs.characters.get(id)?.name ?? "a character that no longer exists")
+        : otherName(refs, kind, id);
+
+const otherName = (refs: AgentRefs, kind: string, id: string) =>
   kind === "post"
     ? (() => {
         const p = refs.posts.get(id);
         return p ? p.author || p.authorHandle || "Saved post" : "a post that is no longer saved";
       })()
-    : (refs.ideas.get(id)?.title ?? "an idea that is no longer saved");
+    : kind === "brand"
+      ? "Brand kit"
+      : kind === "research"
+        ? "Research"
+        : kind === "ideas"
+          ? "Ideas"
+      : kind === "audio"
+        ? `[audio: ${refs.audio.get(id)?.title ?? "no longer saved"}]`
+        : (refs.ideas.get(id)?.title ?? "an idea that is no longer saved");
 
 /** The agent's text with reference tags replaced by names, for copying. */
 const plainText = (text: string, refs: AgentRefs) =>
@@ -54,6 +78,8 @@ function workedLabel(ms: number): string {
   return `Worked for ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
+const NOTHING_ON_SCREEN: ReferenceTarget[] = [];
+
 /**
  * The agent chat. `variant` is "page" for the full Agent screen and "dock"
  * for the small floating window; `actions` are the window buttons shown at
@@ -65,17 +91,21 @@ export function AgentChatPanel({
   actions,
   onOpenReference,
   onOpenSettings,
+  onScreen = NOTHING_ON_SCREEN,
 }: {
   chat: AgentChatState;
   variant: "page" | "dock";
   actions?: ReactNode;
   onOpenReference: OpenReference;
   onOpenSettings: () => void;
+  /** What the screen behind the chat is showing, most specific first; offered first when the user types @. */
+  onScreen?: ReferenceTarget[];
 }) {
   const [draft, setDraft] = useState("");
   const [atBottom, setAtBottom] = useState(true);
   const scroller = useRef<HTMLDivElement>(null);
-  const { messages, running, status, error } = chat;
+  const { messages, running, status, error, approvals } = chat;
+  const waiting = approvals.length > 0 && !running;
   const dock = variant === "dock";
   const width = dock ? "" : "mx-auto max-w-3xl";
 
@@ -86,17 +116,17 @@ export function AgentChatPanel({
   useEffect(() => {
     if (atBottom) toBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, running, status, error]);
+  }, [messages, running, status, error, approvals]);
   useEffect(() => {
     toBottom();
     setAtBottom(true);
   }, [chat.chatId]);
 
-  const send = (text: string) => {
-    if (!text.trim() || running) return;
+  const send = (text: string, plain = text) => {
+    if (!text.trim() || running || waiting) return;
     setDraft("");
     setAtBottom(true);
-    void chat.send(text);
+    void chat.send(text, plain);
   };
 
   const empty = messages.length === 0;
@@ -158,15 +188,16 @@ export function AgentChatPanel({
     <Composer
       draft={draft}
       onChange={setDraft}
-      onSend={() => send(draft)}
+      onSend={send}
       running={running}
+      blocked={waiting}
       compact={dock}
       placeholder={empty ? "Ask anything, or tell the agent what you need" : "Something else…"}
     />
   );
 
   return (
-    <RefContext.Provider value={{ refs: chat.refs, open: onOpenReference }}>
+    <RefContext.Provider value={{ refs: chat.refs, open: onOpenReference, onScreen }}>
       <div className="flex h-full flex-col text-[var(--ink)]">
         {titleBar}
 
@@ -213,7 +244,9 @@ export function AgentChatPanel({
                       <div key={i}>
                         {m.at && <p className="mb-3 text-center text-xs opacity-45">{timeLabel(m.at)}</p>}
                         <div className="flex justify-end">
-                          <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--tint)] px-4 py-2.5">{m.text}</p>
+                          <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-[var(--tint)] px-4 py-2.5">
+                            <Tagged text={m.text} />
+                          </p>
                         </div>
                       </div>
                     ) : (
@@ -221,7 +254,7 @@ export function AgentChatPanel({
                         key={i}
                         message={m}
                         // Buttons only make sense on the latest answer, once it is finished.
-                        onReply={i === lastIndex && !running ? send : undefined}
+                        onReply={i === lastIndex && !running && !waiting ? send : undefined}
                       />
                     ),
                   )}
@@ -231,6 +264,7 @@ export function AgentChatPanel({
                       {status || "Thinking"}…
                     </p>
                   )}
+                  {waiting && <Approvals key={approvals.map((a) => a.id).join()} approvals={approvals} onDecide={(d) => void chat.decide(d)} />}
                   {error && (
                     <p role="alert" className="text-sm font-medium text-red-400">
                       {error}
@@ -268,7 +302,8 @@ function Answer({ message, onReply }: { message: Extract<AgentMessage, { role: "
   const [copied, setCopied] = useState(false);
   const steps = message.parts.filter((p) => p.type === "step");
   const texts = message.parts.filter((p) => p.type === "text");
-  const failed = steps.filter((s) => !s.ok).length;
+  const failed = steps.filter((s) => !s.ok && !s.declined).length;
+  const declined = steps.filter((s) => s.declined).length;
   if (steps.length === 0 && texts.length === 0) return null;
 
   const summary = message.workedMs
@@ -296,6 +331,7 @@ function Answer({ message, onReply }: { message: Extract<AgentMessage, { role: "
             >
               {summary}
               {failed > 0 && <span className="text-red-400">· {failed} did not work</span>}
+              {declined > 0 && <span>· {declined} declined</span>}
               <span aria-hidden className={`text-[0.6rem] transition-transform ${showSteps ? "rotate-90" : ""}`}>
                 ▶
               </span>
@@ -303,9 +339,10 @@ function Answer({ message, onReply }: { message: Extract<AgentMessage, { role: "
             {showSteps && (
               <ul className="mt-2 space-y-1 border-l border-[var(--line)] pl-3 text-sm">
                 {steps.map((s, i) => (
-                  <li key={i} className={s.ok ? "opacity-60" : "text-red-400"}>
+                  <li key={i} className={s.ok || s.declined ? "opacity-60" : "text-red-400"}>
+                    {s.declined && "You declined: "}
                     {s.label}
-                    {!s.ok && " (did not work)"}
+                    {!s.ok && !s.declined && " (did not work)"}
                   </li>
                 ))}
               </ul>
@@ -343,51 +380,330 @@ function Answer({ message, onReply }: { message: Extract<AgentMessage, { role: "
   );
 }
 
+/** The actions the agent is waiting to take, each with Allow, Always allow and Decline. */
+function Approvals({ approvals, onDecide }: { approvals: AgentApproval[]; onDecide: (decisions: Record<string, boolean>) => void }) {
+  const [choices, setChoices] = useState<Record<string, boolean>>({});
+
+  const choose = async (approval: AgentApproval, allow: boolean, always = false) => {
+    const next = { ...choices, [approval.id]: allow };
+    if (always) {
+      // From now on this action runs without asking; it can be turned back in Settings.
+      await api.setAgentPermissions({ [approval.tool]: "allow" }).catch(() => undefined);
+      for (const other of approvals) if (other.tool === approval.tool) next[other.id] = true;
+    }
+    setChoices(next);
+    // The agent carries on once every action has an answer.
+    if (approvals.every((a) => a.id in next)) onDecide(next);
+  };
+
+  const quiet = "rounded-full border border-[var(--line)] px-3.5 py-1.5 text-sm font-medium hover:border-[var(--ink)]";
+  return (
+    <div role="group" aria-label="Approval needed" className="space-y-3">
+      {approvals.map((a) => (
+        <div key={a.id} className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
+          <p className="text-xs font-medium uppercase tracking-wide opacity-55">The agent wants to</p>
+          <p className="mt-1 font-semibold">{a.title}</p>
+          {a.detail && (
+            <div className="mt-2 text-sm">
+              <Markdown text={a.detail} />
+            </div>
+          )}
+          {a.id in choices ? (
+            <p className="mt-3 text-sm opacity-60">{choices[a.id] ? "Allowed" : "Declined"}. Answer the others to continue.</p>
+          ) : (
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded-full bg-[var(--primary)] px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+                onClick={() => void choose(a, true)}
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                className={quiet}
+                title="Do this without asking from now on. You can change it back in Settings."
+                onClick={() => void choose(a, true, true)}
+              >
+                Always allow
+              </button>
+              <button type="button" className={quiet} onClick={() => void choose(a, false)}>
+                Decline
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Something the user can point the agent at by typing @. */
+type MentionItem = { kind: ReferenceKind; id: string; label: string; hint: string; group: string };
+
+const oneLine = (text: string, max: number) => {
+  const line = text.replace(/[\s@]+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max).trim()}…` : line;
+};
+
+const SECTIONS = "Sections";
+const counted = (n: number, one: string, many: string) => (n === 0 ? `No ${many} yet` : n === 1 ? `Your 1 ${one}` : `All ${n} ${many}`);
+
+/** Everything in the app that can be referred to: whole sections first, then each idea, saved post and generated audio file. */
+function mentionItems(refs: AgentRefs): MentionItem[] {
+  return [
+    { kind: "brand", id: "kit", label: "Brand kit", hint: "Your name, audience, pillars, voice and platforms", group: SECTIONS },
+    { kind: "ideas", id: "all", label: "Ideas", hint: counted(refs.ideas.size, "saved idea", "saved ideas"), group: SECTIONS },
+    { kind: "research", id: "all", label: "Research", hint: counted(refs.posts.size, "saved post", "saved posts"), group: SECTIONS },
+    ...[...refs.ideas.values()].map(
+      (i): MentionItem => ({ kind: "idea", id: i.id, label: oneLine(i.title, 60), hint: [i.series, i.pillar].filter(Boolean).join(" · "), group: "Ideas" }),
+    ),
+    ...[...refs.posts.values()].map(
+      (p): MentionItem => ({
+        kind: "post",
+        id: p.id,
+        label: oneLine(p.author || p.authorHandle || "Saved post", 40),
+        hint: oneLine(p.analysis?.topic || p.caption, 70),
+        group: "Research",
+      }),
+    ),
+    ...[...refs.videos.values()].map(
+      (v): MentionItem => ({
+        kind: "video",
+        id: v.id,
+        label: oneLine(v.title, 60),
+        hint: v.scenes.length === 0 ? "Script not written" : v.approvedAt ? "Script approved" : "Script waiting for you",
+        group: "Studio videos",
+      }),
+    ),
+    ...[...refs.series.values()].map(
+      (s): MentionItem => ({ kind: "series", id: s.id, label: oneLine(s.title, 60), hint: `${s.episodes.length} episodes`, group: "Series" }),
+    ),
+    ...[...refs.characters.values()].map(
+      (c): MentionItem => ({ kind: "character", id: c.id, label: oneLine(c.name, 40), hint: oneLine(c.role, 60), group: "Cast" }),
+    ),
+    ...[...refs.audio.values()].map(
+      (a): MentionItem => ({ kind: "audio", id: a.id, label: oneLine(a.title, 60), hint: AUDIO_KIND_LABELS[a.kind], group: "Generated audio" }),
+    ),
+  ];
+}
+
+/**
+ * What is offered as soon as @ is typed, before any search: what the screen
+ * is showing, the whole sections, and the few newest items. Everything else
+ * is found by typing.
+ */
+function firstSuggestions(items: MentionItem[], refs: AgentRefs, onScreen: ReferenceTarget[]): MentionItem[] {
+  const find = (target: ReferenceTarget) => items.find((i) => i.kind === target.kind && i.id === target.id);
+  const same = (a: ReferenceTarget, b: ReferenceTarget) => a.kind === b.kind && a.id === b.id;
+  const here = onScreen.flatMap((target) => {
+    const item = find(target);
+    return item ? [{ ...item, group: "On this screen" }] : [];
+  });
+  const sections = items.filter((i) => i.group === SECTIONS && !here.some((h) => same(h, i)));
+  const newest: [string, ReferenceTarget][] = [
+    ...[...refs.ideas.values()].map((i): [string, ReferenceTarget] => [i.createdAt, { kind: "idea", id: i.id }]),
+    ...[...refs.posts.values()].map((p): [string, ReferenceTarget] => [p.savedAt, { kind: "post", id: p.id }]),
+  ];
+  const recent = newest
+    .sort(([a], [b]) => b.localeCompare(a))
+    .filter(([, target]) => !here.some((h) => same(h, target)))
+    .slice(0, 3)
+    .flatMap(([, target]) => {
+      const item = find(target);
+      return item ? [{ ...item, group: "Recent" }] : [];
+    });
+  return [...here, ...sections, ...recent];
+}
+
+/**
+ * The message box. Typing @ opens a short list (see firstSuggestions) and typing on searches everything in the app; picking an
+ * item writes "@Its name" in the box, and when the message is sent that text
+ * becomes the item's reference tag, so the agent knows exactly which item is meant.
+ */
 function Composer({
   draft,
   onChange,
   onSend,
   running,
+  blocked,
   compact,
   placeholder,
 }: {
   draft: string;
   onChange: (text: string) => void;
-  onSend: () => void;
+  /** `tagged` holds reference tags where items were picked; `plain` is the text as typed. */
+  onSend: (tagged: string, plain: string) => void;
   running: boolean;
+  /** The agent is waiting for an approval, so nothing can be sent. */
+  blocked: boolean;
   compact: boolean;
   placeholder: string;
 }) {
+  const { refs, onScreen } = useContext(RefContext);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [active, setActive] = useState(0);
+  /** Items picked into this draft: the name written in the box and the tag it stands for. */
+  const [picked, setPicked] = useState<{ label: string; tag: string }[]>([]);
+  /** Where the @ is that the list was closed for (picked from, or dismissed with Esc). */
+  const [closedAt, setClosedAt] = useState(-1);
+  const items = useMemo(() => mentionItems(refs), [refs]);
+
+  // The list is open while the caret sits in "@some words" that still match something.
+  const typed = /(?:^|\s)@([^@\n]{0,40})$/.exec(draft.slice(0, caret));
+  const start = typed ? caret - typed[1].length - 1 : -1;
+  const words = typed ? typed[1].toLowerCase().split(/\s+/).filter(Boolean) : [];
+  const searching = words.length > 0;
+  const matches =
+    !typed || start === closedAt
+      ? []
+      : searching
+        ? items.filter((it) => words.every((w) => `${it.label} ${it.hint} ${it.group}`.toLowerCase().includes(w))).slice(0, 40)
+        : firstSuggestions(items, refs, onScreen);
+  const current = Math.min(active, matches.length - 1);
+
+  const moveCaret = (to: number) =>
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(to, to);
+      setCaret(to);
+    });
+
+  const pick = (item: MentionItem) => {
+    const tag = `[[${item.kind}:${item.id}]]`;
+    // Two items can share a name (two posts by one creator); the second gets "(2)" so each still maps to its own tag.
+    let label = item.label;
+    for (let n = 2; picked.some((p) => p.label === label && p.tag !== tag); n++) label = `${item.label} (${n})`;
+    const inserted = `@${label} `;
+    onChange(draft.slice(0, start) + inserted + draft.slice(caret).replace(/^ /, ""));
+    setPicked((list) => [...list.filter((p) => p.label !== label), { label, tag }]);
+    setClosedAt(start);
+    moveCaret(start + inserted.length);
+  };
+
+  const submit = () => {
+    if (!draft.trim() || running || blocked) return;
+    let tagged = draft;
+    // Longest names first, so "@Name (2)" is not cut short by "@Name".
+    for (const p of [...picked].sort((a, b) => b.label.length - a.label.length)) tagged = tagged.split(`@${p.label}`).join(p.tag);
+    setPicked([]);
+    setClosedAt(-1);
+    onSend(tagged, draft);
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (matches.length > 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive((current + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        pick(matches[current]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setClosedAt(start);
+        return;
+      }
+    }
     // Enter sends; Shift+Enter starts a new line.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      onSend();
+      submit();
     }
   };
+
+  /** The @ button: starts a reference where the caret is. */
+  const startMention = () => {
+    const at = area.current?.selectionStart ?? draft.length;
+    const lead = at > 0 && !/\s/.test(draft[at - 1]) ? " @" : "@";
+    onChange(draft.slice(0, at) + lead + draft.slice(at));
+    setClosedAt(-1);
+    setActive(0);
+    moveCaret(at + lead.length);
+  };
+
   return (
     <form
-      className="flex items-end gap-2 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-3 focus-within:border-[var(--primary)]"
+      className="relative flex items-end gap-2 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-3 focus-within:border-[var(--primary)]"
       onSubmit={(e: FormEvent) => {
         e.preventDefault();
-        onSend();
+        submit();
       }}
     >
+      {matches.length > 0 && (
+        <ul
+          role="listbox"
+          aria-label="Refer to"
+          className="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full max-w-md overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1.5 shadow-xl"
+        >
+          {matches.map((item, i) => (
+            <li key={`${item.kind}:${item.id}`} role="presentation">
+              {(i === 0 || matches[i - 1].group !== item.group) && (
+                <p className="px-2.5 pb-1 pt-2 text-xs font-medium uppercase tracking-wide opacity-50">{item.group}</p>
+              )}
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === current}
+                ref={i === current ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm ${i === current ? "bg-[var(--tint)]" : ""}`}
+                // Keep the caret in the message box while clicking.
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(item)}
+              >
+                <KindIcon kind={item.kind} />
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="font-medium">{item.label}</span>
+                  {item.hint && <span className="ml-2 opacity-55">{item.hint}</span>}
+                </span>
+              </button>
+            </li>
+          ))}
+          {!searching && (
+            <li role="presentation" className="px-2.5 pb-1 pt-2 text-xs opacity-50">
+              Keep typing to search every post, idea, video, series, character and audio file.
+            </li>
+          )}
+        </ul>
+      )}
       <textarea
+        ref={area}
         rows={compact ? 2 : 3}
         autoFocus
+        disabled={blocked}
         aria-label="Message to the agent"
-        className="max-h-48 flex-1 resize-none bg-transparent px-1 text-sm placeholder:opacity-50 focus:outline-none"
-        placeholder={placeholder}
+        className="max-h-48 flex-1 resize-none bg-transparent px-1 text-sm placeholder:opacity-50 focus:outline-none disabled:opacity-60"
+        placeholder={blocked ? "Allow or decline the action above to continue" : placeholder}
         value={draft}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setCaret(e.target.selectionStart);
+          setActive(0);
+        }}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
         onKeyDown={onKeyDown}
       />
+      <button
+        type="button"
+        aria-label="Refer to something in the app"
+        title="Refer to a post, an idea, your brand kit or an audio file (or type @)"
+        disabled={blocked}
+        onClick={startMention}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base font-medium opacity-60 hover:bg-[var(--tint)] hover:opacity-100 disabled:opacity-30"
+      >
+        @
+      </button>
       <button
         type="submit"
         aria-label="Send"
         title="Send"
-        disabled={running || !draft.trim()}
+        disabled={running || blocked || !draft.trim()}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-white hover:opacity-90 disabled:opacity-40"
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -430,31 +746,119 @@ export function IconButton({
   );
 }
 
-/** A saved post or idea named in the agent's text; opens it when clicked. */
-function Chip({ kind, id }: { kind: "post" | "idea"; id: string }) {
+const KIND_ICONS: Record<ReferenceKind, string> = {
+  post: "M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14",
+  idea: "M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.800 1-2.5A6 6 0 0 0 12 3z",
+  audio: "M9 18V6l10-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM19 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+  brand: "M12 3l2.7 5.6 6.1.8-4.5 4.3 1.1 6.1L12 16.9l-5.4 2.9 1.1-6.1L3.2 9.5l6.1-.8z",
+  research: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-3.5-3.5",
+  video: "M4 9h16v10H4zM4 9l1.500-4 3 4 2-4 3 4 2-4 3 4",
+  series: "M4 6h16M4 12h16M4 18h10",
+  character: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21c0-4 3.500-6 8-6s8 2 8 6",
+  ideas: "M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.800 1-2.5A6 6 0 0 0 12 3z",
+};
+
+function KindIcon({ kind }: { kind: ReferenceKind }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0 opacity-60">
+      <path d={KIND_ICONS[kind]} />
+    </svg>
+  );
+}
+
+/** An item named in a message: a saved post, an idea, the brand kit or an audio file. Opens it when clicked, where it has a page. */
+function Chip({ kind, id }: { kind: ReferenceKind; id: string }) {
   const { refs, open } = useContext(RefContext);
-  const exists = kind === "post" ? refs.posts.has(id) : refs.ideas.has(id);
-  const name = refName(refs, kind, id);
+  const exists =
+    kind === "post"
+      ? refs.posts.has(id)
+      : kind === "idea"
+        ? refs.ideas.has(id)
+        : kind === "audio"
+          ? refs.audio.has(id)
+          : kind === "video"
+            ? refs.videos.has(id)
+            : kind === "series"
+              ? refs.series.has(id)
+              : kind === "character"
+                ? refs.characters.has(id)
+                : true;
+  const name = kind === "audio" ? (refs.audio.get(id)?.title ?? "audio that is no longer saved") : refName(refs, kind, id);
   if (!exists) return <span className="opacity-60">{name}</span>;
   const post = kind === "post" ? refs.posts.get(id) : undefined;
+  const look =
+    "mx-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--surface)] px-1.5 align-baseline text-[0.95em] font-medium leading-snug";
+  const inside = (
+    <>
+      <KindIcon kind={kind} />
+      <span className="truncate">{name}</span>
+    </>
+  );
+  // Generated audio has no page of its own yet.
+  if (kind === "audio") return <span className={look}>{inside}</span>;
   return (
     <button
       type="button"
-      title={kind === "post" ? `Open this post in Research${post?.analysis ? `: ${post.analysis.topic}` : ""}` : "Open this idea"}
+      title={
+        kind === "post"
+          ? `Open this post in Research${post?.analysis ? `: ${post.analysis.topic}` : ""}`
+          : kind === "idea"
+            ? "Open this idea"
+            : kind === "video" || kind === "series"
+              ? "Open in Studio"
+              : kind === "character"
+                ? "Open the cast"
+                : kind === "research"
+              ? "Open Research"
+              : kind === "ideas"
+                ? "Open Ideas"
+                : "Open your brand kit"
+      }
       onClick={() => open(kind, id)}
-      className="mx-0.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--surface)] px-1.5 align-baseline text-[0.95em] font-medium leading-snug hover:border-[var(--primary)]"
+      className={`${look} hover:border-[var(--primary)]`}
     >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0 opacity-60">
-        {kind === "post" ? <path d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" /> : <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.800 1-2.5A6 6 0 0 0 12 3z" />}
-      </svg>
-      <span className="truncate">{name}</span>
+      {inside}
     </button>
+  );
+}
+
+const TAG_SPLIT = /(\[\[(?:post|idea|audio|brand|research|ideas|video|series|character):[\w-]+\]\])/g;
+const TAG = /^\[\[(post|idea|audio|brand|research|ideas|video|series|character):([\w-]+)\]\]$/;
+
+/** The user's own message, with the items they pointed at shown as chips. */
+function Tagged({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(TAG_SPLIT).map((piece, i) => {
+        const ref = TAG.exec(piece);
+        return ref ? <Chip key={i} kind={ref[1] as ReferenceKind} id={ref[2]} /> : piece;
+      })}
+    </>
+  );
+}
+
+/** Generated audio named in the agent's text, shown as a player. */
+function AudioPlayer({ id }: { id: string }) {
+  const { refs } = useContext(RefContext);
+  const audio = refs.audio.get(id);
+  if (!audio) return <span className="opacity-60">(audio that is no longer saved)</span>;
+  return (
+    <span className="my-1 block rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3">
+      <span className="flex flex-wrap items-baseline gap-x-2 text-sm">
+        <span className="font-medium">{audio.title}</span>
+        <span className="text-xs opacity-55">
+          {AUDIO_KIND_LABELS[audio.kind]}
+          {audio.voiceName && ` · ${audio.voiceName}`}
+        </span>
+      </span>
+      <audio controls preload="metadata" src={api.audioFileUrl(audio.file)} className="mt-2 block h-9 w-full" />
+    </span>
   );
 }
 
 /** Bold, inline code and reference chips inside one stretch of text. */
 function inline(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[(?:post|idea):[\w-]+\]\])/g).map((piece, i) => {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\[(?:post|idea|audio|brand|research|ideas|video|series|character):[\w-]+\]\])/g).map((piece, i) => {
     if (piece.startsWith("**") && piece.endsWith("**")) return <strong key={i}>{inline(piece.slice(2, -2))}</strong>;
     if (piece.startsWith("`") && piece.endsWith("`")) {
       return (
@@ -463,8 +867,9 @@ function inline(text: string): ReactNode[] {
         </code>
       );
     }
-    const ref = /^\[\[(post|idea):([\w-]+)\]\]$/.exec(piece);
-    if (ref) return <Chip key={i} kind={ref[1] as "post" | "idea"} id={ref[2]} />;
+    const ref = TAG.exec(piece);
+    if (ref?.[1] === "audio") return <AudioPlayer key={i} id={ref[2]} />;
+    if (ref) return <Chip key={i} kind={ref[1] as ReferenceKind} id={ref[2]} />;
     return piece;
   });
 }
