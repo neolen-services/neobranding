@@ -155,6 +155,10 @@ export function createHandlers(options: HandlerOptions) {
     "scene:picture": (videoId: unknown, sceneId: unknown, choice: unknown, note: unknown) => studio.scenePicture(videoId, sceneId, choice, note),
     "scene:clip": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneClip(videoId, sceneId, choice),
     "scene:lipsync": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneLipSync(videoId, sceneId, choice),
+    /** Has Claude look at a video's storyboards (or one scene's) and say whether each is good to make the video from. */
+    "storyboard:review": (videoId: unknown, sceneId: unknown) => studio.storyboardReview(videoId, sceneId),
+    /** The creator approves the storyboard a scene has in use (true), or takes the approval back (false). */
+    "scene:approve": (videoId: unknown, sceneId: unknown, approved: unknown) => studio.sceneApprove(videoId, sceneId, approved),
     /** Says whether a scene carries straight on from the one before it (true) or is a new shot (false). */
     "scene:flow": (videoId: unknown, sceneId: unknown, continues: unknown) => studio.sceneFlow(videoId, sceneId, continues),
     "scene:addFile": (videoId: unknown, sceneId: unknown, file: UploadedFile) => studio.addSceneFile(videoId, sceneId, file),

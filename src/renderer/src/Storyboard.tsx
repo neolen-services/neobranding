@@ -1,12 +1,12 @@
-// The Storyboard tab of a video: one picture for every scene, the frame it starts on, looked
-// through in order before any clip is made. A picture costs little and a clip costs a lot, so
-// this is where the look of the video is settled.
+// The Storyboard tab of a video: one storyboard for every scene, a sheet of four frames showing
+// what happens in it, looked through in order before any clip is made. A storyboard costs little
+// and a clip costs a lot, so this is where the video is settled.
 import { useRef, useState } from "react";
 import type { MediaChoice } from "@shared/media";
-import { pickedPicture, type Scene, type TakeResult, type Video } from "@shared/studio";
+import { pickedPicture, storyboardApproved, type Scene, type TakeResult, type Video } from "@shared/studio";
 import { api } from "./api";
 import { readUpload, ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, fieldClass, Icon, ICONS, label, primaryButton, smallButton } from "./studioUi";
+import { card, Chip, fieldClass, Icon, ICONS, label, primaryButton, quietButton, smallButton } from "./studioUi";
 
 const MAX_PICTURE = 30 * 1024 * 1024;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -27,7 +27,7 @@ export function StoryboardTab({
   setError: (message: string) => void;
   setNotice: (message: string) => void;
   onChange: (video: Video) => void;
-  /** Opens the Make tab. */
+  /** Opens the Preview tab. */
   onNext: () => void;
 }) {
   const [look, setLook] = useState(video.look);
@@ -38,14 +38,38 @@ export function StoryboardTab({
   const missing = ai.filter((s) => !pickedPicture(s));
   const filmed = video.scenes.length - ai.length;
   const carryOn = video.scenes.filter((s, i) => i > 0 && s.continues && s.madeBy === "ai").length;
+  const drawn = ai.filter((s) => pickedPicture(s));
+  const approved = drawn.filter(storyboardApproved).length;
+  /** Storyboards in use that the check has not looked at. */
+  const unchecked = drawn.filter((s) => s.review?.picture !== s.picture).length;
+  const withProblems = drawn.filter((s) => s.review?.picture === s.picture && !s.review.ok && !storyboardApproved(s)).length;
+  const [checking, setChecking] = useState(false);
 
-  /** Makes a picture for every AI scene that has none, from the first scene down, stopping at the first that fails. */
+  /** Has Claude look at every storyboard and say what is wrong with each. */
+  async function check() {
+    setChecking(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await api.reviewStoryboard(video.id);
+      if (!result.ok) return setError(result.error);
+      onChange(result.video);
+      const bad = result.video.scenes.filter((s) => s.review?.picture === s.picture && !s.review.ok).length;
+      setNotice(bad === 0 ? "Checked: no problems found. Look through them yourself, then approve each one." : `Checked: ${plural(bad, "storyboard")} could be better. The notes are under each one.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The storyboards could not be checked.");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  /** Makes a storyboard for every AI scene that has none, from the first scene down, stopping at the first that fails. */
   async function makeMissing() {
     if (!choices) return;
     setError("");
     setNotice("");
     for (const [i, scene] of missing.entries()) {
-      setMaking(`Making picture ${i + 1} of ${missing.length}`);
+      setMaking(`Making storyboard ${i + 1} of ${missing.length}`);
       try {
         const result = await api.makeScenePicture(video.id, scene.id, choices.picture);
         if (!result.ok) {
@@ -54,7 +78,7 @@ export function StoryboardTab({
         }
         onChange(result.video);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "The picture could not be made.");
+        setError(e instanceof Error ? e.message : "The storyboard could not be made.");
         break;
       }
     }
@@ -62,9 +86,11 @@ export function StoryboardTab({
   }
 
   if (!choices) return null;
-  const off = busy !== "" || making !== "";
+  const off = busy !== "" || making !== "" || checking;
   const counts = [
-    ai.length > 0 && `${ai.length - missing.length} of ${plural(ai.length, "picture")} made`,
+    ai.length > 0 && `${ai.length - missing.length} of ${plural(ai.length, "storyboard")} made`,
+    drawn.length > 0 && `${approved} approved`,
+    withProblems > 0 && `${withProblems} with notes from the check`,
     carryOn > 0 && `${plural(carryOn, "scene")} ${carryOn === 1 ? "carries" : "carry"} on from the one before`,
     filmed > 0 && `${plural(filmed, "scene")} you film`,
   ].filter(Boolean);
@@ -77,15 +103,29 @@ export function StoryboardTab({
             <h3 className="font-display text-lg font-semibold">Storyboard</h3>
             <p className="mt-0.5 text-sm opacity-60">{counts.join(" · ")}</p>
             <p className="mt-1.5 max-w-3xl text-sm opacity-60">
-              One picture for each scene: the frame it starts on. Look through them in order and redo any that is off before a clip is made. A scene that carries on is drawn from the picture
-              before it, so work from the first scene down.
+              One storyboard for each scene: a sheet of four frames that shows what happens in it, from its first moment to its last. Look through them in order and redo any that is off
+              before a clip is made. A scene that carries on is drawn from the storyboard before it, so work from the first scene down. The check looks at every sheet and tells you
+              what is wrong with it; whether to make one again is up to you. Approve each scene to move on.
             </p>
           </div>
-          {missing.length > 0 && (
-            <button type="button" className={primaryButton} disabled={off} onClick={makeMissing}>
-              {making ? `${making}…` : `Make ${plural(missing.length, "missing picture")}`}
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {drawn.length > 0 && (
+              <button
+                type="button"
+                className={missing.length === 0 && unchecked > 0 ? primaryButton : quietButton}
+                disabled={off}
+                title="Claude looks at every storyboard and writes what is wrong with each. Uses your Claude credits: roughly 2 to 3 cents a scene."
+                onClick={check}
+              >
+                {checking ? "Looking at the storyboards…" : unchecked === drawn.length ? "Check the storyboards" : "Check them again"}
+              </button>
+            )}
+            {missing.length > 0 && (
+              <button type="button" className={primaryButton} disabled={off} onClick={makeMissing}>
+                {making ? `${making}…` : `Make ${plural(missing.length, "missing storyboard")}`}
+              </button>
+            )}
+          </div>
         </div>
         {ai.length > 0 && (
           <div className="grid gap-4 border-t border-[var(--line)] pt-4 md:grid-cols-3">
@@ -113,13 +153,15 @@ export function StoryboardTab({
       <section className={`${card} flex flex-wrap items-center justify-between gap-3`}>
         <p className="text-sm opacity-70">
           {missing.length > 0
-            ? `${plural(missing.length, "scene")} still ${missing.length === 1 ? "needs" : "need"} a picture. A clip can only be made for a scene that has one.`
-            : ai.length > 0
-              ? "Every scene has its picture. When they read as one video from first to last, make the clips."
+            ? `${plural(missing.length, "scene")} still ${missing.length === 1 ? "needs" : "need"} a storyboard. A clip can only be made for a scene that has one.`
+            : approved < drawn.length
+              ? `${plural(drawn.length - approved, "storyboard")} still to approve. Approve each scene once you are happy with it.`
+              : ai.length > 0
+              ? "Every storyboard is approved. Next, watch them play in order with the voices before any clip is made."
               : "You film every scene of this video, so there is nothing to draw. Add your clips on the Make tab."}
         </p>
-        <button type="button" className={`${primaryButton} flex items-center gap-2`} disabled={off || (ai.length > 0 && missing.length === ai.length)} onClick={onNext}>
-          Next: make the clips
+        <button type="button" className={`${primaryButton} flex items-center gap-2`} disabled={off || missing.length > 0 || approved < drawn.length} onClick={onNext}>
+          Next: preview it
           <Icon d={ICONS.arrow} />
         </button>
       </section>
@@ -127,7 +169,7 @@ export function StoryboardTab({
   );
 }
 
-/** One scene of the storyboard: its picture, what happens in it, and the ways to redo the picture. */
+/** One scene of the storyboard: its sheet of frames, what happens in it, and the ways to redo the sheet. */
 function Panel({
   video,
   scene,
@@ -170,6 +212,9 @@ function Panel({
   const off = disabled || busy !== "";
   const makePicture = async () => (await run("Making", () => api.makeScenePicture(video.id, scene.id, choice, note))) && setNote("");
   const beforeHasPicture = index > 0 && Boolean(pickedPicture(video.scenes[index - 1]));
+  const isApproved = !filmed && storyboardApproved(scene);
+  // What the check said about the storyboard now in use; notes about an earlier one no longer apply.
+  const review = picture && scene.review?.picture === picture.id ? scene.review : null;
 
   return (
     <li className={`${card} flex flex-col gap-3 !p-3`}>
@@ -178,14 +223,14 @@ function Panel({
         <span className="min-w-0 flex-1 truncate text-xs opacity-60" title={scene.place}>
           {scene.seconds}s{scene.place && ` · ${scene.place}`}
         </span>
-        {filmed && <Chip tone="warn">You film</Chip>}
+        {filmed ? <Chip tone="warn">You film</Chip> : isApproved ? <Chip tone="good">Approved</Chip> : review ? <Chip tone={review.ok ? "good" : "warn"}>{review.ok ? "Looks good" : "Has notes"}</Chip> : null}
       </div>
 
       {index > 0 && !filmed ? (
         <div role="radiogroup" aria-label={`How scene ${index + 1} starts`} className="flex min-h-[1.875rem] rounded-full border border-[var(--line)] p-0.5 text-xs font-medium">
           {(
             [
-              [true, "Carries on", `Scene ${index + 1} carries straight on from scene ${index} with no cut. Its picture is drawn from the picture before it.`],
+              [true, "Carries on", `Scene ${index + 1} carries straight on from scene ${index} with no cut. Its storyboard is drawn from the storyboard before it.`],
               [false, "New shot", `Scene ${index + 1} is a new shot: a cut.`],
             ] as const
           ).map(([value, text, title]) => (
@@ -210,15 +255,15 @@ function Panel({
       <div className="relative flex aspect-[9/16] w-full items-center justify-center overflow-hidden rounded-xl border border-[var(--line)] bg-black text-center text-xs text-white/60">
         {picture ? (
           <a href={api.studioFileUrl(picture.file)} target="_blank" rel="noreferrer" title="Open full size" className="block h-full w-full">
-            <img src={api.studioFileUrl(picture.file)} alt={`Storyboard picture for scene ${index + 1}: ${scene.action}`} className="h-full w-full object-cover" />
+            <img src={api.studioFileUrl(picture.file)} alt={`Storyboard for scene ${index + 1}: ${scene.action}`} className="h-full w-full object-cover" />
           </a>
         ) : (
           <span className="flex flex-col items-center gap-2 px-4">
             <Icon d={filmed ? ICONS.camera : ICONS.ai} className="h-6 w-6 opacity-60" />
-            {filmed ? "You film this scene. Add your clip on the Make tab." : "No picture yet"}
+            {filmed ? "You film this scene. Add your clip on the Make tab." : "No storyboard yet"}
           </span>
         )}
-        {busy === "Making" && <span className="absolute inset-0 flex items-center justify-center bg-black/70 px-4 text-sm text-white">Making the picture…</span>}
+        {busy === "Making" && <span className="absolute inset-0 flex items-center justify-center bg-black/70 px-4 text-sm text-white">Making the storyboard…</span>}
       </div>
 
       <div className="space-y-1">
@@ -228,13 +273,41 @@ function Panel({
         {scene.lines[0] && <p className="line-clamp-2 text-sm italic opacity-60">“{scene.lines[0].text}”</p>}
       </div>
 
+      {review && (
+        <div className={`rounded-xl border px-3 py-2 text-sm ${review.ok ? "border-emerald-400/40 bg-emerald-500/10" : "border-[var(--accent)]/50 bg-[var(--accent)]/10"}`}>
+          <p className="text-xs font-medium uppercase tracking-wide opacity-70">{review.ok ? "The check found no problems" : "What the check found"}</p>
+          {review.problems.length > 0 && (
+            <ul className="mt-1.5 list-disc space-y-1 pl-4 leading-snug">
+              {review.problems.map((problem, i) => (
+                <li key={i}>{problem}</li>
+              ))}
+            </ul>
+          )}
+          {review.fix && (
+            <button type="button" className="mt-2 text-left text-xs underline" disabled={off} title={review.fix} onClick={() => setNote(review.fix)}>
+              Use its suggested change
+            </button>
+          )}
+        </div>
+      )}
+
       {!filmed && (
         <div className="mt-auto space-y-2">
+          {picture && (
+            <button
+              type="button"
+              className={isApproved ? `${smallButton} w-full` : `${primaryButton} w-full !py-1.5`}
+              disabled={off}
+              onClick={() => void run("Approving", () => api.approveStoryboard(video.id, scene.id, !isApproved))}
+            >
+              {isApproved ? "Approved · take it back" : "Approve this storyboard"}
+            </button>
+          )}
           {picture && (
             <input
               className="w-full rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-sm placeholder:opacity-50 focus:border-[var(--primary)] focus:outline-none"
               placeholder="What should change?"
-              aria-label={`What should change in the picture for scene ${index + 1}`}
+              aria-label={`What should change in the storyboard for scene ${index + 1}`}
               value={note}
               disabled={off}
               onChange={(e) => setNote(e.target.value)}
@@ -243,8 +316,13 @@ function Panel({
           )}
           <div className="flex flex-wrap gap-2">
             <button type="button" className={picture ? smallButton : `${primaryButton} !px-4 !py-1.5`} disabled={off} onClick={() => void makePicture()}>
-              {busy === "Making" ? "Making…" : picture ? "Another picture" : "Make picture"}
+              {busy === "Making" ? "Making…" : picture ? "Another storyboard" : "Make storyboard"}
             </button>
+            {picture && (
+              <button type="button" className={smallButton} disabled={off} title="Claude looks at this storyboard and writes what is wrong with it. Uses your Claude credits." onClick={() => void run("Checking", () => api.reviewStoryboard(video.id, scene.id))}>
+                {busy === "Checking" ? "Checking…" : review ? "Check again" : "Check"}
+              </button>
+            )}
             <button type="button" className={smallButton} disabled={off} onClick={() => fileInput.current?.click()}>
               {busy === "Adding" ? "Adding…" : "Add your own"}
             </button>
@@ -263,14 +341,14 @@ function Panel({
             />
           </div>
           {!picture && scene.continues && index > 0 && !beforeHasPicture && (
-            <p className="text-xs opacity-60">Make scene {index}'s picture first: this one is drawn from it.</p>
+            <p className="text-xs opacity-60">Make scene {index}'s storyboard first: this one is drawn from it.</p>
           )}
 
           {scene.pictures.length > 1 && (
-            <ul className="flex flex-wrap gap-2 border-t border-[var(--line)] pt-2" aria-label={`Pictures made for scene ${index + 1}`}>
+            <ul className="flex flex-wrap gap-2 border-t border-[var(--line)] pt-2" aria-label={`Storyboards made for scene ${index + 1}`}>
               {scene.pictures.map((take, i) => {
                 const using = take.id === scene.picture;
-                const what = `Picture ${i + 1}${take.source === "upload" ? " · added by you" : take.madeWith ? ` · ${take.madeWith}` : ""}`;
+                const what = `Storyboard ${i + 1}${take.source === "upload" ? " · added by you" : take.madeWith ? ` · ${take.madeWith}` : ""}`;
                 return (
                   <li key={take.id} className="group relative">
                     <button

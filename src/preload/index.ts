@@ -92,6 +92,10 @@ const api = {
   makeSceneClip: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:clip", videoId, sceneId, choice),
   makeSceneLipSync: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:lipsync", videoId, sceneId, choice),
   /** Says whether a scene carries straight on from the one before it, starting on its last frame, or is a new shot. Free. */
+  /** Has Claude look at a video's storyboards, or one scene's, and say what is wrong with each. Uses Claude credits. */
+  reviewStoryboard: (videoId: string, sceneId?: string): Promise<TakeResult> => ipcRenderer.invoke("storyboard:review", videoId, sceneId),
+  /** Approves the storyboard a scene has in use, or takes the approval back. */
+  approveStoryboard: (videoId: string, sceneId: string, approved: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:approve", videoId, sceneId, approved),
   setSceneFlow: (videoId: string, sceneId: string, continues: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:flow", videoId, sceneId, continues),
   /** Adds a clip you filmed, or a picture you chose, to a scene. */
   addSceneFile: (videoId: string, sceneId: string, file: UploadedFile): Promise<TakeResult> => ipcRenderer.invoke("scene:addFile", videoId, sceneId, file),

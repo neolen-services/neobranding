@@ -321,6 +321,96 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
   }
 }
 
+const StoryboardSchema = z.object({
+  scenes: z.array(
+    z.object({
+      scene: z.number(),
+      ok: z.boolean(),
+      problems: z.array(z.string()),
+      fix: z.string(),
+    }),
+  ),
+});
+
+const STORYBOARD_SYSTEM = `You check the storyboards of a short vertical video before any costly video is made from them. You are shown the script of each scene and, as pictures, its storyboard: one sheet of four frames in a 2 by 2 grid, read left to right and top to bottom, showing one continuous shot from its first moment (frame 1) to its last (frame 4). A video model will later be told to follow each sheet, so what is wrong on a sheet will be wrong in the video.
+
+Look closely at every sheet and judge only what you can see. For each scene check:
+- The sheet itself: exactly four frames in a grid, each a tall picture, in an order that reads as one shot moving forward. No writing, captions, speech bubbles or arrows other than small frame numbers.
+- The script: the place, the action and the camera note are what the frames show, the action starts in frame 1 and is finished by frame 4, and whoever speaks is in the shot.
+- One take: the same place, people, clothes, props and light in all four frames. Nothing appears, vanishes or changes for no reason.
+- The characters: each looks like their description, and the same from frame to frame and from scene to scene. Faces, hands and bodies are not malformed.
+- Continuity: where a scene is marked as carrying on from the one before, its frame 1 matches the last frame of that scene's sheet (place, people, clothes, position). Where a scene is in a place seen earlier, the place looks the same.
+- The look: every sheet is in the look the video asks for, and they match each other.
+
+Answer for every scene you were asked to check, using its number.
+- ok: true only if you would make the video from this sheet as it is. Small imperfections a viewer would not notice in motion are fine; do not invent problems.
+- problems: each real problem in one plain sentence that says which frame it is in and what is wrong. [] when ok.
+- fix: one or two sentences the creator can send back to the picture model to make the sheet again without the problems, written as an instruction ("Keep ... ", "Show ..."). "" when ok.
+Write plainly, for a creator who is not a film maker.`;
+
+/**
+ * Looks at the storyboards of a video's scenes and says, for each, whether it is good to make the video from.
+ * `sheets` are the storyboards to look at, with the scene number each belongs to; `check` are the numbers to answer for
+ * (a sheet can be shown only so the next scene's continuity can be judged).
+ */
+export async function reviewStoryboards(
+  apiKey: string,
+  input: { video: Video; characters: Character[]; look: string; sheets: { scene: number; bytes: Buffer; mime: string }[]; check: number[] },
+): Promise<StudioResult<{ reviews: { scene: number; ok: boolean; problems: string[]; fix: string }[]; costUsd: number }>> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  if (input.sheets.length === 0 || input.check.length === 0) return { ok: false, error: "There is no storyboard to check yet." };
+  const { video } = input;
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages.stream({
+      model: "claude-opus-5-5",
+      max_tokens: 24000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default" as const,
+      system: STORYBOARD_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text" as const,
+              text: [
+                `THE VIDEO\n${video.title}${input.look ? `\nLook: ${input.look}` : ""}`,
+                `THE CHARACTERS\n${input.characters.length ? input.characters.map((c) => `${c.name}: ${c.look || c.role}`).join("\n") : "None."}`,
+                `THE SCENES\n${video.scenes
+                  .map(
+                    (s, i) =>
+                      `Scene ${i + 1} (${s.seconds}s, ${s.madeBy === "me" ? "filmed by the creator, no storyboard" : i > 0 && s.continues ? `carries on from scene ${i} with no cut` : "a new shot"})\nPlace: ${s.place || "not given"}\nWhat happens: ${s.action}${s.camera ? `\nCamera: ${s.camera}` : ""}${
+                        s.lines.length ? `\nSaid: ${s.lines.map((l) => `${speakerName(l.speaker, input.characters)}: ${l.text}`).join(" / ")}` : ""
+                      }`,
+                  )
+                  .join("\n\n")}`,
+                `CHECK THESE SCENES: ${input.check.join(", ")}. The storyboards follow, each after its scene number.`,
+              ].join("\n\n"),
+            },
+            ...input.sheets.flatMap((sheet) => [
+              { type: "text" as const, text: `Storyboard of scene ${sheet.scene}${input.check.includes(sheet.scene) ? "" : " (shown for continuity only, do not answer for it)"}:` },
+              { type: "image" as const, source: { type: "base64" as const, media_type: sheet.mime as "image/jpeg" | "image/png" | "image/webp", data: sheet.bytes.toString("base64") } },
+            ]),
+          ],
+        },
+      ],
+      output_config: { format: betaZodOutputFormat(StoryboardSchema) },
+    }).finalMessage();
+    recordClaude("storyboard", response.usage, video.title);
+    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to check these storyboards." };
+    const out = response.parsed_output;
+    if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The check came back incomplete. Try again." };
+    const reviews = out.scenes
+      .filter((r) => input.check.includes(Math.round(r.scene)))
+      .map((r) => ({ scene: Math.round(r.scene), ok: r.ok && r.problems.length === 0, problems: r.problems.map((p) => p.trim()).filter(Boolean), fix: r.fix.trim() }));
+    if (reviews.length === 0) return { ok: false, error: "The check came back empty. Try again." };
+    return { ok: true, value: { reviews, costUsd: estimateCostUsd(response.usage) } };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
+  }
+}
+
 /** Plans a season from a title and a few words about it. Returns the series and any characters it added to the cast. */
 export async function planSeries(
   apiKey: string,

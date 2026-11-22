@@ -41,7 +41,7 @@ export type Scene = {
   id: string;
   /** Generated with AI, or filmed by the creator. */
   madeBy: "ai" | "me";
-  /** It carries straight on from the scene before, with no cut: the two clips meet on this scene's storyboard picture. Never true for the first scene. */
+  /** It carries straight on from the scene before, with no cut: its clip opens on the last frame of that scene's clip. Never true for the first scene. */
   continues: boolean;
   seconds: number;
   place: string;
@@ -56,21 +56,40 @@ export type Scene = {
   /** A sound effect or music cue, or "". */
   sound: string;
   lines: SceneLine[];
-  /** Every storyboard picture made for the scene (the frame it starts on), and the id of the one in use ("" for none). */
+  /** Every storyboard made for the scene (one sheet of frames showing what happens in it), and the id of the one in use ("" for none). */
   pictures: Take[];
   picture: string;
+  /** The id of the storyboard the creator approved, or "". A storyboard made or chosen afterwards needs approving again. */
+  approved: string;
+  /** What the storyboard check said about one of this scene's storyboards, or null when none has been checked. */
+  review: StoryboardReview | null;
   /** Every clip made or filmed for the scene, and the id of the one in use. */
   clips: Take[];
   clip: string;
 };
+
+/** What the check found on looking at a scene's storyboard. */
+export type StoryboardReview = {
+  /** The id of the storyboard that was looked at. */
+  picture: string;
+  /** Whether it is good to approve as it is. */
+  ok: boolean;
+  /** What is wrong with it, one problem each; [] when nothing is. */
+  problems: string[];
+  /** What to ask for when making it again, ready to use as the change note; "" when nothing needs changing. */
+  fix: string;
+  checkedAt: string;
+};
+
+/** Whether a scene's storyboard is settled: the creator approved the one in use. A scene the creator films has none to approve. */
+export const storyboardApproved = (scene: Scene) => scene.madeBy === "me" || (scene.picture !== "" && scene.approved === scene.picture);
 
 export const pickedPicture = (scene: Scene) => scene.pictures.find((t) => t.id === scene.picture);
 export const pickedClip = (scene: Scene) => scene.clips.find((t) => t.id === scene.clip);
 
 /**
  * Whether an AI scene that carries on from the one before really does, once both have a clip.
- * "joined": its clip starts on the last frame of the clip now in use before it, or the two clips meet on
- * this scene's storyboard picture (that clip ends on it and this one starts on it).
+ * "joined": its clip was made to open on the last frame of the clip now in use before it.
  * "stale": one of the two was made or changed since, so there is a jump between them.
  * Null when there is nothing to judge: a new shot, a scene the creator films or added a clip for, or a clip still missing.
  */
@@ -81,8 +100,7 @@ export function joinState(scenes: Scene[], index: number): "joined" | "stale" | 
   const clip = pickedClip(scene);
   const beforeClip = pickedClip(before);
   if (!clip || !beforeClip || clip.source === "filmed") return null;
-  if (clip.from === beforeClip.id) return "joined";
-  return scene.picture !== "" && clip.from === scene.picture && beforeClip.to === scene.picture ? "joined" : "stale";
+  return clip.from === beforeClip.id ? "joined" : "stale";
 }
 
 export type EvidenceLevel = "strong" | "early" | "personal" | "none";
@@ -217,7 +235,7 @@ export type Series = {
 };
 
 /** The stages of a video as the agent names them. */
-export const VIDEO_STAGES = ["Idea", "Script", "Preview", "Storyboard", "Make", "Finish"] as const;
+export const VIDEO_STAGES = ["Idea", "Script", "Storyboard", "Preview", "Make", "Finish"] as const;
 
 /** What comes back from making or adding a picture or clip. */
 export type TakeResult = { ok: true; video: Video } | { ok: false; error: string };
@@ -302,6 +320,13 @@ export function parseCharacter(input: unknown): Character {
   };
 }
 
+function parseReview(input: unknown): StoryboardReview | null {
+  if (!input || typeof input !== "object") return null;
+  const r = input as Record<string, unknown>;
+  if (!str(r.picture)) return null;
+  return { picture: str(r.picture), ok: r.ok === true, problems: strs(r.problems), fix: str(r.fix), checkedAt: str(r.checkedAt) };
+}
+
 function parseScene(input: Record<string, unknown>, index: number): Scene {
   const seconds = typeof input.seconds === "number" && Number.isFinite(input.seconds) ? input.seconds : 5;
   return {
@@ -317,6 +342,8 @@ function parseScene(input: Record<string, unknown>, index: number): Scene {
     sound: str(input.sound),
     pictures: parseTakes(input.pictures),
     picture: str(input.picture),
+    approved: str(input.approved),
+    review: parseReview(input.review),
     clips: parseTakes(input.clips),
     clip: str(input.clip),
     lines: objs(input.lines)

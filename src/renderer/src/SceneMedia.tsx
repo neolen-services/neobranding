@@ -9,10 +9,9 @@ const MAX_UPLOAD = 300 * 1024 * 1024;
 const TAKE_SOURCE: Record<string, string> = { lipsync: "Lip-synced", filmed: "Filmed by you" };
 
 /**
- * One scene on the Make tab: its clip, made from the picture settled on the Storyboard tab.
- * The clip starts on that picture. A scene that carries on from the one before starts on the last
- * frame of that scene's clip instead, and a clip whose next scene carries on is made to end on
- * that scene's picture, so the two play as one take. Every attempt is kept as a take to switch between.
+ * One scene on the Make tab: its clip, made to follow the storyboard settled on the Storyboard tab.
+ * A scene that carries on from the one before opens on the last frame of that scene's clip, so the
+ * two play as one take. Every attempt is kept as a take to switch between.
  */
 export function SceneMedia({
   video,
@@ -30,7 +29,7 @@ export function SceneMedia({
   choices: MediaSettings;
   disabled: boolean;
   onVideo: (video: Video) => void;
-  /** Opens the Storyboard tab, where a scene's picture is made. */
+  /** Opens the Storyboard tab, where a scene's storyboard is made. */
   onStoryboard: () => void;
 }) {
   const [busy, setBusy] = useState("");
@@ -61,8 +60,6 @@ export function SceneMedia({
   const carriesOn = !filmed && index > 0 && scene.continues;
   const join = joinState(video.scenes, index);
   const beforeHasClip = index > 0 && Boolean(pickedClip(video.scenes[index - 1]));
-  const next = video.scenes[index + 1];
-  const endsOnNext = !filmed && next !== undefined && next.continues && next.madeBy === "ai" && Boolean(pickedPicture(next));
 
   const makeClip = () => run("Making the clip", () => api.makeSceneClip(video.id, scene.id, choices.clip));
   const lipSync = () => run("Lip-syncing", () => api.makeSceneLipSync(video.id, scene.id, choices.lipsync));
@@ -77,13 +74,12 @@ export function SceneMedia({
           : !carriesOn
             ? "New shot."
             : join === "joined"
-              ? `Starts exactly where scene ${index} ends.`
+              ? `Opens where scene ${index} ends.`
               : join === "stale"
-                ? `Does not start where scene ${index} now ends. Remake it to join them.`
+                ? `Does not open where scene ${index} now ends. Remake it to join them.`
                 : beforeHasClip
-                  ? `Carries on from scene ${index}: starts on its last frame.`
-                  : `Carries on from scene ${index}. Make scene ${index}'s clip first, so this one starts on its last frame.`,
-        endsOnNext && `Ends on scene ${index + 2}'s picture.`,
+                  ? `Carries on from scene ${index}: opens on its last frame.`
+                  : `Carries on from scene ${index}. Make scene ${index}'s clip first, so this one opens on its last frame.`,
       ]
         .filter(Boolean)
         .join(" ");
@@ -94,11 +90,11 @@ export function SceneMedia({
         {clip ? (
           <video controls preload="metadata" src={api.studioFileUrl(clip.file)} poster={picture ? api.studioFileUrl(picture.file) : undefined} className="h-full w-full object-cover" />
         ) : picture ? (
-          <img src={api.studioFileUrl(picture.file)} alt={`Storyboard picture: ${scene.action}`} className="h-full w-full object-cover" />
+          <img src={api.studioFileUrl(picture.file)} alt={`Storyboard: ${scene.action}`} className="h-full w-full object-cover" />
         ) : (
           <span className="flex flex-col items-center gap-2 px-3">
             <Icon d={filmed ? ICONS.camera : ICONS.ai} className="h-6 w-6 opacity-60" />
-            {filmed ? "Your clip goes here" : "No storyboard picture"}
+            {filmed ? "Your clip goes here" : "No storyboard"}
           </span>
         )}
       </div>
@@ -126,7 +122,7 @@ export function SceneMedia({
 
         {!filmed && !picture ? (
           <button type="button" className={smallButton} disabled={off} onClick={onStoryboard}>
-            Make its storyboard picture first
+            Make its storyboard first
           </button>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -143,7 +139,7 @@ export function SceneMedia({
                   type="button"
                   className={smallButton}
                   disabled={off || !hasVoice}
-                  title={hasVoice ? "Makes the character in the picture speak the scene's first recorded line." : "Make the voices first (Preview tab): lip-sync needs a recorded line."}
+                  title={hasVoice ? "Makes the speaking character's reference picture say the scene's first recorded line." : "Make the voices first (Preview tab): lip-sync needs a recorded line."}
                   onClick={() => void lipSync()}
                 >
                   {busy === "Lip-syncing" ? "Lip-syncing… this can take minutes" : "Lip-sync"}

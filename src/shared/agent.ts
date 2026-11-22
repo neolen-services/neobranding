@@ -100,8 +100,8 @@ export const AGENT_TOOLS: AgentToolInfo[] = [
   { name: "record_video_results", group: "create", title: "Record a video's results", description: "Saves the views, saves, shares and follows you tell it." },
 
   { name: "make_character_picture", group: "create", title: "Make a character's reference picture", description: "Makes a picture of a character from their look. Billed by the picture service." },
-  { name: "make_scene_pictures", group: "create", title: "Make storyboard pictures", description: "Makes the storyboard picture for scenes of an approved script: the frame each scene starts on. Billed by the picture service." },
-  { name: "make_scene_clip", group: "create", title: "Make a scene's clip", description: "Turns a scene's storyboard picture into a moving clip. The costly step, so it asks first unless you change that." },
+  { name: "make_scene_pictures", group: "create", title: "Make storyboards", description: "Makes the storyboard for scenes of an approved script: one sheet of four frames showing what happens in each scene. Billed by the picture service." },
+  { name: "make_scene_clip", group: "create", title: "Make a scene's clip", description: "Makes a scene's clip, following its storyboard. The costly step, so it asks first unless you change that." },
   { name: "make_scene_lipsync", group: "create", title: "Lip-sync a scene", description: "Makes the character in a scene's picture speak its recorded line. Asks first unless you change that." },
 
   { name: "update_character", group: "change", title: "Change a character", description: "Edits a character's personality, way of talking, look or voice." },

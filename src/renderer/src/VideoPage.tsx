@@ -1,4 +1,4 @@
-// One video, worked on a stage at a time: Idea, Script, Cast, Preview, Storyboard, Make, Finish.
+// One video, worked on a stage at a time: Idea, Script, Cast, Storyboard, Preview, Make, Finish.
 // Each tab shows only what that stage needs, and the header always says what to do next.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
@@ -9,6 +9,7 @@ import {
   EVIDENCE_LABELS,
   joinState, pickedClip,
   pickedPicture,
+  storyboardApproved,
   productionLabel,
   RESULT_COUNTS,
   SPEAKER_ME,
@@ -30,6 +31,8 @@ import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
 import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, ProductionPicker, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
 
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
+/** How many frames a scene's storyboard sheet holds: two across, two down. */
+const FRAMES = 4;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export function VideoPage({
@@ -71,7 +74,9 @@ export function VideoPage({
   const written = video.scenes.length > 0;
   const approved = video.approvedAt !== "";
   /** Why a tab cannot be opened yet, or "" when it can. */
-  const locked = (index: number) => (index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : "");
+  const storyboardsApproved = video.scenes.every(storyboardApproved);
+  const locked = (index: number) =>
+    index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : index >= 4 && index <= 5 && !storyboardsApproved ? "Approve every scene's storyboard first." : "";
 
   // A rewrite takes the approval back, which can close the tab being looked at.
   useEffect(() => {
@@ -182,9 +187,9 @@ export function VideoPage({
         {tab === 1 && !written && <WriteScript {...shared} />}
         {tab === 1 && written && <ScriptTab {...shared} onApproved={() => setTab(2)} />}
         {tab === 2 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(3)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
-        {tab === 3 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onNext={() => setTab(4)} />}
-        {tab === 4 && approved && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(5)} />}
-        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(4)} />}
+        {tab === 3 && approved && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
+        {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onStoryboard={() => setTab(3)} onNext={() => setTab(5)} />}
+        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(3)} />}
         {tab === 6 && approved && <FinishTab {...shared} />}
       </div>
     </div>
@@ -675,7 +680,7 @@ function LineText({ text, disabled, onSave }: { text: string; disabled: boolean;
   );
 }
 
-// ---------- 3. Preview ----------
+// ---------- Preview ----------
 
 type Progress = ReturnType<typeof videoProgress>;
 
@@ -694,8 +699,9 @@ function PreviewTab({
   progress,
   onOpenCast,
   onOpenSettings,
+  onStoryboard,
   onNext,
-}: Shared & { progress: Progress; onOpenCast: () => void; onOpenSettings: () => void; onNext: () => void }) {
+}: Shared & { progress: Progress; onOpenCast: () => void; onOpenSettings: () => void; onStoryboard: () => void; onNext: () => void }) {
   // One step per spoken line, or one for a scene nobody speaks in.
   const steps = useMemo(
     () =>
@@ -708,6 +714,21 @@ function PreviewTab({
   const [playing, setPlaying] = useState(false);
   const [voicing, setVoicing] = useState(false);
   const step = steps[Math.min(at, steps.length - 1)];
+
+  // A storyboard is a sheet of four frames. Each line of a scene gets its share of them, in order,
+  // and while it plays the frames in that share are stepped through.
+  const inScene = steps.filter((s) => s.scene.id === step?.scene.id);
+  const place = step ? inScene.indexOf(step) : 0;
+  const firstFrame = Math.floor((place * FRAMES) / Math.max(inScene.length, 1));
+  const lastFrame = Math.max(firstFrame, Math.floor(((place + 1) * FRAMES) / Math.max(inScene.length, 1)) - 1);
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    setFrame(firstFrame);
+    if (!playing || !step || lastFrame === firstFrame) return;
+    const seconds = step.line ? Math.max(countWords(step.line.text) / WORDS_PER_SECOND, 1.2) : step.scene.seconds;
+    const timer = setInterval(() => setFrame((f) => Math.min(f + 1, lastFrame)), (seconds * 1000) / (lastFrame - firstFrame + 1));
+    return () => clearInterval(timer);
+  }, [at, playing, firstFrame, lastFrame]);
 
   useEffect(() => {
     if (!playing) return;
@@ -756,9 +777,17 @@ function PreviewTab({
     <div className="grid gap-6 lg:grid-cols-[auto_minmax(0,1fr)]">
       <div className="mx-auto w-72">
         <div className="relative flex aspect-[9/16] w-full flex-col overflow-hidden rounded-[2rem] border border-[var(--line)] bg-black p-5 text-white shadow-xl">
-          {picture && <img src={api.studioFileUrl(picture.file)} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+          {picture && (
+            // The sheet is shown at twice the size and moved so that only the current frame fills the screen.
+            <img
+              src={api.studioFileUrl(picture.file)}
+              alt={`Storyboard frame ${frame + 1} of scene ${step.sceneIndex + 1}`}
+              className="absolute h-[200%] w-[200%] max-w-none object-fill"
+              style={{ left: `${-(frame % 2) * 100}%`, top: `${-Math.floor(frame / 2) * 100}%` }}
+            />
+          )}
           <p className="relative w-fit rounded-full bg-black/55 px-2 py-0.5 text-xs">
-            Scene {step.sceneIndex + 1} of {video.scenes.length} · {step.scene.madeBy === "me" ? "you film this" : "AI"}
+            Scene {step.sceneIndex + 1} of {video.scenes.length} · {step.scene.madeBy === "me" ? "you film this" : picture ? `frame ${frame + 1} of ${FRAMES}` : "no storyboard"}
           </p>
           {step.scene.text && <p className="relative mt-4 text-center text-xl font-bold leading-tight [text-shadow:0_1px_4px_#000]">{step.scene.text}</p>}
           <p className="relative my-auto text-center text-sm italic leading-relaxed opacity-70">{picture ? "" : step.scene.action}</p>
@@ -811,7 +840,7 @@ function PreviewTab({
               </button>
             ) : (
               <button type="button" className={`${quietButton} flex items-center gap-2`} onClick={onNext}>
-                On to pictures and clips
+                On to the clips
                 <Icon d={ICONS.arrow} />
               </button>
             )}
@@ -857,8 +886,12 @@ function PreviewTab({
         </section>
 
         <p className="text-sm leading-relaxed opacity-60">
-          Would the right viewer stop in the first two seconds, and does it leave them one thing to do? If not, go back to Script and ask for changes. It
-          costs far less to fix now than after the clips are made.
+          This is the video as it stands: the storyboard, frame by frame, with the voices. Would the right viewer stop in the first two seconds, and does it leave them
+          one thing to do? If a picture is off,{" "}
+          <button type="button" className="underline" onClick={onStoryboard}>
+            redo it on the Storyboard tab
+          </button>
+          ; if the words are off, go back to Script. It costs far less to fix now than after the clips are made.
         </p>
       </div>
     </div>
@@ -867,14 +900,14 @@ function PreviewTab({
 
 // ---------- Make ----------
 
-/** The clips: one for each scene, made from its storyboard picture or filmed by the creator. */
+/** The clips: one for each scene, made to follow its storyboard or filmed by the creator. */
 function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStoryboard }: Shared & { progress: Progress; onStoryboard: () => void }) {
   const [making, setMaking] = useState("");
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
   const ai = video.scenes.filter((s) => s.madeBy === "ai");
   const noPicture = ai.filter((s) => !pickedPicture(s)).length;
-  /** Whether a scene's clip is still to make: it has its storyboard picture, and no clip or one that no longer joins the clip before it. */
+  /** Whether a scene's clip is still to make: it has its storyboard, and no clip or one that no longer joins the clip before it. */
   const toMake = (scenes: Scene[], i: number) => scenes[i].madeBy === "ai" && Boolean(pickedPicture(scenes[i])) && (!pickedClip(scenes[i]) || joinState(scenes, i) === "stale");
   const waiting = video.scenes.filter((_, i) => toMake(video.scenes, i)).length;
   const stale = video.scenes.filter((_, i) => joinState(video.scenes, i) === "stale").length;
@@ -924,8 +957,8 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
             <p className="mt-0.5 text-sm opacity-60">{counts.join(" · ")}</p>
             {ai.length > 0 && (
               <p className="mt-1.5 max-w-3xl text-sm opacity-60">
-                Each clip starts on its scene's storyboard picture. Where a scene carries on from the one before, that clip is made to end on this scene's picture and this one starts on its
-                last frame, so the two play as one take. Clips are the costly step, and they are made from the first scene down.
+                Each clip follows its scene's storyboard, frame by frame, as one continuous shot. A scene that carries on from the one before opens on the last frame of that scene's clip, so
+                the two play as one take. Clips are the costly step, and they are made from the first scene down.
               </p>
             )}
           </div>
@@ -938,7 +971,7 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
         {noPicture > 0 && (
           <p className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-4 py-3 text-sm">
             <span className="min-w-0 flex-1">
-              {plural(noPicture, "scene")} {noPicture === 1 ? "has" : "have"} no storyboard picture yet, so {noPicture === 1 ? "its clip" : "their clips"} cannot be made.
+              {plural(noPicture, "scene")} {noPicture === 1 ? "has" : "have"} no storyboard yet, so {noPicture === 1 ? "its clip" : "their clips"} cannot be made.
             </span>
             <button type="button" className={smallButton} onClick={onStoryboard}>
               Open the storyboard

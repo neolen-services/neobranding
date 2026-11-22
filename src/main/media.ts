@@ -184,23 +184,37 @@ export async function makePicture(keys: Keys, choice: MediaChoice, input: { prom
   return made;
 }
 
+/** A picture given to a video service to guide a clip, and what it is. */
+export type ClipReference = { media: Media; /** What the picture is and how to use it, as the end of "… is". */ role: string };
+
 /**
- * A picture turned into a moving 9:16 clip of about `seconds`. The clip starts on `image`; with `end` it
- * also finishes on that picture, which is how one scene is made to stop where the next one starts.
+ * A 9:16 clip of about `seconds` that follows reference pictures: the scene's storyboard first, then
+ * anything else that guides it. `opening` is the exact frame the clip opens on (the last frame of the clip
+ * before it); only some services can pin a first frame, the others are shown it as one more reference.
+ * Each service names the pictures in its own way, so the roles are written into the prompt here.
  */
-export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: Media; end?: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
+export async function makeClip(keys: Keys, choice: MediaChoice, input: { references: ClipReference[]; opening?: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
   const key = needKey(keys, choice);
-  const { end } = input;
   const kling = choice.provider === "fal" && /kling/i.test(choice.model);
-  // Between two pictures, Gemini Omni makes at most 10 seconds (fal.ai and Google both say so).
-  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), end && !kling && choice.provider !== "elevenlabs" ? 10 : 15);
+  const veo = choice.provider === "elevenlabs" && /^veo/i.test(choice.model);
+  const openingRole = "the exact frame this shot opens on: begin on it and carry on from it with no cut";
+  // Kling pins the opening frame itself; every other service is shown it as a reference, right after the storyboard.
+  const shown: ClipReference[] = input.opening && !kling ? [input.references[0], { media: input.opening, role: openingRole }, ...input.references.slice(1)] : input.references;
+  // The most reference pictures each service takes, as their guides say.
+  const references = shown.slice(0, kling ? 4 : choice.provider === "fal" ? 10 : choice.provider === "google" ? 6 : veo ? 3 : 9);
+  const name = (i: number) => (kling ? `@Image${i + 1}` : choice.provider === "fal" ? `<IMAGE_REF_${i}>` : `Reference picture ${i + 1}`);
+  const prompt = [...references.map((r, i) => `${name(i)} is ${r.role}.`), input.opening && kling && "The first frame is given: carry on from it with no cut.", input.prompt].filter(Boolean).join("\n");
+  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), 15);
   let made: Media;
   if (choice.provider === "fal") {
-    const data = await fal(key, choice.model, async (upload) =>
-      kling
-        ? { prompt: input.prompt, start_image_url: await upload(input.image), ...(end && { end_image_url: await upload(end) }), duration: String(seconds), generate_audio: false }
-        : { prompt: input.prompt, image_url: await upload(input.image), ...(end && { end_image_url: await upload(end) }), aspect_ratio: "9:16", resolution: "720p", duration: seconds },
-    );
+    const data = await fal(key, choice.model, async (upload) => ({
+      prompt,
+      image_urls: await Promise.all(references.map((r) => upload(r.media))),
+      aspect_ratio: "9:16",
+      ...(kling
+        ? { ...(input.opening && { start_image_url: await upload(input.opening) }), duration: String(seconds), generate_audio: false }
+        : { resolution: "720p", duration: seconds }),
+    }));
     if (!data.video?.url) throw new Error("fal.ai returned no clip.");
     made = await download(data.video.url, "video/mp4");
   } else if (choice.provider === "google") {
@@ -208,33 +222,25 @@ export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: 
       key,
       {
         model: choice.model,
-        // Two pictures, first then last, are animated from one to the other.
-        input: [
-          { type: "image", data: b64(input.image), mime_type: input.image.mime },
-          ...(end ? [{ type: "image", data: b64(end), mime_type: end.mime }] : []),
-          { type: "text", text: input.prompt },
-        ],
+        input: [...references.map((r) => ({ type: "image", data: b64(r.media), mime_type: r.media.mime })), { type: "text", text: prompt }],
         response_format: { type: "video", aspect_ratio: "9:16", duration: `${seconds}s` },
-        // With one picture this makes it the first frame, where Google would otherwise decide for itself how to use it.
-        // With two it is left out: Google's guide gives none for first-and-last frames, and a task limits the pictures allowed.
-        ...(!end && { generation_config: { video_config: { task: "image_to_video" } } }),
+        // Says the pictures are references, so none of them is taken as the first frame.
+        generation_config: { video_config: { task: "reference_to_video" } },
       },
       "video",
     );
   } else {
-    // Veo on ElevenLabs makes 4, 6 or 8 seconds only.
-    const allowed = [4, 6, 8].reduce((best, n) => (Math.abs(n - seconds) < Math.abs(best - seconds) ? n : best), 8);
     made = await eleven(key, "video", {
       model_id: choice.model,
-      prompt: input.prompt,
+      prompt,
       aspect_ratio: "9:16",
-      duration_secs: /^veo/i.test(choice.model) ? allowed : seconds,
-      start_frame: inline(input.image),
-      ...(end && { end_frame: inline(end) }),
+      // Veo on ElevenLabs makes 8 seconds when it is given reference pictures.
+      duration_secs: veo ? 8 : seconds,
+      images: references.map((r) => (veo ? { image: inline(r.media), role: "subject" } : inline(r.media))),
       generate_audio: false,
     });
   }
-  used("clip", choice, input.detail, seconds);
+  used("clip", choice, input.detail, veo ? 8 : seconds);
   return made;
 }
 
@@ -295,6 +301,32 @@ export async function lastFrame(dataDir: string, clip: Take, toolsDir: string): 
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+/**
+ * A stored picture made small enough to send to Claude to look at: at most 1568 pixels on its long
+ * side, as a JPEG. Without FFmpeg (`toolsDir` null), or if it cannot be shrunk, the picture is sent as it is.
+ */
+export async function forLooking(dataDir: string, take: Take, toolsDir: string | null): Promise<Media> {
+  const source = mediaFilePath(dataDir, take.file);
+  if (!source) throw new Error("That picture's file is missing.");
+  if (toolsDir) {
+    const work = await mkdtemp(join(tmpdir(), "look-"));
+    try {
+      const out = join(work, "small.jpg");
+      await promisify(execFile)(
+        join(toolsDir, `ffmpeg${process.platform === "win32" ? ".exe" : ""}`),
+        ["-y", "-hide_banner", "-loglevel", "error", "-i", source, "-vf", "scale=w=1568:h=1568:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "4", out],
+        { windowsHide: true },
+      );
+      return { bytes: await readFile(out), mime: "image/jpeg" };
+    } catch {
+      // Falls through to the picture as it is.
+    } finally {
+      await rm(work, { recursive: true, force: true });
+    }
+  }
+  return loadTake(dataDir, take);
 }
 
 /** Reads a stored take back, to send it on to a service. */

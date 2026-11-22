@@ -1,4 +1,4 @@
-// The Cast stage of a video: everyone its script uses, set up on one page before the preview.
+// The Cast stage of a video: everyone its script uses, set up on one page before the storyboard.
 // The Cast page in the side menu is the whole cast across every video; this is only who is in this one.
 import { useState } from "react";
 import type { BrandKit } from "@shared/brand";
@@ -50,7 +50,7 @@ export function CastStep({
           </p>
         </div>
         <button type="button" className={`${info.unready === 0 ? primaryButton : quietButton} flex items-center gap-2`} onClick={onNext}>
-          On to the preview
+          On to the storyboard
           <Icon d={ICONS.arrow} />
         </button>
       </section>

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { MAX_IDEAS, joinState, pickedClip, pickedPicture, productionLabel, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
+import { MAX_IDEAS, joinState, pickedClip, pickedPicture, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
 import { api } from "./api";
 
 export const fieldClass =
@@ -508,7 +508,7 @@ export function PlayLine({ file, label: name }: { file: string; label: string })
 }
 
 /** The tabs of a video's page, in the order the work is done. */
-export const STAGES = ["Idea", "Script", "Cast", "Preview", "Storyboard", "Make", "Finish"] as const;
+export const STAGES = ["Idea", "Script", "Cast", "Storyboard", "Preview", "Make", "Finish"] as const;
 
 /** One character in a video's script, and what the video still needs from them. */
 export type CastMember = { character: Character; /** How many lines they speak. */ lines: number; /** How many scenes they are seen or heard in. */ scenes: number; needs: string[] };
@@ -546,7 +546,7 @@ export type VideoProgress = {
   unvoiced: number;
   /** Speakers whose lines cannot be voiced until a voice is chosen. */
   voiceless: string[];
-  /** AI scenes with no storyboard picture yet. */
+  /** AI scenes with no storyboard yet. */
   needPicture: number;
   /** AI scenes with no clip, or with a clip that no longer joins the one before it. */
   needClip: number;
@@ -581,8 +581,10 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   }
   const unready = videoCast(video, cast, brand).unready;
   if (unready > 0) return { ...base, done: 2, tab: 2, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
-  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
-  if (needPicture > 0) return { ...base, done: 4, tab: 4, next: `Make ${plural(needPicture, "storyboard picture")}`, waiting: true };
+  if (needPicture > 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(needPicture, "storyboard")}`, waiting: true };
+  const unapproved = ai.filter((s) => !storyboardApproved(s)).length;
+  if (unapproved > 0) return { ...base, done: 3, tab: 3, next: `Approve ${plural(unapproved, "storyboard")}`, waiting: true };
+  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 4, tab: 4, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
   if (needClip > 0) return { ...base, done: 5, tab: 5, next: `Make ${plural(needClip, "clip")} from the storyboard`, waiting: true };
   if (needFilming > 0) return { ...base, done: 5, tab: 5, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
   return { ...base, done: 6, tab: 6, next: "Post it, then record how it did", waiting: true };

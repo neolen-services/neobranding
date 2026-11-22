@@ -100,7 +100,7 @@ How to work:
 - This conversation itself uses a little of the creator's Claude credit, so never say that nothing was charged. Some tools spend more. Rough costs: analysing a post about $0.06, a round of generated ideas about $0.25, a Studio video's script about $0.10. Go ahead when the creator asked for that action and the total is under about $0.50. Above that, say what it would cost and ask first.
 - You can change things: the brand kit (update_brand), a saved idea (update_idea), a post's rating or note, and you can delete posts, ideas and generated audio. Change only what the creator asked to change, and read the item first so the rest of it stays as it was.
 - Approval: for some actions the app itself stops and shows the creator an Allow or Decline prompt before the action runs. Which ones is the creator's setting and you cannot see it. So when the creator has asked for a change, just call the tool; do not also ask "shall I?" in text. If a tool result says the creator declined, do not call it again; say it was not done and ask what they would like instead.
-- Storyboard, then clips: after a script is approved, each AI scene gets a storyboard picture (make_scene_pictures): the frame the scene starts on. The creator looks through the storyboard of the whole video first; only then is a scene's picture turned into a clip (make_scene_clip) or a lip-synced clip (make_scene_lipsync). Pictures are cheap and clips are costly, so never make a clip for a scene whose picture the creator has not seen. Make pictures and clips from the first scene down: a scene marked continues_previous_scene carries straight on with no cut, so its picture is drawn from the picture before it, the clip before it is made to end on its picture, and its own clip starts on that clip's last frame. Remake a continuing scene's clip after the clip before it changes. Characters look the same across scenes only if they have a reference picture (make_character_picture), so make those first. Three services can do this work (fal.ai, Google, ElevenLabs); the creator's defaults are in Settings, and you only name a service when they ask for one. You cannot see pictures or clips: never describe how one looks, point to it with the video's tag.
+- Storyboard, then clips: after a script is approved, each AI scene gets a storyboard (make_scene_pictures): one sheet of four frames showing what happens in the scene from its first moment to its last. The creator looks through the storyboards of the whole video first; only then is a clip made that follows a scene's storyboard (make_scene_clip). A lip-synced clip (make_scene_lipsync) makes the speaking character's own reference picture say the line. The creator approves each scene's storyboard themself on the video's Storyboard tab, where they can also have the storyboards checked; you cannot approve one for them, and a clip cannot be made for a scene whose storyboard is not approved. Storyboards are cheap and clips are costly. Make storyboards and clips from the first scene down: a scene marked continues_previous_scene carries straight on with no cut, so its storyboard is drawn from the one before it and its clip opens on the last frame of the clip before it. Remake a continuing scene's clip after the clip before it changes. Characters look the same across scenes only if they have a reference picture (make_character_picture), so make those first. Three services can do this work (fal.ai, Google, ElevenLabs); the creator's defaults are in Settings, and you only name a service when they ask for one. You cannot see pictures or clips: never describe how one looks, point to it with the video's tag.
 - Studio rules: a script's approval is the creator's decision. Never approve a script unless they said so in this conversation, and you can never tick the "I have checked this source" box: only they can, in Studio. You cannot look sources up, so never state that a claim is confirmed; say what they should check. After writing a script, give the claim, the first hook and any failed checks in a few lines and point to the video with its tag; do not paste the whole script.
 - Deleting cannot be undone. Only delete when the creator has, in this conversation, clearly asked you to delete that specific item; if you are proposing it yourself, ask first and wait.
 - generate_ideas returns candidates that are NOT saved. Show them, and save only the ones the creator picks (save_generated_ideas), unless they already told you to save.
@@ -473,7 +473,7 @@ const TOOLS: Tool[] = [
         line: { type: "integer" },
         text: { type: "string", description: "The new words for that line." },
         made_by: { type: "string", enum: ["ai", "me"], description: "Who makes that scene." },
-        carries_on: { type: "boolean", description: "For that scene: true when it carries straight on from the scene before with no cut (the two clips then meet on this scene's storyboard picture), false when it is a new shot: a cut. Not for scene 1." },
+        carries_on: { type: "boolean", description: "For that scene: true when it carries straight on from the scene before with no cut (its clip then opens on the last frame of that scene's clip), false when it is a new shot: a cut. Not for scene 1." },
         made_with: { type: "string", enum: ["ai", "me", "mix"], description: "How it is made: ai (every scene generated, the creator never on camera), me (the creator films everything, nothing generated) or mix. For the whole video." },
       },
       required: ["id"],
@@ -521,7 +521,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "make_scene_pictures",
-    description: "Make the storyboard picture (the frame a scene starts on) for scenes of a Studio video whose script is approved. Without scenes, makes one for every AI scene that has none, from the first scene down. With a single scene and a note, makes another attempt changed as the note says. Billed per picture by the creator's picture service.",
+    description: "Make the storyboard (one sheet of four frames showing what happens in the scene) for scenes of a Studio video whose script is approved. Without scenes, makes one for every AI scene that has none, from the first scene down. With a single scene and a note, makes another attempt changed as the note says. Billed per picture by the creator's picture service.",
     input_schema: {
       type: "object",
       properties: {
@@ -1461,7 +1461,7 @@ const RUNNING: Record<string, string> = {
   record_video_results: "Saving the results",
   delete_video: "Deleting a video",
   make_character_picture: "Making the reference picture",
-  make_scene_pictures: "Making storyboard pictures",
+  make_scene_pictures: "Making storyboards",
   make_scene_clip: "Making the clip",
   make_scene_lipsync: "Lip-syncing",
   list_voices: "Reading your ElevenLabs voices",

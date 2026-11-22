@@ -4,9 +4,9 @@ import type { ApiProvider } from "./settings";
 /** The three jobs a service can do for a scene. */
 export type MediaTask = "picture" | "clip" | "lipsync";
 export const MEDIA_TASKS: Record<MediaTask, { label: string; description: string }> = {
-  picture: { label: "Pictures", description: "A storyboard picture for a scene, or a picture of a character, made from a description and reference pictures." },
-  clip: { label: "Clips", description: "A scene's storyboard picture turned into a few seconds of moving video." },
-  lipsync: { label: "Lip-sync", description: "A character's still made to speak a recorded line." },
+  picture: { label: "Pictures", description: "A scene's storyboard (one sheet of four frames), or a picture of a character, made from a description and reference pictures." },
+  clip: { label: "Clips", description: "A few seconds of video that follows a scene's storyboard." },
+  lipsync: { label: "Lip-sync", description: "A character's picture made to speak a recorded line." },
 };
 
 export type MediaProvider = "fal" | "google" | "elevenlabs";
@@ -34,8 +34,8 @@ export const MEDIA_MODELS: Record<MediaTask, (MediaChoice & { label: string })[]
     { provider: "elevenlabs", model: "gemini-3-pro-image", label: "Gemini 3 Pro Image" },
   ],
   clip: [
-    { provider: "fal", model: "google/gemini-omni-flash/v1.2/image-to-video", label: "Gemini Omni Flash 1.2" },
-    { provider: "fal", model: "fal-ai/kling-video/v3/pro/image-to-video", label: "Kling 3 Pro" },
+    { provider: "fal", model: "google/gemini-omni-flash/v1.2/reference-to-video", label: "Gemini Omni Flash 1.2" },
+    { provider: "fal", model: "fal-ai/kling-video/o3/pro/reference-to-video", label: "Kling O3 Pro" },
     { provider: "google", model: "gemini-omni-1.2-flash", label: "Gemini Omni Flash 1.2" },
     { provider: "elevenlabs", model: "veo-3.1-fast-generate-001", label: "Veo 3.1 Fast" },
     { provider: "elevenlabs", model: "veo-3.1-generate-001", label: "Veo 3.1" },
@@ -49,7 +49,7 @@ export const MEDIA_MODELS: Record<MediaTask, (MediaChoice & { label: string })[]
 
 export const DEFAULT_MEDIA: MediaSettings = {
   picture: { provider: "fal", model: "google/nano-banana-2.1/edit" },
-  clip: { provider: "fal", model: "google/gemini-omni-flash/v1.2/image-to-video" },
+  clip: { provider: "fal", model: "google/gemini-omni-flash/v1.2/reference-to-video" },
   lipsync: { provider: "fal", model: "fal-ai/sync-lipsync/v3/image-to-video" },
 };
 
@@ -64,12 +64,22 @@ export function parseChoice(input: unknown): MediaChoice | null {
   return { provider: c.provider, model };
 }
 
+/**
+ * Clips follow a storyboard given as a reference picture, so fal.ai's first-frame models
+ * chosen in an earlier version are read as the reference form of the same model.
+ */
+export function referenceModel(choice: MediaChoice | null): MediaChoice | null {
+  if (!choice || choice.provider !== "fal") return choice;
+  if (/kling/i.test(choice.model)) return /reference-to-video$/.test(choice.model) ? choice : { provider: "fal", model: "fal-ai/kling-video/o3/pro/reference-to-video" };
+  return { provider: "fal", model: choice.model.replace(/\/image-to-video$/, "/reference-to-video") };
+}
+
 /** Saved settings, with the default for any job that has none. */
 export function parseMediaSettings(input: unknown): MediaSettings {
   const saved = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
     picture: parseChoice(saved.picture) ?? DEFAULT_MEDIA.picture,
-    clip: parseChoice(saved.clip) ?? DEFAULT_MEDIA.clip,
+    clip: referenceModel(parseChoice(saved.clip)) ?? DEFAULT_MEDIA.clip,
     lipsync: parseChoice(saved.lipsync) ?? DEFAULT_MEDIA.lipsync,
   };
 }
@@ -90,12 +100,10 @@ export type Take = {
   /** The service and model that made it, for display. "" for a file you added. */
   madeWith: string;
   /**
-   * For a clip: the id of what its first frame came from. That is the scene's storyboard picture, or,
-   * for a scene that carries on from the one before, that scene's clip (the clip starts on its last frame).
+   * For a clip: the id of what it was made from. That is the scene's storyboard, or, for a scene that
+   * carries on from the one before, that scene's clip (this clip opens on its last frame).
    */
   from?: string;
-  /** For a clip made to end on a picture: the id of that picture, which is the next scene's storyboard picture. */
-  to?: string;
   createdAt: string;
 };
 
@@ -106,7 +114,7 @@ export function parseTakes(input: unknown): Take[] {
   if (!Array.isArray(input)) return [];
   return input.flatMap((t): Take[] => {
     if (!t || typeof t !== "object") return [];
-    const { id, file, source, madeWith, from, to, createdAt } = t as Record<string, unknown>;
+    const { id, file, source, madeWith, from, createdAt } = t as Record<string, unknown>;
     if (typeof id !== "string" || typeof file !== "string" || !MEDIA_FILE.test(file)) return [];
     return [
       {
@@ -115,7 +123,6 @@ export function parseTakes(input: unknown): Take[] {
         source: source === "lipsync" || source === "filmed" || source === "upload" ? source : "ai",
         madeWith: typeof madeWith === "string" ? madeWith : "",
         ...(typeof from === "string" && from ? { from } : {}),
-        ...(typeof to === "string" && to ? { to } : {}),
         createdAt: typeof createdAt === "string" ? createdAt : "",
       },
     ];

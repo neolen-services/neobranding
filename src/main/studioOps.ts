@@ -23,12 +23,12 @@ import type { ApiProvider } from "../shared/settings";
 import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
-import { planSeries, voiceVideo, writeVideo } from "./studio";
+import { planSeries, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
 import { readFile } from "node:fs/promises";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaSettings, type MediaTask, type UploadedFile } from "../shared/media";
-import { pickedClip, pickedPicture, type Scene, type TakeResult } from "../shared/studio";
+import { pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
 import { audioFilePath } from "./audio";
-import { deleteTake, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type Media } from "./media";
+import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
 
 const MEDIA_SETTING = "media_settings";
 
@@ -102,47 +102,30 @@ export function studioOps(ctx: StudioContext) {
     return { ok: true, video: saved };
   }
 
+  /** The characters seen or heard in a scene. */
+  const castOf = (scene: Scene) => cast().filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id));
+
   /**
-   * What a scene's clip starts on and, when the next scene carries on from it, ends on.
-   * It starts on the scene's storyboard picture; a scene that carries on starts instead on the very last
-   * frame of the clip before it when there is one, so the join is exact. It ends on the next scene's
-   * storyboard picture when that scene carries on, so the two meet on a frame the creator has reviewed.
+   * What a scene's clip is made from: its storyboard, and, for a scene that carries on from the one
+   * before, the very last frame of that scene's clip, which this clip opens on. `from` is the id of
+   * the clip it opens on, or of the storyboard when it opens on nothing.
    */
-  async function clipFrames(
+  async function clipSource(
     videoId: unknown,
     sceneId: unknown,
-  ): Promise<{ ok: true; video: Video; scene: Scene; index: number; start: Media; from: string; exact: boolean; end?: Media; to?: string } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; video: Video; scene: Scene; index: number; storyboard: Media; opening?: Media; from: string } | { ok: false; error: string }> {
     const { video, scene } = find(videoId, sceneId);
     if (!video.approvedAt) return { ok: false, error: "Approve the script first. Clips are made for an approved script, so none are wasted on words that change." };
     const index = video.scenes.indexOf(scene);
     const picture = pickedPicture(scene);
-    if (!picture) return { ok: false, error: `Scene ${index + 1} has no storyboard picture yet. Make it on the Storyboard tab first: the clip starts from it.` };
-    let start: Media | undefined;
-    let from = picture.id;
+    if (!picture) return { ok: false, error: `Scene ${index + 1} has no storyboard yet. Make it on the Storyboard tab first: the clip follows it.` };
+    if (!storyboardApproved(scene)) return { ok: false, error: `Scene ${index + 1}'s storyboard is not approved yet. Approve it on the Storyboard tab first.` };
     const before = scene.continues && scene.madeBy === "ai" ? video.scenes[index - 1] : undefined;
     const beforeClip = before && pickedClip(before);
-    if (beforeClip) {
-      // Without FFmpeg, or if the frame cannot be read, the scene starts on its storyboard picture instead.
-      const toolsDir = await ensureFfmpeg(ctx.dataDir());
-      const frame = toolsDir ? await lastFrame(ctx.dataDir(), beforeClip, toolsDir).catch(() => null) : null;
-      if (frame) {
-        start = frame;
-        from = beforeClip.id;
-      }
-    }
-    start ??= await loadTake(ctx.dataDir(), picture);
-    const next = video.scenes[index + 1];
-    const nextPicture = next && next.continues && next.madeBy === "ai" ? pickedPicture(next) : undefined;
-    return {
-      ok: true,
-      video,
-      scene,
-      index,
-      start,
-      from,
-      exact: from !== picture.id,
-      ...(nextPicture && { end: await loadTake(ctx.dataDir(), nextPicture), to: nextPicture.id }),
-    };
+    // Without FFmpeg, or if the frame cannot be read, the clip is made from the storyboard alone.
+    const toolsDir = beforeClip ? await ensureFfmpeg(ctx.dataDir()) : null;
+    const opening = beforeClip && toolsDir ? await lastFrame(ctx.dataDir(), beforeClip, toolsDir).catch(() => undefined) : undefined;
+    return { ok: true, video, scene, index, storyboard: await loadTake(ctx.dataDir(), picture), ...(opening && { opening }), from: opening && beforeClip ? beforeClip.id : picture.id };
   }
 
   /** What the creator's posted videos show about which openings find their audience, for the script writer. */
@@ -519,12 +502,11 @@ export function studioOps(ctx: StudioContext) {
     async scenePicture(videoId: unknown, sceneId: unknown, override: unknown, note: unknown): Promise<TakeResult> {
       try {
         const { video, scene } = find(videoId, sceneId);
-        if (!video.approvedAt) return { ok: false, error: "Approve the script first. Pictures are made for an approved script, so none are wasted on words that change." };
+        if (!video.approvedAt) return { ok: false, error: "Approve the script first. A storyboard is made for an approved script, so none is wasted on words that change." };
         const choice = choose("picture", override);
-        const everyone = cast();
-        const inScene = everyone.filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id));
+        const inScene = castOf(scene);
         // What the picture model is shown so the scenes belong together: for a scene that carries on, the storyboard
-        // picture of the scene before; otherwise the nearest earlier scene in the same place.
+        // of the scene before; otherwise the storyboard of the nearest earlier scene in the same place.
         const here = scene.place.trim().toLowerCase();
         const index = video.scenes.findIndex((x) => x.id === scene.id);
         const before = video.scenes[index - 1];
@@ -533,25 +515,28 @@ export function studioOps(ctx: StudioContext) {
         const setPicture = sameSet ? pickedPicture(sameSet) : undefined;
         const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, setPicture ? 3 : 4);
         const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
+        const said = scene.lines.map((l) => `${speakerName(l.speaker, cast())}: ${l.text}`).join(" / ");
         const media = await makePicture(ctx.key, choice, {
           prompt: [
-            "One storyboard frame of a vertical 9:16 short video: the first moment of this shot, as the finished video will show it.",
-            look && `Style: ${look}`,
+            `A storyboard sheet for ONE shot of a vertical short video, ${scene.seconds} seconds long. Draw exactly four frames in a 2 by 2 grid, read left to right and top to bottom, with a thin dark border between them. Each frame is a tall 9:16 picture. Together they show this one continuous shot from its first moment to its last: frame 1 is how it opens, frames 2 and 3 are the action in between, frame 4 is how it ends.`,
+            "It is one take, not four shots: the same place, people, clothes, props and light in every frame. Only the action moves on, and the camera only as the camera note says.",
+            look ? `Draw every frame in the finished look of the video: ${look}` : "Draw every frame as the finished video will look.",
             scene.place && `Place: ${scene.place}.`,
-            `What happens: ${scene.action}`,
+            `What happens across the four frames: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
+            said && `What is said during the shot (show who is speaking; do not write the words): ${said}`,
             inScene.length
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The ${setPicture ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture: same face, hair, clothes and colours.`
+              ? `The ${setPicture ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture in every frame: same face, hair, clothes and colours.`
               : "",
             setPicture && carriesOn
-              ? `The FIRST reference picture is the frame the previous shot started on (scene ${index}). This shot carries straight on from it with no cut, so this is the same take a few seconds later: the same place, people, clothes, props, light and camera position. Change only what the action above has changed by the moment this shot begins.`
+              ? `The FIRST reference picture is the storyboard of the shot just before this one (scene ${index}). This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
               : setPicture
-                ? `The FIRST reference picture is this same place in an earlier shot of the same video (scene ${video.scenes.indexOf(sameSet!) + 1}). This is the same room at the same moment: keep the same walls, furniture, props, light, time of day and what everyone wears. Only the framing and the instant change.`
+                ? `The FIRST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). Keep the same walls, furniture, props, light, time of day and what everyone wears.`
                 : "",
-            "No captions, subtitles, logos or any text in the picture.",
+            "No captions, subtitles, speech bubbles, arrows, notes, logos or any other writing. A small frame number in a corner of each frame is the only text allowed.",
             typeof note === "string" && note.trim() ? `Change from the last attempt: ${note.trim()}` : "",
           ]
             .filter(Boolean)
@@ -566,6 +551,64 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
+    /**
+     * Has Claude look at the storyboards and say, scene by scene, whether each is good to make the video from.
+     * With a scene id only that scene is checked (the storyboard before it is shown too, for continuity);
+     * otherwise every AI scene that has a storyboard. What it says is kept on each scene.
+     */
+    async storyboardReview(videoId: unknown, sceneId?: unknown): Promise<TakeResult> {
+      try {
+        const video = findVideo(videoId);
+        if (!video) return { ok: false, error: "That video no longer exists." };
+        const only = sceneId === undefined || sceneId === null ? -1 : video.scenes.findIndex((s) => s.id === String(sceneId));
+        if (sceneId !== undefined && sceneId !== null && only < 0) return { ok: false, error: "That scene no longer exists." };
+        const has = (i: number) => video.scenes[i]?.madeBy === "ai" && pickedPicture(video.scenes[i]) !== undefined;
+        const check = video.scenes.map((_, i) => i).filter((i) => has(i) && (only < 0 || i === only));
+        if (check.length === 0) return { ok: false, error: "There is no storyboard to check yet. Make one first." };
+        const shown = video.scenes.map((_, i) => i).filter((i) => has(i) && (only < 0 || i === only || i === only - 1));
+        const toolsDir = await ensureFfmpeg(ctx.dataDir());
+        const sheets = await Promise.all(shown.map(async (i) => ({ scene: i + 1, ...(await forLooking(ctx.dataDir(), pickedPicture(video.scenes[i])!, toolsDir)) })));
+        const looked = new Map(shown.map((i) => [i + 1, video.scenes[i].picture]));
+        const result = await reviewStoryboards(ctx.key("anthropic"), {
+          video,
+          characters: cast().filter((c) => video.scenes.some((s) => s.characters.includes(c.id) || s.lines.some((l) => l.speaker === c.id))),
+          look: video.look || series().find((s) => s.id === video.seriesId)?.look || "",
+          sheets,
+          check: check.map((i) => i + 1),
+        });
+        if (!result.ok) return result;
+        // The video may have changed while Claude was looking: each answer is kept with the storyboard it was about.
+        const now = findVideo(video.id);
+        if (!now) return { ok: false, error: "That video no longer exists." };
+        const checkedAt = new Date().toISOString();
+        const saved = {
+          ...now,
+          costUsd: now.costUsd + result.value.costUsd,
+          scenes: now.scenes.map((s, i) => {
+            const r = result.value.reviews.find((x) => x.scene === i + 1);
+            const picture = looked.get(i + 1);
+            return r && picture ? { ...s, review: { picture, ok: r.ok, problems: r.problems, fix: r.fix, checkedAt } } : s;
+          }),
+          updatedAt: checkedAt,
+        };
+        db().saveDoc("videos", saved);
+        return { ok: true, video: saved };
+      } catch (e) {
+        return fail(e, "The storyboards could not be checked.");
+      }
+    },
+
+    /** The creator approves the storyboard a scene has in use, or takes the approval back. */
+    sceneApprove(videoId: unknown, sceneId: unknown, approved: unknown): TakeResult {
+      try {
+        const { video, scene } = find(videoId, sceneId);
+        if (approved === true && !pickedPicture(scene)) return { ok: false, error: "This scene has no storyboard to approve yet." };
+        return change(video.id, scene.id, (s) => ({ ...s, approved: approved === true ? s.picture : "" }));
+      } catch (e) {
+        return fail(e, "That did not work.");
+      }
+    },
+
     /** Says whether a scene carries straight on from the one before it, or is a new shot. */
     sceneFlow(videoId: unknown, sceneId: unknown, continues: unknown): TakeResult {
       try {
@@ -577,55 +620,67 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
-    /** Turns the scene's storyboard picture into a moving clip. */
+    /** Makes the scene's clip, following its storyboard. */
     /** Turns the scene's chosen picture into a moving clip. */
     async sceneClip(videoId: unknown, sceneId: unknown, override: unknown): Promise<TakeResult> {
       try {
-        const frames = await clipFrames(videoId, sceneId);
-        if (!frames.ok) return frames;
-        const { video, scene, index } = frames;
+        const source = await clipSource(videoId, sceneId);
+        if (!source.ok) return source;
+        const { video, scene, index } = source;
         const choice = choose("clip", override);
+        const inScene = castOf(scene).filter((c) => c.pictures[0]);
+        const references: ClipReference[] = [
+          {
+            media: source.storyboard,
+            role: "the storyboard of this shot: a sheet of numbered frames in reading order, showing what happens from its first moment to its last. Follow those frames in order as ONE continuous shot. It is a plan, not a picture to show: never show the sheet, the grid, the borders or the numbers",
+          },
+          ...(await Promise.all(inScene.map(async (c) => ({ media: await loadTake(ctx.dataDir(), c.pictures[0]), role: `${c.name}: keep the same face, hair, clothes and colours` })))),
+        ];
+        const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
         const media = await makeClip(ctx.key, choice, {
-          image: frames.start,
-          end: frames.end,
+          references,
+          opening: source.opening,
           prompt: [
-            frames.exact && "This shot continues the previous one without a cut: begin exactly on the given first frame and carry the same movement on.",
-            scene.action,
+            `One continuous ${scene.seconds}-second vertical shot, full frame, with no cuts.`,
+            source.opening && `It carries straight on from the shot before (scene ${index}): open on that shot's last frame and continue the same movement.`,
+            `What happens: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
-            frames.end &&
-              `The second picture is the last frame: move smoothly to it and end exactly on it, with no cut, no fade and no jump. It is the first frame of the next shot, which begins: ${video.scenes[index + 1].action}`,
-            "Keep the characters and the place exactly as in the picture. No text on screen.",
+            scene.place && `Place: ${scene.place}.`,
+            look && `Look: ${look}`,
+            "No captions, subtitles or any text on screen. No split screen.",
           ]
             .filter(Boolean)
-            .join(" "),
+            .join("\n"),
           seconds: scene.seconds,
-          detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
+          detail: `${video.title} · scene ${index + 1}`,
         });
-        const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("clip", choice))), from: frames.from, ...(frames.to && { to: frames.to }) };
+        const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("clip", choice))), from: source.from };
         return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
       } catch (e) {
         return fail(e, "The clip could not be made.");
       }
     },
 
-    /** Makes the scene's storyboard picture speak its first recorded AI line. */
+    /** Makes the speaking character's picture say the scene's first recorded AI line. */
     async sceneLipSync(videoId: unknown, sceneId: unknown, override: unknown): Promise<TakeResult> {
       try {
         const { scene: asked } = find(videoId, sceneId);
         if (!asked.lines.some((l) => l.audioFile)) return { ok: false, error: "This scene has no recorded line yet. Make the voices first." };
-        const frames = await clipFrames(videoId, sceneId);
-        if (!frames.ok) return frames;
-        const { video, scene } = frames;
+        const { video, scene } = find(videoId, sceneId);
         const line = scene.lines.find((l) => l.audioFile);
         const audioPath = line?.audioFile ? audioFilePath(ctx.dataDir(), line.audioFile) : null;
-        if (!audioPath) return { ok: false, error: "This scene has no recorded line yet. Make the voices first." };
+        if (!line || !audioPath) return { ok: false, error: "This scene has no recorded line yet. Make the voices first." };
+        // A storyboard is a sheet of frames, not a face, so the speaker's own reference picture is what speaks.
+        const speaker = cast().find((c) => c.id === line.speaker);
+        const face = speaker?.pictures[0];
+        if (!face) return { ok: false, error: speaker ? `${speaker.name} has no reference picture yet. Add one on the Cast tab: lip-sync makes that picture speak.` : "Lip-sync makes a character's picture speak, and this line is not spoken by a character." };
         const choice = choose("lipsync", override);
         const media = await makeLipSync(ctx.key, choice, {
-          image: frames.start,
+          image: await loadTake(ctx.dataDir(), face),
           audio: { bytes: await readFile(audioPath), mime: "audio/mpeg" },
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
-        const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, media, "lipsync", choiceLabel("lipsync", choice))), from: frames.from };
+        const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "lipsync", choiceLabel("lipsync", choice));
         return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
       } catch (e) {
         return fail(e, "The lip-sync could not be made.");
