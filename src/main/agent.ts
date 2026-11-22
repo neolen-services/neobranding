@@ -40,7 +40,7 @@ import type { Store } from "./store";
 import { recordClaude } from "./usage";
 import type { ApiProvider } from "../shared/settings";
 import { studioOps } from "./studioOps";
-import { approvedConcept, parseProduction, speakerName, VIDEO_STAGES, videoStage, type Video } from "../shared/studio";
+import { parseProduction, speakerName, VIDEO_STAGES, videoStage, type Video } from "../shared/studio";
 
 type Message = Anthropic.Beta.BetaMessageParam;
 type Tool = Anthropic.Beta.BetaTool;
@@ -91,16 +91,16 @@ What the app holds:
 - Brand: the creator's name, topics, audience, content pillars, voice and platforms.
 - Research: posts by other creators that this creator saved because they liked them and they performed well. Each can be analysed once by Claude (hook, structure, why it works); the analysis is saved and reused.
 - Ideas: video ideas the creator kept. An idea has no script of its own; its script is written when it is made into a Studio video.
-- Studio: where a video is made in five stages (idea, script, preview, make, finish). A Studio video's script is a list of scenes, each generated with AI or filmed by the creator, with a speaker on every line, a claim with its evidence level, and a check against the creator's rules. A series is a season plan (running question, ending, episodes, story so far) whose episodes are Studio videos. Every video and series is made one of three ways, chosen by the creator: AI only, filmed by the creator only, or a mix; the script is written to fit, and an episode follows its series. A video can be started from several saved ideas at once, which become one video, and a series can be planned from saved ideas. When the creator starts a video or series in Studio themselves, the first step there is settling the idea: Studio suggests five, each a story in four parts (characters you care about, escalating tension, a moment of victory, a surprising ending), and the creator approves one. That choice is theirs and is made in Studio; when you propose ideas in chat, give them the same four parts.
-- Cast: recurring characters, each with a personality, a way of talking, a look and an ElevenLabs voice. The creator is always the host and is filmed; the narrator speaks in the brand's speaking voice.
+- Studio: where a video is made in five stages (idea, script, preview, make, finish). A Studio video's script is a list of scenes, each generated with AI or filmed by the creator, with a speaker on every line, a claim with its evidence level, and a check against the creator's rules. A series is a season plan (running question, ending, episodes, story so far) whose episodes are Studio videos. Every video and series is made one of three ways, chosen by the creator: AI only, filmed by the creator only, or a mix; the script is written to fit, and an episode follows its series. A video can be started from several saved ideas at once, which become one video, and a series can be planned from saved ideas. In Studio the creator starts from one saved idea, which already says whether it is a single video or a series and how it is made, and goes straight to the script (or, for a series, the season plan).
+- Characters (the app-wide list; a video's "cast" is the characters its script uses, set up on that video's Cast tab, where a role can be given to an existing character so its voice and pictures are reused): recurring characters, each with a personality, a way of talking, a look and an ElevenLabs voice. The creator is always the host and is filmed; the narrator speaks in the brand's speaking voice.
 
 How to work:
 - Look before you answer. Read the brand and the relevant posts or ideas with your tools instead of guessing; never invent posts, numbers or ideas that are not in the data.
 - Do what was asked, then say what you did and what you found. Lead with the answer.
-- This conversation itself uses a little of the creator's Claude credit, so never say that nothing was charged. Some tools spend more. Rough costs: analysing a post about $0.05, a round of generated ideas about $0.25, a Studio video's script about $0.10. Go ahead when the creator asked for that action and the total is under about $0.50. Above that, say what it would cost and ask first.
+- This conversation itself uses a little of the creator's Claude credit, so never say that nothing was charged. Some tools spend more. Rough costs: analysing a post about $0.06, a round of generated ideas about $0.25, a Studio video's script about $0.10. Go ahead when the creator asked for that action and the total is under about $0.50. Above that, say what it would cost and ask first.
 - You can change things: the brand kit (update_brand), a saved idea (update_idea), a post's rating or note, and you can delete posts, ideas and generated audio. Change only what the creator asked to change, and read the item first so the rest of it stays as it was.
 - Approval: for some actions the app itself stops and shows the creator an Allow or Decline prompt before the action runs. Which ones is the creator's setting and you cannot see it. So when the creator has asked for a change, just call the tool; do not also ask "shall I?" in text. If a tool result says the creator declined, do not call it again; say it was not done and ask what they would like instead.
-- Pictures and clips: after a script is approved, each AI scene gets a still (make_scene_pictures), and a still the creator likes becomes a clip (make_scene_clip) or a lip-synced clip (make_scene_lipsync). Pictures are cheap and clips are costly, so never make a clip for a scene whose picture the creator has not seen. Characters look the same across scenes only if they have a reference picture (make_character_picture), so make those first. Three services can do this work (fal.ai, Google, ElevenLabs); the creator's defaults are in Settings, and you only name a service when they ask for one. You cannot see pictures or clips: never describe how one looks, point to it with the video's tag.
+- Storyboard, then clips: after a script is approved, each AI scene gets a storyboard picture (make_scene_pictures): the frame the scene starts on. The creator looks through the storyboard of the whole video first; only then is a scene's picture turned into a clip (make_scene_clip) or a lip-synced clip (make_scene_lipsync). Pictures are cheap and clips are costly, so never make a clip for a scene whose picture the creator has not seen. Make pictures and clips from the first scene down: a scene marked continues_previous_scene carries straight on with no cut, so its picture is drawn from the picture before it, the clip before it is made to end on its picture, and its own clip starts on that clip's last frame. Remake a continuing scene's clip after the clip before it changes. Characters look the same across scenes only if they have a reference picture (make_character_picture), so make those first. Three services can do this work (fal.ai, Google, ElevenLabs); the creator's defaults are in Settings, and you only name a service when they ask for one. You cannot see pictures or clips: never describe how one looks, point to it with the video's tag.
 - Studio rules: a script's approval is the creator's decision. Never approve a script unless they said so in this conversation, and you can never tick the "I have checked this source" box: only they can, in Studio. You cannot look sources up, so never state that a claim is confirmed; say what they should check. After writing a script, give the claim, the first hook and any failed checks in a few lines and point to the video with its tag; do not paste the whole script.
 - Deleting cannot be undone. Only delete when the creator has, in this conversation, clearly asked you to delete that specific item; if you are proposing it yourself, ask first and wait.
 - generate_ideas returns candidates that are NOT saved. Show them, and save only the ones the creator picks (save_generated_ideas), unless they already told you to save.
@@ -113,7 +113,7 @@ How to work:
 
 Referring to posts and ideas: whenever you mention a specific saved post or saved idea, put a reference tag where its name would go: [[post:<id>]] for a post, [[idea:<id>]] for a saved idea, using the id from your tools. The app replaces the tag with a chip showing the creator's name or the idea's title, which opens it when clicked. So write "[[post:abc]] opens with a question", not "Pranav Mohan's post [[post:abc]] opens…", and never show a bare id. Candidates from generate_ideas are not saved and have no tag; name them by title.
 
-When the creator points at something: their messages can hold the same tags, added by picking an item in the app: [[post:<id>]], [[idea:<id>]], [[audio:<id>]] (a generated audio file), [[brand:kit]] (their brand kit), [[research:all]] (their whole Research library, every saved post), [[ideas:all]] (all their saved ideas), [[video:<id>]] (a Studio video), [[series:<id>]] (a series) or [[character:<id>]] (a character in the cast). You may use the video, series and character tags yourself when you mention one. A tag means exactly that item or section. Read it with the matching tool (get_research_post, get_idea, list_generated_audio, get_brand, list_research_posts, list_ideas, get_video, list_series, list_cast) before you answer or change it, and never ask which item they mean. For a whole section, answer about all of it: for example how many posts there are and what each one got.
+When the creator points at something: their messages can hold the same tags, added by picking an item in the app: [[post:<id>]], [[idea:<id>]], [[audio:<id>]] (a generated audio file), [[brand:kit]] (their brand kit), [[research:all]] (their whole Research library, every saved post), [[ideas:all]] (all their saved ideas), [[video:<id>]] (a Studio video), [[series:<id>]] (a series) or [[character:<id>]] (one of the creator's characters). You may use the video, series and character tags yourself when you mention one. A tag means exactly that item or section. Read it with the matching tool (get_research_post, get_idea, list_generated_audio, get_brand, list_research_posts, list_ideas, get_video, list_series, list_cast) before you answer or change it, and never ask which item they mean. For a whole section, answer about all of it: for example how many posts there are and what each one got.
 
 Offering next steps: when your answer leaves an obvious choice of what to do next, make the very last line of your reply the word "Replies:" followed by two or three short button labels separated by " | ", each at most four words and written as the creator would say it. For example: Replies: Save all three | Write the script | Do nothing. The app turns that line into buttons and hides it. Skip the line when there is no real next step, and do not also list those choices in the text.
 
@@ -145,7 +145,7 @@ const TOOLS: Tool[] = [
   {
     name: "analyze_research_posts",
     description:
-      "Have Claude analyse saved posts (frames, transcript, caption) and store the result. Costs about $0.05 per post. Posts already analysed are skipped unless reanalyse is true. Pass ids, or all_unanalysed to do every post that has no analysis yet.",
+      "Have Claude analyse saved posts (frames, transcript, caption) and store the result. Costs about $0.06 per post. Posts already analysed are skipped unless reanalyse is true. Pass ids, or all_unanalysed to do every post that has no analysis yet.",
     input_schema: {
       type: "object",
       properties: {
@@ -233,6 +233,7 @@ const TOOLS: Tool[] = [
         notes: { type: "string", description: "Any extra direction from the creator." },
         made_with: { type: "string", enum: ["ai", "me", "mix"], description: "How the ideas will be made: ai (every scene generated), me (filmed by the creator alone) or mix. Only set what the creator said." },
         post_ids: { type: "array", items: { type: "string" }, description: "Ids of the analysed saved posts to learn from. Leave out to use every analysed post." },
+        kind: { type: "string", enum: ["video", "series"], description: "Whether each idea is one video or a whole series of episodes. Leave out for single videos." },
       },
       required: ["count"],
     },
@@ -370,7 +371,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "create_character",
-    description: "Add a character to the cast. Free. Give a voice_id from list_voices if the creator named a voice; otherwise leave it out and they choose one on the Cast page.",
+    description: "Add a character to the creator's characters. Free. Give a voice_id from list_voices if the creator named a voice; otherwise leave it out and they choose one on the Characters page.",
     input_schema: {
       type: "object",
       properties: {
@@ -461,7 +462,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "update_video",
-    description: "Make a small edit to a Studio video: its title, what it is about, how the whole video is made (made_with), the words of one line, or whether one scene is generated with AI or filmed by the creator. Scenes and lines are numbered from 1. Editing a line takes the creator's approval back. Changing made_with does not change a script already written: rewrite it with write_video_script and a note.",
+    description: "Make a small edit to a Studio video: its title, what it is about, how the whole video is made (made_with), the words of one line, whether one scene is generated with AI or filmed by the creator, or whether one scene carries on from the scene before. Scenes and lines are numbered from 1. Editing a line takes the creator's approval back. Changing made_with does not change a script already written: rewrite it with write_video_script and a note.",
     input_schema: {
       type: "object",
       properties: {
@@ -472,6 +473,7 @@ const TOOLS: Tool[] = [
         line: { type: "integer" },
         text: { type: "string", description: "The new words for that line." },
         made_by: { type: "string", enum: ["ai", "me"], description: "Who makes that scene." },
+        carries_on: { type: "boolean", description: "For that scene: true when it carries straight on from the scene before with no cut (the two clips then meet on this scene's storyboard picture), false when it is a new shot: a cut. Not for scene 1." },
         made_with: { type: "string", enum: ["ai", "me", "mix"], description: "How it is made: ai (every scene generated, the creator never on camera), me (the creator films everything, nothing generated) or mix. For the whole video." },
       },
       required: ["id"],
@@ -519,7 +521,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "make_scene_pictures",
-    description: "Make a still for scenes of a Studio video whose script is approved. Without scenes, makes one for every AI scene that has none. With a single scene and a note, makes another attempt changed as the note says. Billed per picture by the creator's picture service.",
+    description: "Make the storyboard picture (the frame a scene starts on) for scenes of a Studio video whose script is approved. Without scenes, makes one for every AI scene that has none, from the first scene down. With a single scene and a note, makes another attempt changed as the note says. Billed per picture by the creator's picture service.",
     input_schema: {
       type: "object",
       properties: {
@@ -580,6 +582,7 @@ function postSummary(p: ResearchItem) {
     views: p.viewCount,
     creators_rating: p.rating,
     creators_note: p.note || undefined,
+    concept_group: p.group || undefined,
     saved_on: p.savedAt.slice(0, 10),
     caption_start: short(p.caption, 140),
     has_transcript: p.transcript !== "",
@@ -596,6 +599,7 @@ function postSummary(p: ResearchItem) {
 function ideaSummary(i: Idea) {
   return {
     id: i.id,
+    kind: i.kind === "series" ? "an idea for a series (its outline lists the episodes)" : "an idea for a single video",
     title: i.title,
     hook: i.hook,
     series: i.series || undefined,
@@ -770,11 +774,6 @@ function videoSummary(v: Video) {
     kind: `${v.format === "episode" ? `episode ${v.episode ?? ""} of a series` : "single video"}, ${v.source === "remake" ? "remake" : "new idea"}`,
     made_with: v.production === "ai" ? "AI only" : v.production === "me" ? "filmed by the creator only" : "a mix of AI and filmed scenes",
     from_idea_ids: v.ideaIds.length ? v.ideaIds : undefined,
-    idea_step: v.ideaApprovedAt
-      ? `approved by the creator: ${approvedConcept(v)?.title ?? "their own words"}`
-      : v.concepts.length
-        ? "ideas suggested in Studio, waiting for the creator to approve one there"
-        : undefined,
     stage: VIDEO_STAGES[videoStage(v)],
     script: v.scenes.length === 0 ? "not written" : v.approvedAt ? "approved by the creator" : "written, waiting for the creator to approve",
     source_checked_by_creator: v.claim ? v.claim.checked : undefined,
@@ -953,6 +952,7 @@ async function runTool(
           notes: text(input.notes),
           production: input.made_with === undefined ? undefined : parseProduction(input.made_with),
           postIds: ids(input.post_ids),
+          kind: input.kind === "series" ? "series" : "video",
         },
         store.listIdeas(),
       );
@@ -1112,6 +1112,7 @@ async function runTool(
             action: s.action,
             camera: s.camera,
             on_screen: s.text || undefined,
+            continues_previous_scene: s.continues || undefined,
             pictures_made: s.pictures.length,
             clips_made: s.clips.length,
             lines: s.lines.map((l, n) => ({ line: n + 1, speaker: speakerName(l.speaker, names), text: l.text, delivery: l.delivery || undefined, has_voice: Boolean(l.audioId) })),
@@ -1235,6 +1236,11 @@ async function runTool(
       }
       const saved = studio.saveVideo(next);
       if (!saved.ok) throw new Error(saved.error);
+      if (typeof input.scene === "number" && typeof input.carries_on === "boolean") {
+        const flowed = await studio.sceneFlow(video.id, video.scenes[Math.round(input.scene) - 1].id, input.carries_on);
+        if (!flowed.ok) throw new Error(flowed.error);
+        return { result: { saved: videoSummary(flowed.video) } };
+      }
       return { result: { saved: videoSummary(saved.value) } };
     }
 
@@ -1455,7 +1461,7 @@ const RUNNING: Record<string, string> = {
   record_video_results: "Saving the results",
   delete_video: "Deleting a video",
   make_character_picture: "Making the reference picture",
-  make_scene_pictures: "Making pictures",
+  make_scene_pictures: "Making storyboard pictures",
   make_scene_clip: "Making the clip",
   make_scene_lipsync: "Lip-syncing",
   list_voices: "Reading your ElevenLabs voices",

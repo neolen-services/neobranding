@@ -4,7 +4,6 @@
 import { randomUUID } from "node:crypto";
 import {
   approvalProblem,
-  approvedConcept,
   ideaList,
   parseCharacter,
   parseProduction,
@@ -21,15 +20,15 @@ import {
   type VideoVoicesResult,
 } from "../shared/studio";
 import type { ApiProvider } from "../shared/settings";
-import { listResearch } from "./research";
+import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
-import { planSeries, suggestConcepts, voiceVideo, writeVideo } from "./studio";
+import { planSeries, voiceVideo, writeVideo } from "./studio";
 import { readFile } from "node:fs/promises";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaSettings, type MediaTask, type UploadedFile } from "../shared/media";
-import { pickedPicture, type Scene, type TakeResult } from "../shared/studio";
+import { pickedClip, pickedPicture, type Scene, type TakeResult } from "../shared/studio";
 import { audioFilePath } from "./audio";
-import { deleteTake, fromUpload, loadTake, makeClip, makeLipSync, makePicture, saveTake } from "./media";
+import { deleteTake, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type Media } from "./media";
 
 const MEDIA_SETTING = "media_settings";
 
@@ -103,6 +102,49 @@ export function studioOps(ctx: StudioContext) {
     return { ok: true, video: saved };
   }
 
+  /**
+   * What a scene's clip starts on and, when the next scene carries on from it, ends on.
+   * It starts on the scene's storyboard picture; a scene that carries on starts instead on the very last
+   * frame of the clip before it when there is one, so the join is exact. It ends on the next scene's
+   * storyboard picture when that scene carries on, so the two meet on a frame the creator has reviewed.
+   */
+  async function clipFrames(
+    videoId: unknown,
+    sceneId: unknown,
+  ): Promise<{ ok: true; video: Video; scene: Scene; index: number; start: Media; from: string; exact: boolean; end?: Media; to?: string } | { ok: false; error: string }> {
+    const { video, scene } = find(videoId, sceneId);
+    if (!video.approvedAt) return { ok: false, error: "Approve the script first. Clips are made for an approved script, so none are wasted on words that change." };
+    const index = video.scenes.indexOf(scene);
+    const picture = pickedPicture(scene);
+    if (!picture) return { ok: false, error: `Scene ${index + 1} has no storyboard picture yet. Make it on the Storyboard tab first: the clip starts from it.` };
+    let start: Media | undefined;
+    let from = picture.id;
+    const before = scene.continues && scene.madeBy === "ai" ? video.scenes[index - 1] : undefined;
+    const beforeClip = before && pickedClip(before);
+    if (beforeClip) {
+      // Without FFmpeg, or if the frame cannot be read, the scene starts on its storyboard picture instead.
+      const toolsDir = await ensureFfmpeg(ctx.dataDir());
+      const frame = toolsDir ? await lastFrame(ctx.dataDir(), beforeClip, toolsDir).catch(() => null) : null;
+      if (frame) {
+        start = frame;
+        from = beforeClip.id;
+      }
+    }
+    start ??= await loadTake(ctx.dataDir(), picture);
+    const next = video.scenes[index + 1];
+    const nextPicture = next && next.continues && next.madeBy === "ai" ? pickedPicture(next) : undefined;
+    return {
+      ok: true,
+      video,
+      scene,
+      index,
+      start,
+      from,
+      exact: from !== picture.id,
+      ...(nextPicture && { end: await loadTake(ctx.dataDir(), nextPicture), to: nextPicture.id }),
+    };
+  }
+
   /** What the creator's posted videos show about which openings find their audience, for the script writer. */
   function learned(): string {
     const posted = videos().filter((v) => v.results && v.hooks[0] && (v.results.views ?? 0) > 0);
@@ -162,73 +204,12 @@ export function studioOps(ctx: StudioContext) {
       });
       if (!result.ok) return result;
       for (const character of result.value.newCharacters) db().saveDoc("characters", character);
-      const planned = parseSeries({ ...result.value.series, brief: String(about ?? ""), ideaApprovedAt: new Date().toISOString() });
+      const planned = parseSeries({ ...result.value.series, brief: String(about ?? "") });
       db().saveDoc("series", planned);
       return { ok: true, value: planned };
     },
 
-    /**
-     * Has Claude suggest ideas for a video or series, or change one of them.
-     * With a concept id and a note, only that idea is rewritten. Otherwise a new
-     * set replaces the old one, which takes back any approval of the idea.
-     */
-    async suggest(kind: unknown, id: unknown, note: unknown, conceptId: unknown): Promise<StudioResult<Video | Series>> {
-      const brand = db().getBrand();
-      if (!brand) return { ok: false, error: "Create your brand first." };
-      const table = kind === "series" ? "series" : "videos";
-      const item = table === "series" ? series().find((s) => s.id === String(id)) : findVideo(id);
-      if (!item) return { ok: false, error: table === "series" ? "That series no longer exists." : "That video no longer exists." };
-      const revise = typeof conceptId === "string" && conceptId ? item.concepts.find((c) => c.id === conceptId) : undefined;
-      if (typeof conceptId === "string" && conceptId && !revise) return { ok: false, error: "That idea is no longer there." };
-      const result = await suggestConcepts(ctx.key("anthropic"), {
-        kind: table === "series" ? "series" : "video",
-        title: item.title,
-        brief: item.brief,
-        brand,
-        production: item.production,
-        ideas: item.ideaIds.map(findIdea).filter((i) => i !== undefined),
-        posts: await postsOf(item.postIds),
-        learned: learned(),
-        made: [...videos(), ...series()].filter((x) => x.id !== item.id).map((x) => x.title),
-        note: words(note),
-        previous: item.concepts,
-        revise,
-      });
-      if (!result.ok) return result;
-      const [changed] = result.value.concepts;
-      const next = {
-        ...item,
-        // A changed idea keeps its place and its id, so an approval of it still points at it.
-        concepts: revise ? item.concepts.map((c) => (c.id === revise.id ? { ...changed, id: revise.id } : c)) : result.value.concepts,
-        conceptId: revise ? item.conceptId : "",
-        ideaApprovedAt: revise ? item.ideaApprovedAt : "",
-        costUsd: item.costUsd + result.value.costUsd,
-      };
-      const saved = table === "series" ? parseSeries(next) : parseVideo({ ...next, updatedAt: new Date().toISOString() });
-      db().saveDoc(table, saved);
-      return { ok: true, value: saved };
-    },
-
-    /** Settles the idea: one of the suggested ones, or "" to go ahead with the creator's own words. */
-    approveIdea(kind: unknown, id: unknown, conceptId: unknown): StudioResult<Video | Series> {
-      const table = kind === "series" ? "series" : "videos";
-      const item = table === "series" ? series().find((s) => s.id === String(id)) : findVideo(id);
-      if (!item) return { ok: false, error: table === "series" ? "That series no longer exists." : "That video no longer exists." };
-      const concept = item.concepts.find((c) => c.id === conceptId);
-      if (conceptId && !concept) return { ok: false, error: "That idea is no longer there." };
-      const next = {
-        ...item,
-        conceptId: concept?.id ?? "",
-        ideaApprovedAt: new Date().toISOString(),
-        // A title the app filled in gives way to the approved idea's own.
-        ...(concept && item.autoTitle ? { title: concept.title, autoTitle: false } : {}),
-      };
-      const saved = table === "series" ? parseSeries(next) : parseVideo({ ...next, updatedAt: new Date().toISOString() });
-      db().saveDoc(table, saved);
-      return { ok: true, value: saved };
-    },
-
-    /** Starts a series with no plan yet: its idea is settled first, then planSeason plans it. */
+    /** Starts a series from an idea, with no season yet: planSeason plans it. */
     async createSeries(input: SeriesStart): Promise<StudioResult<Series>> {
       try {
         const from = input ?? {};
@@ -240,7 +221,7 @@ export function studioOps(ctx: StudioContext) {
         const brief = words(from.brief);
         const title = words(from.title) || ideas[0]?.title || brief.slice(0, 60) || (inspired.posts[0] ? `Inspired by ${inspired.posts[0].analysis?.topic || inspired.posts[0].author || "a saved post"}` : "");
         if (!title) return { ok: false, error: "Give the series a title, pick an idea or a post, or say what it is about." };
-        const made = parseSeries({ id: randomUUID(), title, autoTitle: !words(from.title), brief, production: parseProduction(from.production), ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
+        const made = parseSeries({ id: randomUUID(), title, brief, production: from.production === undefined ? (ideas[0]?.production ?? "mix") : parseProduction(from.production), ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
         db().saveDoc("series", made);
         return { ok: true, value: made };
       } catch (e) {
@@ -248,7 +229,7 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
-    /** Plans the season of a series whose idea is settled, and saves the plan into it along with any characters it added. */
+    /** Plans the season of a series started from an idea, and saves the plan into it along with any characters it added. */
     async planSeason(id: unknown): Promise<StudioResult<Series>> {
       const brand = db().getBrand();
       if (!brand) return { ok: false, error: "Create your brand first." };
@@ -262,7 +243,6 @@ export function studioOps(ctx: StudioContext) {
         production: existing.production,
         ideas: existing.ideaIds.map(findIdea).filter((i) => i !== undefined),
         posts: await postsOf(existing.postIds),
-        concept: approvedConcept(existing),
       });
       if (!result.ok) return result;
       for (const character of result.value.newCharacters) db().saveDoc("characters", character);
@@ -306,7 +286,7 @@ export function studioOps(ctx: StudioContext) {
                   : "";
           const title = words(from.title) || first?.title || words(from.brief).slice(0, 60) || (topic ? `Inspired by ${topic}` : "");
           const production = from.production === undefined ? (first?.production ?? base.production) : base.production;
-          video = parseVideo({ ...base, production, title, autoTitle: !words(from.title), brief: words(from.brief) || summary, ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
+          video = parseVideo({ ...base, production, title, brief: words(from.brief) || (ideas.length === 1 ? "" : summary), ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
         } else if (from.postId) {
           const post = (await listResearch(ctx.dataDir())).find((p) => p.id === from.postId);
           if (!post) return { ok: false, error: "That post is no longer saved." };
@@ -345,6 +325,61 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
+    /**
+     * Gives a role in one video to another character: an existing one, or ("new") a fresh one
+     * made for the role. Every scene and line of the old character becomes the new one's, the
+     * old name is swapped for the new one in the script's words, and lines already recorded in
+     * the old voice are cleared. A character the script made that was never set up and is used
+     * nowhere else is removed, so recasting leaves no clutter behind.
+     */
+    recast(videoId: unknown, fromId: unknown, toId: unknown): StudioResult<{ video: Video; removed: boolean }> {
+      const video = findVideo(videoId);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const everyone = cast();
+      const from = everyone.find((c) => c.id === String(fromId));
+      if (!from) return { ok: false, error: "That character is no longer there." };
+      let to = everyone.find((c) => c.id === String(toId));
+      if (toId === "new") {
+        // Two characters with one name could not be told apart, so the new one is numbered.
+        const taken = new Set(everyone.map((c) => c.name.toLowerCase()));
+        let name = from.name;
+        for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${from.name} ${n}`;
+        to = parseCharacter({ id: randomUUID(), name, role: from.role, personality: from.personality, speech: from.speech, look: from.look, voice: null, pictures: [] });
+        db().saveDoc("characters", to);
+      }
+      if (!to) return { ok: false, error: "The character to use is no longer there." };
+      if (to.id === from.id) return { ok: true, value: { video, removed: false } };
+      const target = to;
+
+      // The old name, as a whole word, becomes the new one wherever the script says it.
+      const named = new RegExp(`(?<![\\p{L}\\p{N}])${from.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "gu");
+      const rename = (text: string) => (from.name && from.name !== target.name ? text.replace(named, target.name) : text);
+      const recast = parseVideo({
+        ...video,
+        scenes: video.scenes.map((scene) => ({
+          ...scene,
+          action: rename(scene.action),
+          text: rename(scene.text),
+          characters: [...new Set(scene.characters.map((id) => (id === from.id ? target.id : id)))],
+          lines: scene.lines.map((line) =>
+            // A line the old character spoke needs recording again in the new voice.
+            line.speaker === from.id ? { speaker: target.id, text: rename(line.text), delivery: line.delivery } : { ...line, text: line.audioId ? line.text : rename(line.text) },
+          ),
+        })),
+        updatedAt: new Date().toISOString(),
+      });
+      db().saveDoc("videos", recast);
+
+      const parent = recast.seriesId ? series().find((x) => x.id === recast.seriesId) : undefined;
+      if (parent && !parent.characterIds.includes(target.id)) db().saveDoc("series", { ...parent, characterIds: [...parent.characterIds, target.id] });
+
+      const stillUsed =
+        videos().some((v) => v.scenes.some((x) => x.characters.includes(from.id) || x.lines.some((l) => l.speaker === from.id))) || series().some((x) => x.characterIds.includes(from.id));
+      const untouched = !from.voice && from.pictures.length === 0;
+      if (!stillUsed && untouched) db().deleteDoc("characters", from.id);
+      return { ok: true, value: { video: recast, removed: !stillUsed && untouched } };
+    },
+
     /** Saves edits to a video as given. */
     saveVideo(input: unknown): StudioResult<Video> {
       try {
@@ -370,7 +405,6 @@ export function studioOps(ctx: StudioContext) {
         characters: cast(),
         // An idea deleted since the video was started is simply left out.
         ideas: video.ideaIds.map(findIdea).filter((i) => i !== undefined),
-        concept: approvedConcept(video),
         inspiration: await postsOf(video.postIds),
         post: video.postId ? (await listResearch(ctx.dataDir())).find((p) => p.id === video.postId) : undefined,
         series: parent,
@@ -489,11 +523,19 @@ export function studioOps(ctx: StudioContext) {
         const choice = choose("picture", override);
         const everyone = cast();
         const inScene = everyone.filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id));
-        const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, 4);
+        // What the picture model is shown so the scenes belong together: for a scene that carries on, the storyboard
+        // picture of the scene before; otherwise the nearest earlier scene in the same place.
+        const here = scene.place.trim().toLowerCase();
+        const index = video.scenes.findIndex((x) => x.id === scene.id);
+        const before = video.scenes[index - 1];
+        const carriesOn = scene.continues && before !== undefined && pickedPicture(before) !== undefined;
+        const sameSet = carriesOn ? before : here ? [...video.scenes.slice(0, index)].reverse().find((x) => x.place.trim().toLowerCase() === here && pickedPicture(x)) : undefined;
+        const setPicture = sameSet ? pickedPicture(sameSet) : undefined;
+        const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, setPicture ? 3 : 4);
         const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
         const media = await makePicture(ctx.key, choice, {
           prompt: [
-            "One frame of a vertical 9:16 short video: the first moment of this shot.",
+            "One storyboard frame of a vertical 9:16 short video: the first moment of this shot, as the finished video will show it.",
             look && `Style: ${look}`,
             scene.place && `Place: ${scene.place}.`,
             `What happens: ${scene.action}`,
@@ -502,14 +544,19 @@ export function studioOps(ctx: StudioContext) {
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture: same face, hair, clothes and colours.`
+              ? `The ${setPicture ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture: same face, hair, clothes and colours.`
               : "",
+            setPicture && carriesOn
+              ? `The FIRST reference picture is the frame the previous shot started on (scene ${index}). This shot carries straight on from it with no cut, so this is the same take a few seconds later: the same place, people, clothes, props, light and camera position. Change only what the action above has changed by the moment this shot begins.`
+              : setPicture
+                ? `The FIRST reference picture is this same place in an earlier shot of the same video (scene ${video.scenes.indexOf(sameSet!) + 1}). This is the same room at the same moment: keep the same walls, furniture, props, light, time of day and what everyone wears. Only the framing and the instant change.`
+                : "",
             "No captions, subtitles, logos or any text in the picture.",
             typeof note === "string" && note.trim() ? `Change from the last attempt: ${note.trim()}` : "",
           ]
             .filter(Boolean)
             .join("\n"),
-          references: await Promise.all(withPictures.map((c) => loadTake(ctx.dataDir(), c.pictures[0]))),
+          references: await Promise.all([...(setPicture ? [setPicture] : []), ...withPictures.map((c) => c.pictures[0])].map((take) => loadTake(ctx.dataDir(), take))),
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
         const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("picture", choice));
@@ -519,42 +566,66 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
+    /** Says whether a scene carries straight on from the one before it, or is a new shot. */
+    sceneFlow(videoId: unknown, sceneId: unknown, continues: unknown): TakeResult {
+      try {
+        const { video, scene } = find(videoId, sceneId);
+        if (continues === true && video.scenes.indexOf(scene) === 0) return { ok: false, error: "The first scene has nothing before it to carry on from." };
+        return change(video.id, scene.id, (s) => ({ ...s, continues: continues === true }));
+      } catch (e) {
+        return fail(e, "That did not work.");
+      }
+    },
+
+    /** Turns the scene's storyboard picture into a moving clip. */
     /** Turns the scene's chosen picture into a moving clip. */
     async sceneClip(videoId: unknown, sceneId: unknown, override: unknown): Promise<TakeResult> {
       try {
-        const { video, scene } = find(videoId, sceneId);
-        const picture = pickedPicture(scene);
-        if (!picture) return { ok: false, error: "Make and choose a picture for this scene first. The clip starts from it." };
+        const frames = await clipFrames(videoId, sceneId);
+        if (!frames.ok) return frames;
+        const { video, scene, index } = frames;
         const choice = choose("clip", override);
         const media = await makeClip(ctx.key, choice, {
-          image: await loadTake(ctx.dataDir(), picture),
-          prompt: [scene.action, scene.camera && `Camera: ${scene.camera}.`, "Keep the characters and the place exactly as in the picture. No text on screen."].filter(Boolean).join(" "),
+          image: frames.start,
+          end: frames.end,
+          prompt: [
+            frames.exact && "This shot continues the previous one without a cut: begin exactly on the given first frame and carry the same movement on.",
+            scene.action,
+            scene.camera && `Camera: ${scene.camera}.`,
+            frames.end &&
+              `The second picture is the last frame: move smoothly to it and end exactly on it, with no cut, no fade and no jump. It is the first frame of the next shot, which begins: ${video.scenes[index + 1].action}`,
+            "Keep the characters and the place exactly as in the picture. No text on screen.",
+          ]
+            .filter(Boolean)
+            .join(" "),
           seconds: scene.seconds,
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
-        const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("clip", choice));
+        const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("clip", choice))), from: frames.from, ...(frames.to && { to: frames.to }) };
         return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
       } catch (e) {
         return fail(e, "The clip could not be made.");
       }
     },
 
-    /** Makes the scene's chosen picture speak its first recorded AI line. */
+    /** Makes the scene's storyboard picture speak its first recorded AI line. */
     async sceneLipSync(videoId: unknown, sceneId: unknown, override: unknown): Promise<TakeResult> {
       try {
-        const { video, scene } = find(videoId, sceneId);
-        const picture = pickedPicture(scene);
-        if (!picture) return { ok: false, error: "Make and choose a picture for this scene first." };
+        const { scene: asked } = find(videoId, sceneId);
+        if (!asked.lines.some((l) => l.audioFile)) return { ok: false, error: "This scene has no recorded line yet. Make the voices first." };
+        const frames = await clipFrames(videoId, sceneId);
+        if (!frames.ok) return frames;
+        const { video, scene } = frames;
         const line = scene.lines.find((l) => l.audioFile);
         const audioPath = line?.audioFile ? audioFilePath(ctx.dataDir(), line.audioFile) : null;
         if (!audioPath) return { ok: false, error: "This scene has no recorded line yet. Make the voices first." };
         const choice = choose("lipsync", override);
         const media = await makeLipSync(ctx.key, choice, {
-          image: await loadTake(ctx.dataDir(), picture),
+          image: frames.start,
           audio: { bytes: await readFile(audioPath), mime: "audio/mpeg" },
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
-        const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "lipsync", choiceLabel("lipsync", choice));
+        const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, media, "lipsync", choiceLabel("lipsync", choice))), from: frames.from };
         return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
       } catch (e) {
         return fail(e, "The lip-sync could not be made.");

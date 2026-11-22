@@ -4,7 +4,7 @@ import type { GeneratedAudio, VoicePreviewResult, VoicesResult } from "@shared/a
 import type { BrandKit, SaveResult } from "@shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "@shared/data";
 import type { GenerateOptions, GenerateResult, Idea, IdeaSuggestion } from "@shared/ideas";
-import type { ResearchEdit, ResearchItem, ResearchResult } from "@shared/research";
+import type { GroupingResult, ResearchEdit, ResearchItem, ResearchResult } from "@shared/research";
 import type { UsageReport } from "@shared/usage";
 import type { MediaChoice, MediaSettings, UploadedFile } from "@shared/media";
 import type { TakeResult } from "@shared/studio";
@@ -63,19 +63,15 @@ const api = {
   deleteSeries: (id: string): Promise<void> => ipcRenderer.invoke("series:delete", id),
   /** Has Claude plan a season. Costs a few cents. */
   planSeries: (title: string, about: string, options?: NewSeries): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:plan", title, about, options),
-  /** Starts a series without a plan; its idea is settled first. Free. */
+  /** Starts a series from an idea, without a season plan yet. Free. */
   createSeries: (from: SeriesStart): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:create", from),
-  /** Has Claude plan the season of a series whose idea is settled. Costs a few cents. */
+  /** Has Claude plan the season of a series. Costs a few cents. */
   planSeason: (id: string): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:planSeason", id),
-  /** Has Claude suggest five ideas for a video or series, or change one (with its id and a note). Costs a few cents. */
-  suggestIdeas: <K extends "video" | "series">(kind: K, id: string, note: string, conceptId?: string): Promise<StudioResult<K extends "video" ? Video : Series>> =>
-    ipcRenderer.invoke("studio:suggest", kind, id, note, conceptId ?? ""),
-  /** Settles the idea of a video or series: a suggested one, or "" for the creator's own words. */
-  approveIdea: <K extends "video" | "series">(kind: K, id: string, conceptId: string): Promise<StudioResult<K extends "video" ? Video : Series>> =>
-    ipcRenderer.invoke("studio:approveIdea", kind, id, conceptId),
   listVideos: (): Promise<Video[]> => ipcRenderer.invoke("videos:list"),
   createVideo: (from: NewVideo): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:create", from),
   saveVideo: (video: Video): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:save", video),
+  /** Gives a role in a video to another character (its id), or to a new one made for the role ("new"). */
+  recastVideo: (videoId: string, fromId: string, toId: string): Promise<StudioResult<{ video: Video; removed: boolean }>> => ipcRenderer.invoke("videos:recast", videoId, fromId, toId),
   deleteVideo: (id: string): Promise<void> => ipcRenderer.invoke("videos:delete", id),
   /** Has Claude write the script, or rewrite it as the note asks. Costs a few cents. */
   writeVideo: (id: string, note: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:write", id, note),
@@ -95,6 +91,8 @@ const api = {
     ipcRenderer.invoke("scene:picture", videoId, sceneId, choice, note),
   makeSceneClip: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:clip", videoId, sceneId, choice),
   makeSceneLipSync: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:lipsync", videoId, sceneId, choice),
+  /** Says whether a scene carries straight on from the one before it, starting on its last frame, or is a new shot. Free. */
+  setSceneFlow: (videoId: string, sceneId: string, continues: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:flow", videoId, sceneId, continues),
   /** Adds a clip you filmed, or a picture you chose, to a scene. */
   addSceneFile: (videoId: string, sceneId: string, file: UploadedFile): Promise<TakeResult> => ipcRenderer.invoke("scene:addFile", videoId, sceneId, file),
   /** "use" makes it the one the scene uses; "remove" deletes it. */
@@ -115,6 +113,12 @@ const api = {
   transcribeResearch: (id: string): Promise<ResearchResult> => ipcRenderer.invoke("research:transcribe", id),
   /** Has Claude break the post down (frames, transcript, caption). Costs money once per post. */
   analyzeResearch: (id: string): Promise<ResearchResult> => ipcRenderer.invoke("research:analyze", id),
+  /** Whether new posts are analysed on their own, and the ids being analysed or waiting now. */
+  researchAuto: (): Promise<{ on: boolean; analysing: string[] }> => ipcRenderer.invoke("research:auto"),
+  /** Turns automatic analysis of new posts on or off. */
+  setResearchAuto: (on: boolean): Promise<boolean> => ipcRenderer.invoke("research:setAuto", on),
+  /** Has Claude sort analysed posts into groups of similar videos: those without a group, or (with all) every one afresh. Costs a few cents. */
+  groupResearch: (all?: boolean): Promise<GroupingResult> => ipcRenderer.invoke("research:group", all === true),
   /** Looks up which sound a saved post uses. */
   refreshResearchAudio: (id: string): Promise<ResearchResult> => ipcRenderer.invoke("research:audio", id),
   /** Saves the user's rating and note for a post. */

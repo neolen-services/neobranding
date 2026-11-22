@@ -3,6 +3,7 @@ import { AGENT_TOOL_GROUPS, AGENT_TOOLS, type AgentPermissions, type AgentToolGr
 import type { DataFolderInfo } from "@shared/data";
 import { MEDIA_PROVIDERS, MEDIA_TASKS, type MediaChoice, type MediaSettings, type MediaTask } from "@shared/media";
 import { ServicePicker, useMediaKeys } from "./ServicePicker";
+import { Icon, ICONS } from "./studioUi";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
 import { api } from "./api";
@@ -14,43 +15,125 @@ const primaryButton =
 const quietButton =
   "rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium hover:border-[var(--ink)] disabled:opacity-50";
 
-export function SettingsView() {
+export type SettingsTab = "brand" | "connections" | "media" | "agent" | "data";
+
+const TABS: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
+  { id: "brand", label: "Brand kit", hint: "Who you are and how you sound", icon: "M12 3l2.5 5.5L20 9.3l-4 4 1 5.7-5-2.8-5 2.8 1-5.7-4-4 5.5-.8z" },
+  { id: "connections", label: "Connections", hint: "Your keys for the services the app uses", icon: "M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3" },
+  { id: "media", label: "Pictures and video", hint: "Which service makes what", icon: ICONS.film },
+  { id: "agent", label: "Agent", hint: "What it may do without asking", icon: "M5 4l14 8-6 2-2 6z" },
+  { id: "data", label: "Your data", hint: "Where everything is kept", icon: "M3 6h6l2 2h10v11H3z" },
+];
+const SERVICES: ApiProvider[] = ["anthropic", "deepgram", "elevenlabs", "fal", "google", "telegram"];
+/** The tab Settings was last on, so coming back returns to it. */
+let lastTab: SettingsTab = "brand";
+
+/**
+ * Settings, a tab at a time. The brand kit is the first tab; it is drawn by the
+ * app shell, which owns the brand, and handed in.
+ */
+export function SettingsView({ initialTab, brandKit }: { /** The tab to open on; left out, the one last used. */ initialTab?: SettingsTab; brandKit: ReactNode }) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? lastTab);
+  const [connected, setConnected] = useState<number | null>(null);
+  useEffect(() => {
+    lastTab = tab;
+    // Counted again on each visit to a tab, so a key just saved is reflected.
+    void Promise.all(SERVICES.map((p) => api.hasApiKey(p))).then((has) => setConnected(has.filter(Boolean).length));
+  }, [tab]);
+
+  const group = (title: string, note: string) => (
+    <div className="pt-2">
+      <h3 className="font-display text-base font-semibold">{title}</h3>
+      <p className="mt-0.5 text-sm opacity-60">{note}</p>
+    </div>
+  );
+  const current = TABS.find((t) => t.id === tab)!;
+
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-6">
-      <ApiKeySection
-        provider="anthropic"
-        title="Claude API key"
-        placeholder="sk-ant-…"
-        description="Ideas, analyses and scripts are written by Anthropic's Claude, using your own API key. Your brand details are sent to Anthropic each time you ask for ideas, and each batch costs a few cents on your Anthropic account. Create a key at console.anthropic.com."
-      />
-      <ApiKeySection
-        provider="deepgram"
-        title="Deepgram API key"
-        placeholder="Deepgram API key"
-        description="Deepgram turns the speech in videos you save for research into text. Each video you transcribe is uploaded to Deepgram and billed to your Deepgram account by the minute. Create a key at console.deepgram.com."
-      />
-      <ApiKeySection
-        provider="elevenlabs"
-        title="ElevenLabs API key"
-        placeholder="ElevenLabs API key"
-        description="ElevenLabs makes audio: voiceovers in a voice from your account (including your own cloned voice), sound effects and music. For now it is used by the agent: ask it for a voiceover, a sound effect or a music track. The text or description is sent to ElevenLabs and uses your ElevenLabs credits. Create a key at elevenlabs.io under Developers, API keys."
-      />
-      <ApiKeySection
-        provider="fal"
-        title="fal.ai API key"
-        placeholder="fal.ai key"
-        description="fal.ai makes pictures, clips and lip-synced clips for scenes in Studio, with many models on one key. The pictures, descriptions and voice recordings a scene needs are sent to fal.ai, where each file is kept at a web address anyone with the link can open. Billed to your fal.ai account. Create a key at fal.ai under API keys."
-      />
-      <ApiKeySection
-        provider="google"
-        title="Google Gemini API key"
-        placeholder="Gemini API key"
-        description="Google's own picture and video models for scenes in Studio. The pictures and descriptions a scene needs are sent to Google and billed to your Google account. Google cannot lip-sync to a recorded voice. Create a key at aistudio.google.com."
-      />
-      <MediaSection />
-      <TelegramSection />
-      <AgentPermissionsSection />
-      <DataFolderSection />
+    <div className="mx-auto max-w-6xl gap-8 p-6 lg:grid lg:grid-cols-[15rem_minmax(0,1fr)]">
+      <nav role="tablist" aria-label="Settings" aria-orientation="vertical" className="mb-5 flex gap-1 overflow-x-auto lg:sticky lg:top-6 lg:mb-0 lg:block lg:space-y-1 lg:self-start lg:overflow-visible">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex shrink-0 items-start gap-3 rounded-xl px-3 py-2.5 text-left lg:w-full ${tab === t.id ? "bg-[var(--tint)]" : "opacity-70 hover:bg-[var(--tint)] hover:opacity-100"}`}
+          >
+            <Icon d={t.icon} className={`mt-0.5 h-4 w-4 ${tab === t.id ? "text-[var(--accent)]" : ""}`} />
+            <span className="min-w-0">
+              <span className="block whitespace-nowrap text-sm font-medium">{t.label}</span>
+              <span className="hidden text-xs leading-snug opacity-60 lg:block">
+                {t.id === "connections" && connected !== null ? `${connected} of ${SERVICES.length} connected` : t.hint}
+              </span>
+            </span>
+          </button>
+        ))}
+      </nav>
+
+      <div role="tabpanel" aria-label={current.label} className="min-w-0">
+        {tab === "brand" && <div className="[&>div]:!mx-0 [&>div]:!max-w-none [&>div]:!p-0">{brandKit}</div>}
+
+        {tab === "connections" && (
+          <div className="max-w-3xl space-y-5">
+            <p className="text-sm leading-relaxed opacity-70">
+              The app talks only to the services you connect here, with your own keys. A key is stored on this computer and is never shown again after you save it.
+            </p>
+            {group("Writing and analysis", "Ideas, post analyses, scripts and the agent.")}
+            <ApiKeySection
+              provider="anthropic"
+              title="Claude API key"
+              placeholder="sk-ant-…"
+              description="Ideas, analyses and scripts are written by Anthropic's Claude, using your own API key. Your brand details are sent to Anthropic each time you ask for ideas, and each batch costs a few cents on your Anthropic account. Create a key at console.anthropic.com."
+            />
+            {group("Speech and sound", "Transcripts of saved videos, and voices for your characters.")}
+            <ApiKeySection
+              provider="deepgram"
+              title="Deepgram API key"
+              placeholder="Deepgram API key"
+              description="Deepgram turns the speech in videos you save for research into text. Each video you transcribe is uploaded to Deepgram and billed to your Deepgram account by the minute. Create a key at console.deepgram.com."
+            />
+            <ApiKeySection
+              provider="elevenlabs"
+              title="ElevenLabs API key"
+              placeholder="ElevenLabs API key"
+              description="ElevenLabs makes audio: voiceovers in a voice from your account (including your own cloned voice), sound effects and music. It speaks your characters' and narrator's lines in Studio, and the agent can make a voiceover, a sound effect or a music track when you ask. The text or description is sent to ElevenLabs and uses your ElevenLabs credits. Create a key at elevenlabs.io under Developers, API keys."
+            />
+            {group("Pictures and video", "Stills, clips and lip-sync for scenes in Studio. One of these is enough.")}
+            <ApiKeySection
+              provider="fal"
+              title="fal.ai API key"
+              placeholder="fal.ai key"
+              description="fal.ai makes pictures, clips and lip-synced clips for scenes in Studio, with many models on one key. The pictures, descriptions and voice recordings a scene needs are sent to fal.ai, where each file is kept at a web address anyone with the link can open. Billed to your fal.ai account. Create a key at fal.ai under API keys."
+            />
+            <ApiKeySection
+              provider="google"
+              title="Google Gemini API key"
+              placeholder="Gemini API key"
+              description="Google's own picture and video models for scenes in Studio. The pictures and descriptions a scene needs are sent to Google and billed to your Google account. Google cannot lip-sync to a recorded voice. Create a key at aistudio.google.com."
+            />
+            {group("From your phone", "Send links to your own bot and they are saved to Research.")}
+            <TelegramSection />
+          </div>
+        )}
+
+        {tab === "media" && (
+          <div className="max-w-3xl">
+            <MediaSection />
+          </div>
+        )}
+        {tab === "agent" && (
+          <div className="max-w-3xl">
+            <AgentPermissionsSection />
+          </div>
+        )}
+        {tab === "data" && (
+          <div className="max-w-3xl">
+            <DataFolderSection />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -85,7 +168,7 @@ function MediaSection() {
       <h2 className="font-display text-lg font-semibold">Pictures and video</h2>
       <p className="mt-2 text-sm leading-relaxed opacity-70">
         Choose which service does each job by default. You can pick a different one for a single picture or clip in
-        Studio and Cast. Services rename and retire models often: if one stops working, type its new id here.
+        Studio and Characters. Services rename and retire models often: if one stops working, type its new id here.
       </p>
       <div className="mt-5 space-y-5">
         {(Object.keys(MEDIA_TASKS) as MediaTask[]).map((task) => (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   detectPlatform,
   PLATFORM_LABELS,
@@ -8,6 +8,7 @@ import {
   type ResearchPlatform,
 } from "@shared/research";
 import { AnalyseAll, PostAnalysisBlock } from "./AnalysisView";
+import { Icon, ICONS } from "./studioUi";
 import { api } from "./api";
 import { MakeVideoButton } from "./StudioView";
 
@@ -17,6 +18,18 @@ const primaryButton =
   "rounded-full bg-[var(--primary)] px-5 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50";
 const quietButton =
   "rounded-full border border-[var(--line)] px-4 py-1.5 text-sm font-medium hover:border-[var(--ink)] disabled:opacity-50";
+
+/** How many posts the plain list shows at first, and how many more each time. */
+const FIRST_SCREEN = 20;
+const LINK_ICON = "M10 14a4 4 0 0 0 5.700 0l3-3a4 4 0 0 0-5.700-5.700l-1 1M14 10a4 4 0 0 0-5.700 0l-3 3a4 4 0 0 0 5.700 5.700l1-1";
+/** The ids of posts being analysed in the background, or waiting their turn. */
+const AnalysingContext = createContext<string[]>([]);
+/** The heading for posts that are the only one of their concept so far. */
+const ONE_OF_A_KIND = "\u0000alone";
+/** The "Concept" filter's value for posts that are in no group. */
+const NO_GROUP = "\u0000none";
+/** Posts analysed before grouping existed are sorted into groups once, the first time Research is opened. */
+let autoGrouped = false;
 
 export function ResearchView({
   onOpenSettings,
@@ -43,8 +56,72 @@ export function ResearchView({
   }, [openId]);
   const focused = useRef(false);
   const [platform, setPlatform] = useState<ResearchPlatform | "all">("all");
-  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(FIRST_SCREEN);
+  const [query, setQuery] = useState("");
+  const [rated, setRated] = useState<"" | "top" | "none">("");
+  /** The groups closed in the grouped view, by their heading. */
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<ResearchItem | null>(null);
+  const [byGroup, setByGroup] = useState(false);
+  const viewChosen = useRef(false);
+  const [concept, setConcept] = useState("");
+  /** What the grouping is doing right now, or "". */
+  const [grouping, setGrouping] = useState("");
+  const [groupNote, setGroupNote] = useState("");
+  /** Whether new posts are analysed on their own, and which are being analysed now. */
+  const [auto, setAuto] = useState<{ on: boolean; analysing: string[] }>({ on: true, analysing: [] });
+  const analysingBefore = useRef(0);
+
+  // Watches the background analysis: when a post finishes, the list is read again so its analysis and group show.
+  useEffect(() => {
+    const check = () =>
+      api
+        .researchAuto()
+        .then((now) => {
+          if (now.analysing.length < analysingBefore.current) void api.listResearch().then(setItems);
+          analysingBefore.current = now.analysing.length;
+          setAuto(now);
+        })
+        .catch(() => undefined);
+    check();
+    const timer = setInterval(check, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  /** Has Claude sort posts into groups of similar videos: those without a group, or every one afresh. */
+  async function runGrouping(all: boolean, count: number) {
+    setGroupNote("");
+    setGrouping(`Sorting ${count} ${count === 1 ? "post" : "posts"} into groups of similar videos…`);
+    try {
+      const result = await api.groupResearch(all);
+      if (result.ok) {
+        setItems(result.items);
+        setGroupNote(result.grouped === 0 ? "" : `${result.grouped} ${result.grouped === 1 ? "post" : "posts"} sorted into groups of similar videos.`);
+        viewChosen.current = true;
+        setByGroup(true);
+      } else setGroupNote(`The posts could not be grouped: ${result.error}`);
+    } catch (e) {
+      setGroupNote(e instanceof Error ? e.message : "The posts could not be grouped.");
+    } finally {
+      setGrouping("");
+    }
+  }
+
+  // Analysed posts that have no group yet are grouped without being asked, once per run of the app.
+  useEffect(() => {
+    if (!items) return;
+    if (!viewChosen.current && items.some((i) => i.group)) {
+      viewChosen.current = true;
+      setByGroup(true);
+    }
+    const waiting = items.filter((i) => i.analysis && !i.group).length;
+    if (waiting === 0 || autoGrouped) return;
+    autoGrouped = true;
+    void api.hasApiKey("anthropic").then((has) => {
+      if (has) void runGrouping(false, waiting);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   useEffect(() => {
     const load =() => api.listResearch().then(setItems).catch(() => setItems((list) => list ?? []));
@@ -68,6 +145,10 @@ export function ResearchView({
       if (result.ok) {
         setItems((list) => [result.item, ...(list ?? [])]);
         setUrl("");
+        void api.researchAuto().then((now) => {
+          analysingBefore.current = now.analysing.length;
+          setAuto(now);
+        });
       } else {
         setError(result.error);
       }
@@ -85,182 +166,327 @@ export function ResearchView({
     setItems((list) => (list ?? []).filter((i) => i.id !== item.id));
   }
 
-  // Filter, then sort, then cut into pages of ten.
-  const matching = sorted(
-    (items ?? []).filter((i) => platform === "all" || i.platform === platform),
+  // Search and filters, then the chosen order.
+  const groupSizes = new Map<string, number>();
+  for (const i of items ?? []) if (i.group) groupSizes.set(i.group, (groupSizes.get(i.group) ?? 0) + 1);
+  const groupNames = [...groupSizes.keys()].sort((a, b) => groupSizes.get(b)! - groupSizes.get(a)! || a.localeCompare(b));
+  const q = query.trim().toLowerCase();
+  const filtered = sorted(
+    (items ?? []).filter(
+      (i) =>
+        (platform === "all" || i.platform === platform) &&
+        (!concept || (concept === NO_GROUP ? !i.group : i.group === concept)) &&
+        (rated === "" || (rated === "none" ? i.rating === null : (i.rating ?? 0) >= 4)) &&
+        (!q || [postTitle(i), i.author, i.authorHandle, i.caption, i.note, i.group ?? "", i.analysis?.topic ?? "", i.analysis?.format ?? ""].some((t) => t.toLowerCase().includes(q))),
+    ),
     sort,
   );
-  // Once the posts have loaded, turn to the page that holds the post we were sent to.
+  // Grouped: the biggest group first and posts without a group last. The chosen order holds inside each group.
+  const rank = (i: ResearchItem) => (i.group ? groupNames.indexOf(i.group) : groupNames.length);
+  const matching = byGroup ? [...filtered].sort((a, b) => rank(a) - rank(b)) : filtered;
+  /** The heading a post sits under in the grouped view: its group, one shared heading for posts that are alone in theirs, or none. */
+  const section = (i: ResearchItem) => (!i.group ? "" : (groupSizes.get(i.group) ?? 0) > 1 ? i.group : ONE_OF_A_KIND);
+  const alone = [...groupSizes.values()].filter((n) => n === 1).length;
+  // Groups are always shown whole; the plain list is shown a screenful at a time.
+  const shown = byGroup ? matching : matching.slice(0, limit);
+  const sections = [...new Set(matching.map(section))];
+  const filtering = Boolean(q || concept || rated || platform !== "all");
+
+  // Once the posts have loaded, make sure the post we were sent to is on screen.
   useEffect(() => {
     if (!focusId || focused.current || !items) return;
     focused.current = true;
     const index = items.findIndex((i) => i.id === focusId);
-    if (index >= 0) setPage(Math.floor(index / PAGE_SIZE) + 1);
+    if (index >= limit) setLimit(index + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, items]);
 
-  const pageCount = Math.max(Math.ceil(matching.length / PAGE_SIZE), 1);
-  const currentPage = Math.min(page, pageCount); // Deleting the last post on a page steps back one.
-  const firstIndex = (currentPage - 1) * PAGE_SIZE;
-  const pageItems = matching.slice(firstIndex, firstIndex + PAGE_SIZE);
+  const analysed = (items ?? []).filter((i) => i.analysis).length;
+  const select = "rounded-lg border border-[var(--line)] bg-[var(--surface)] px-2.5 py-2 text-sm focus:border-[var(--primary)] focus:outline-none";
+  const working = grouping || (auto.analysing.length > 0 ? `Analysing ${auto.analysing.length} new ${auto.analysing.length === 1 ? "post" : "posts"} and putting ${auto.analysing.length === 1 ? "it in its group" : "them in their groups"}…` : "");
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6 shadow-sm">
-        <h2 className="font-display text-xl font-semibold">Save a post</h2>
-        <p className="mt-2 text-sm leading-relaxed opacity-70">
-          Paste a link to a public Instagram post (reel, video, photo or carousel) or a YouTube Short. The app downloads
-          the videos and pictures, keeps the caption and details, and writes down what is said in any video.
-        </p>
-        <form onSubmit={save} className="mt-4 flex flex-wrap gap-3">
-          <input
-            type="url"
-            aria-label="Post link"
-            className={`${fieldClass} min-w-0 flex-1`}
-            placeholder="Instagram or YouTube Shorts link"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
+    <div className="mx-auto max-w-6xl space-y-5 p-6">
+      {/* Saving a post is one line: paste, press, done. */}
+      <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm">
+        <form onSubmit={save} className="flex flex-wrap gap-3">
+          <div className="relative min-w-0 flex-1">
+            <Icon d={LINK_ICON} className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50" />
+            <input
+              type="url"
+              aria-label="Post link"
+              className={`${fieldClass} pl-9`}
+              placeholder="Paste an Instagram or YouTube Shorts link to save it"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </div>
           <button type="submit" className={primaryButton} disabled={saving || !url.trim()}>
             {saving ? "Saving…" : "Save post"}
           </button>
         </form>
-        {saving && (
-          <p className="mt-3 text-sm opacity-60">
-            Downloading. This can take a minute. The very first save also sets up the download tools, which can take a few minutes.
-          </p>
-        )}
+        <p className="mt-2 text-xs leading-relaxed opacity-60">
+          {saving
+            ? "Downloading. This can take a minute. The very first save also sets up the download tools, which can take a few minutes."
+            : auto.on
+              ? "The app downloads the post, writes down what is said, analyses it and puts it with similar videos. You can also send links to your Telegram bot."
+              : "The app downloads the post and writes down what is said. You can also send links to your Telegram bot."}
+          {hasDeepgram === false && !saving && (
+            <>
+              {" "}
+              No transcript until you add a Deepgram key.{" "}
+              <button type="button" className="font-medium text-[var(--accent)] hover:underline" onClick={onOpenSettings}>
+                Open settings
+              </button>
+            </>
+          )}
+        </p>
         {error && (
-          <p role="alert" className="mt-3 text-sm font-medium text-red-400">
+          <p role="alert" className="mt-2 text-sm font-medium text-red-400">
             {error}
-          </p>
-        )}
-        {hasDeepgram === false && (
-          <p className="mt-4 rounded-xl bg-[var(--tint)] p-3 text-sm">
-            <span className="opacity-80">
-              Videos are saved without a transcript until you add a Deepgram API key.{" "}
-            </span>
-            <button type="button" className="font-medium text-[var(--accent)] hover:underline" onClick={onOpenSettings}>
-              Open settings
-            </button>
           </p>
         )}
       </section>
 
       {items && items.length === 0 && (
-        <p className="rounded-2xl border border-dashed border-[var(--line)] p-8 text-center opacity-70">
-          Nothing saved yet.
-        </p>
+        <div className="flex flex-col items-center rounded-2xl border border-dashed border-[var(--line)] px-6 py-14 text-center">
+          <h2 className="font-display text-xl font-semibold">Nothing saved yet</h2>
+          <p className="mt-2 max-w-md text-sm leading-relaxed opacity-65">
+            Save posts that worked for other creators. Each one is analysed for why it works and grouped with similar videos, and your ideas are modelled on them.
+          </p>
+        </div>
       )}
 
       {items && items.length > 0 && (
-        <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-3">
-            <h2 className="font-display text-lg font-semibold">
-              Saved posts{" "}
-              <span className="font-sans text-sm font-normal opacity-60">
-                · {platform === "all" ? items.length : `${matching.length} of ${items.length}`}
-              </span>
-            </h2>
-            <div className="flex flex-wrap items-center gap-4">
+        <>
+          {/* Where the library stands, and the few things that act on all of it. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+            <dl className="flex flex-wrap gap-x-7 gap-y-2">
+              {(
+                [
+                  ["Posts", items.length],
+                  ["Analysed", analysed === items.length ? "All" : `${analysed} of ${items.length}`],
+                  ["Groups", groupNames.length - alone],
+                  ["One of a kind", alone],
+                ] as const
+              ).map(([name, value]) => (
+                <div key={name}>
+                  <dt className="text-xs opacity-55">{name}</dt>
+                  <dd className="font-display text-xl font-semibold tabular-nums">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <div className="flex flex-wrap items-center gap-3">
               <AnalyseAll items={items} onChange={replace} />
-              <label className="flex items-center gap-2 text-sm">
-                <span className="opacity-60">Platform</span>
-                <select
-                  className={`${fieldClass} !w-auto !py-1.5`}
-                  value={platform}
-                  onChange={(e) => {
-                    setPlatform(e.target.value as ResearchPlatform | "all");
-                    setPage(1);
-                  }}
-                >
-                  <option value="all">All platforms</option>
-                  {(Object.keys(PLATFORM_LABELS) as ResearchPlatform[]).map((p) => (
-                    <option key={p} value={p}>
-                      {PLATFORM_LABELS[p]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <span className="opacity-60">Sort by</span>
-                <select
-                  className={`${fieldClass} !w-auto !py-1.5`}
-                  value={sort}
-                  onChange={(e) => {
-                    setSort(e.target.value as Sort);
-                    setPage(1);
-                  }}
-                >
-                  <option value="saved">Newest saved</option>
-                  <option value="rating">Highest rated</option>
-                  <option value="likes">Most liked</option>
-                </select>
-              </label>
+              <details className="relative">
+                <summary className={`${quietButton} cursor-pointer list-none [&::-webkit-details-marker]:hidden`}>Options</summary>
+                <div className="absolute right-0 top-11 z-30 w-80 space-y-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm shadow-2xl">
+                  <label className="flex cursor-pointer items-start gap-2.5">
+                    <input type="checkbox" className="mt-0.5" checked={auto.on} onChange={async (e) => setAuto({ ...auto, on: await api.setResearchAuto(e.target.checked) })} />
+                    <span>
+                      <span className="font-medium">Analyse new posts automatically</span>
+                      <span className="mt-0.5 block text-xs opacity-60">Each new post is analysed and grouped as soon as it is saved. About $0.06 a post on your Claude account.</span>
+                    </span>
+                  </label>
+                  {groupNames.length > 0 && (
+                    <div className="border-t border-[var(--line)] pt-3">
+                      <button type="button" className="font-medium underline disabled:opacity-40" disabled={grouping !== ""} onClick={() => void runGrouping(true, analysed)}>
+                        Regroup everything
+                      </button>
+                      <span className="mt-0.5 block text-xs opacity-60">Sorts every analysed post into groups afresh. A few cents. Groups you set by hand are replaced.</span>
+                    </div>
+                  )}
+                </div>
+              </details>
             </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] table-fixed border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--line)] font-mono text-xs uppercase tracking-widest opacity-60">
-                  <th className="w-[36%] px-5 py-3 font-normal">Post</th>
-                  <th className="w-[9%] px-3 py-3 font-normal">Likes</th>
-                  <th className="w-[11%] px-3 py-3 font-normal">Comments</th>
-                  <th className="w-[136px] px-3 py-3 font-normal">Rating</th>
-                  <th className="px-3 py-3 font-normal">Note</th>
-                  <th className="w-[64px] px-5 py-3 font-normal" aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {pageItems.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center opacity-60">
-                      No saved posts from this platform.
-                    </td>
-                  </tr>
-                )}
-                {pageItems.map((item) => (
-                  <ResearchRow
-                    key={item.id}
-                    item={item}
-                    open={openId === item.id}
-                    onToggle={() => setOpenId(openId === item.id ? null : item.id)}
-                    canTranscribe={hasDeepgram === true}
-                    onChange={replace}
-                    onDelete={() => setPendingDelete(item)}
-                  />
+
+          {/* Finding posts. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-48 flex-1">
+              <Icon d={ICONS.search} className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50" />
+              <input className={`${fieldClass} pl-9`} type="search" placeholder="Search creators, captions, notes and concepts" aria-label="Search saved posts" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            {groupNames.length > 0 && (
+              <select className={`${select} max-w-56`} aria-label="Concept" value={concept} onChange={(e) => setConcept(e.target.value)}>
+                <option value="">All concepts</option>
+                {groupNames.map((g) => (
+                  <option key={g} value={g}>
+                    {g} ({groupSizes.get(g)})
+                  </option>
                 ))}
-              </tbody>
-            </table>
+                <option value={NO_GROUP}>No group yet</option>
+              </select>
+            )}
+            <select className={select} aria-label="Platform" value={platform} onChange={(e) => setPlatform(e.target.value as ResearchPlatform | "all")}>
+              <option value="all">All platforms</option>
+              {(Object.keys(PLATFORM_LABELS) as ResearchPlatform[]).map((p) => (
+                <option key={p} value={p}>
+                  {PLATFORM_LABELS[p]}
+                </option>
+              ))}
+            </select>
+            <select className={select} aria-label="Your rating" value={rated} onChange={(e) => setRated(e.target.value as typeof rated)}>
+              <option value="">Any rating</option>
+              <option value="top">4 stars or more</option>
+              <option value="none">Not rated yet</option>
+            </select>
+            <select className={select} aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+              <option value="saved">Newest saved</option>
+              <option value="rating">Highest rated</option>
+              <option value="likes">Most liked</option>
+            </select>
+            {groupNames.length > 0 && (
+              <div role="radiogroup" aria-label="How the posts are laid out" className="inline-flex rounded-lg border border-[var(--line)] p-0.5 text-sm font-medium">
+                {(
+                  [
+                    [true, "Groups"],
+                    [false, "List"],
+                  ] as const
+                ).map(([grouped, text]) => (
+                  <button
+                    key={text}
+                    type="button"
+                    role="radio"
+                    aria-checked={byGroup === grouped}
+                    title={grouped ? "Similar videos together" : "One list, in the order chosen"}
+                    className={`rounded-md px-3 py-1.5 ${byGroup === grouped ? "bg-[var(--tint)]" : "opacity-60 hover:opacity-100"}`}
+                    onClick={() => {
+                      viewChosen.current = true;
+                      setByGroup(grouped);
+                    }}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          {matching.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-sm">
-              <p className="opacity-60">
-                Showing {firstIndex + 1}–{firstIndex + pageItems.length} of {matching.length}
-              </p>
-              <div className="flex items-center gap-3">
+
+          {(working || groupNote) && (
+            <p role="status" className={`flex items-center gap-2.5 rounded-xl border px-4 py-2.5 text-sm ${working ? "border-[var(--line)] bg-[var(--tint)]" : "border-emerald-400/40 bg-emerald-500/10 text-emerald-300"}`}>
+              {working && <span aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--line)] border-t-[var(--primary)]" />}
+              {working || groupNote}
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm opacity-70">
+            <p>
+              {matching.length === items.length ? `${items.length} ${items.length === 1 ? "post" : "posts"}` : `${matching.length} of ${items.length} posts`}
+              {filtering && (
                 <button
                   type="button"
-                  className={quietButton}
-                  disabled={currentPage <= 1}
-                  onClick={() => setPage(currentPage - 1)}
+                  className="ml-3 underline"
+                  onClick={() => {
+                    setQuery("");
+                    setConcept("");
+                    setRated("");
+                    setPlatform("all");
+                  }}
                 >
-                  Previous
+                  Clear filters
                 </button>
-                <span className="tabular-nums opacity-80">
-                  Page {currentPage} of {pageCount}
-                </span>
-                <button
-                  type="button"
-                  className={quietButton}
-                  disabled={currentPage >= pageCount}
-                  onClick={() => setPage(currentPage + 1)}
-                >
-                  Next
+              )}
+            </p>
+            {byGroup && sections.length > 1 && (
+              <button type="button" className="underline" onClick={() => setCollapsed(collapsed.size > 0 ? new Set() : new Set(sections))}>
+                {collapsed.size > 0 ? "Open every group" : "Close every group"}
+              </button>
+            )}
+          </div>
+
+          <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] shadow-sm">
+            {/* The groups there are, for the field that moves a post to another. */}
+            <datalist id="concept-groups">
+              {groupNames.map((g) => (
+                <option key={g} value={g} />
+              ))}
+            </datalist>
+            <AnalysingContext.Provider value={auto.analysing}>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[700px] table-fixed border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--line)] text-xs font-medium uppercase tracking-wide opacity-55">
+                      <th className="w-[36%] px-5 py-3 font-medium">Post</th>
+                      <th className="w-[9%] px-3 py-3 font-medium">Likes</th>
+                      <th className="w-[11%] px-3 py-3 font-medium">Comments</th>
+                      <th className="w-[136px] px-3 py-3 font-medium">Your rating</th>
+                      <th className="px-3 py-3 font-medium">Your note</th>
+                      <th className="w-[64px] px-5 py-3 font-medium" aria-label="Actions" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="px-5 py-10 text-center opacity-60">
+                          No saved post matches that.
+                        </td>
+                      </tr>
+                    )}
+                    {shown.map((item, index) => {
+                      const key = section(item);
+                      const closed = byGroup && collapsed.has(key);
+                      const count = key === ONE_OF_A_KIND ? matching.filter((i) => section(i) === key).length : matching.filter((i) => section(i) === key).length;
+                      return (
+                        <Fragment key={item.id}>
+                          {/* A heading wherever a new group starts. Press it to close or open the group. */}
+                          {byGroup && (index === 0 || section(shown[index - 1]) !== key) && (
+                            <tr className="border-b border-[var(--line)] bg-[var(--tint)]">
+                              <td colSpan={6} className="p-0">
+                                <button
+                                  type="button"
+                                  aria-expanded={!closed}
+                                  className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 text-left hover:bg-white/5"
+                                  onClick={() => {
+                                    const next = new Set(collapsed);
+                                    if (closed) next.delete(key);
+                                    else next.add(key);
+                                    setCollapsed(next);
+                                  }}
+                                >
+                                  <Icon d="M6 9l6 6 6-6" className={`h-4 w-4 opacity-60 transition-transform ${closed ? "-rotate-90" : ""}`} />
+                                  <span className="font-display font-semibold">{key === ONE_OF_A_KIND ? "One of a kind" : item.group || "No group yet"}</span>
+                                  <span className="rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs font-medium tabular-nums">{count}</span>
+                                  <span className="text-xs opacity-60">
+                                    {key === ONE_OF_A_KIND
+                                      ? "No similar video saved yet. Each has its own concept, and a later post like it will join it."
+                                      : item.group
+                                        ? "Similar videos, built on the same concept."
+                                        : "Posts get a group when they are analysed."}
+                                  </span>
+                                </button>
+                              </td>
+                            </tr>
+                          )}
+                          {!closed && (
+                            <ResearchRow
+                              item={item}
+                              open={openId === item.id}
+                              onToggle={() => setOpenId(openId === item.id ? null : item.id)}
+                              canTranscribe={hasDeepgram === true}
+                              onChange={replace}
+                              onDelete={() => setPendingDelete(item)}
+                            />
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </AnalysingContext.Provider>
+            {!byGroup && matching.length > shown.length && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-sm">
+                <p className="opacity-60">
+                  Showing {shown.length} of {matching.length}
+                </p>
+                <button type="button" className={quietButton} onClick={() => setLimit(limit + FIRST_SCREEN)}>
+                  Show {Math.min(FIRST_SCREEN, matching.length - shown.length)} more
                 </button>
               </div>
-            </div>
-          )}
-        </section>
+            )}
+          </section>
+        </>
       )}
 
       {pendingDelete && (
@@ -338,7 +564,6 @@ function ConfirmDelete({
 }
 
 type Sort = "saved" | "rating" | "likes";
-const PAGE_SIZE = 10;
 
 function sorted(items: ResearchItem[], sort: Sort): ResearchItem[] {
   if (sort === "saved") return items; // Already newest first.
@@ -370,6 +595,8 @@ function ResearchRow({
   const thumbnail = first ? (first.kind === "image" ? first.file : first.posterFile) : "";
   const imageCount = item.media.filter((m) => m.kind === "image").length;
 
+  const analysing = useContext(AnalysingContext);
+
   async function edit(change: { rating?: number | null; note?: string }) {
     const result = await api.updateResearch(item.id, change);
     if (result.ok) onChange(result.item);
@@ -395,7 +622,7 @@ function ResearchRow({
               <span className="block truncate text-xs opacity-60">
                 {PLATFORM_LABELS[item.platform]} · {describeMedia(item.media.length - imageCount, imageCount)}
                 {item.durationSeconds != null && ` · ${formatDuration(item.durationSeconds)}`}
-                {item.analysis && " · analysed"}
+                {item.analysis ? " · analysed" : analysing.includes(item.id) && " · analysing…"}
               </span>
               {item.audio && (
                 <span className="block truncate text-xs opacity-60" title={describeAudio(item.audio)}>
@@ -612,6 +839,8 @@ function ResearchCard({
           </p>
         </div>
 
+        <GroupField item={item} onChange={onChange} />
+
         <TextBlock label="Caption" text={item.caption} empty="This post has no caption." />
 
         {hasVideo && <AudioUsed item={item} onChange={onChange} />}
@@ -664,6 +893,42 @@ function ResearchCard({
 const describeAudio = (audio: ResearchAudio) => [audio.title, audio.artist].filter(Boolean).join(" · ");
 
 /** Which sound the video uses: a song, or the creator's own recording. */
+/** The concept group a post is in: pick another, type a new one, or clear it. Saved on leaving the box or pressing Enter. */
+function GroupField({ item, onChange }: { item: ResearchItem; onChange: (item: ResearchItem) => void }) {
+  const [draft, setDraft] = useState(item.group ?? "");
+  const [error, setError] = useState("");
+  useEffect(() => setDraft(item.group ?? ""), [item.group]);
+
+  async function save() {
+    if (draft.trim() === (item.group ?? "")) return;
+    setError("");
+    const result = await api.updateResearch(item.id, { group: draft });
+    if (result.ok) onChange(result.item);
+    else setError(result.error);
+  }
+
+  return (
+    <label className="block text-sm">
+      <span className="font-mono text-xs uppercase tracking-widest opacity-60">Concept group</span>
+      <input
+        className={`${fieldClass} mt-1.5 max-w-md`}
+        list="concept-groups"
+        placeholder={item.analysis ? "No group. Type a name, or pick one." : "Set when the post is analysed. You can also type one."}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+      />
+      <span className="mt-1 block text-xs opacity-55">Posts built on the same concept share a group, so similar videos sit together.</span>
+      {error && (
+        <span role="alert" className="mt-1 block text-xs font-medium text-red-400">
+          {error}
+        </span>
+      )}
+    </label>
+  );
+}
+
 function AudioUsed({ item, onChange }: { item: ResearchItem; onChange: (item: ResearchItem) => void }) {
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");

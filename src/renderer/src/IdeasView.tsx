@@ -2,9 +2,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { formatUsd } from "@shared/analysis";
 import type { BrandKit } from "@shared/brand";
-import { MIN_ANALYSED_POSTS, type GenerateOptions, type Idea, type IdeaDraft, type IdeaSuggestion } from "@shared/ideas";
+import { ideaKind, MIN_ANALYSED_POSTS, type GenerateOptions, type Idea, type IdeaDraft, type IdeaSuggestion } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { PRODUCTIONS, productionLabel, type Video } from "@shared/studio";
+import { PRODUCTIONS, productionLabel, type Series, type Video } from "@shared/studio";
 import { AnalyseAll } from "./AnalysisView";
 import { api } from "./api";
 import { MakeVideoButton } from "./StudioView";
@@ -12,7 +12,7 @@ import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, PostPicker, primary
 
 type Tab = "saved" | "review";
 type Sort = "newest" | "score";
-const BLANK: GenerateOptions = { count: 5, pillar: "", platform: "", notes: "", series: "", production: "mix", postIds: [] };
+const BLANK: GenerateOptions = { kind: "video", count: 5, pillar: "", platform: "", notes: "", series: "", production: "mix", postIds: [] };
 const TRASH = "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3";
 const CHEVRON = "M6 9l6 6 6-6";
 
@@ -35,6 +35,7 @@ export function IdeasView({
   const [suggestions, setSuggestions] = useState<IdeaSuggestion[]>([]);
   const [posts, setPosts] = useState<ResearchItem[]>([]);
   const [videos, setVideos] = useState<Video[]>([]);
+  const [studioSeries, setStudioSeries] = useState<Series[]>([]);
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [tab, setTab] = useState<Tab>("saved");
   const [writing, setWriting] = useState(false);
@@ -49,6 +50,7 @@ export function IdeasView({
   const [pillar, setPillar] = useState("");
   const [series, setSeries] = useState("");
   const [made, setMade] = useState("");
+  const [kind, setKind] = useState("");
   const [freshOnly, setFreshOnly] = useState(false);
   const [sort, setSort] = useState<Sort>("newest");
   const [openId, setOpenId] = useState<string | null>(focusId ?? null);
@@ -65,6 +67,7 @@ export function IdeasView({
     api.listIdeas().then(setIdeas);
     api.listResearch().then(setPosts).catch(() => setPosts([]));
     api.listVideos().then(setVideos).catch(() => setVideos([]));
+    api.listSeries().then(setStudioSeries).catch(() => setStudioSeries([]));
     // Ideas waiting from an earlier round come first, unless a particular idea was asked for.
     api.listSuggestions().then((waiting) => {
       setSuggestions(waiting);
@@ -121,7 +124,7 @@ export function IdeasView({
 
   const replacePost = (post: ResearchItem) => setPosts((list) => list.map((p) => (p.id === post.id ? post : p)));
   const analysed = posts.filter((p) => p.analysis);
-  const used = new Set(videos.flatMap((v) => v.ideaIds));
+  const used = new Set([...videos, ...studioSeries].flatMap((x) => x.ideaIds));
   const values = (pick: (idea: Idea) => string | undefined) => [...new Set(ideas.map((i) => pick(i) ?? "").filter(Boolean))].sort();
   const q = query.trim().toLowerCase();
   const filtered = ideas.filter(
@@ -130,10 +133,11 @@ export function IdeasView({
       (!pillar || i.pillar === pillar) &&
       (!series || i.series === series) &&
       (!made || i.production === made) &&
+      (!kind || ideaKind(i) === kind) &&
       (!freshOnly || !used.has(i.id)),
   );
   const visible = sort === "newest" ? filtered : [...filtered].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-  const filtering = Boolean(q || pillar || series || made || freshOnly);
+  const filtering = Boolean(q || pillar || series || made || kind || freshOnly);
   const select = "rounded-lg border border-[var(--line)] bg-[var(--surface)] px-2.5 py-2 text-sm focus:border-[var(--primary)] focus:outline-none";
 
   if (hasKey === false) {
@@ -269,6 +273,13 @@ export function IdeasView({
                 <Icon d={ICONS.search} className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 opacity-50" />
                 <input className={`${fieldClass} pl-9`} type="search" placeholder="Search your ideas" aria-label="Search your ideas" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
+              {ideas.some((i) => ideaKind(i) === "series") && (
+                <select className={select} aria-label="Video or series" value={kind} onChange={(e) => setKind(e.target.value)}>
+                  <option value="">Videos and series</option>
+                  <option value="video">Single videos</option>
+                  <option value="series">Series</option>
+                </select>
+              )}
               {values((i) => i.pillar).length > 1 && (
                 <select className={select} aria-label="Pillar" value={pillar} onChange={(e) => setPillar(e.target.value)}>
                   <option value="">Any pillar</option>
@@ -321,6 +332,7 @@ export function IdeasView({
                       setPillar("");
                       setSeries("");
                       setMade("");
+                      setKind("");
                       setFreshOnly(false);
                     }}
                   >
@@ -405,9 +417,10 @@ function Score({ value }: { value?: number }) {
 const Tags = ({ idea, inStudio }: { idea: IdeaDraft; inStudio?: boolean }) => (
   <span className="flex flex-wrap gap-1.5">
     {inStudio && <Chip tone="good">In Studio</Chip>}
+    {ideaKind(idea) === "series" && <Chip tone="strong">Series</Chip>}
     {idea.pillar && <Chip>{idea.pillar}</Chip>}
     {idea.production && <Chip>{productionLabel(idea.production)}</Chip>}
-    {idea.series && <Chip>{idea.series}</Chip>}
+    {idea.series && idea.series !== idea.title && <Chip>{idea.series}</Chip>}
     {idea.platform && <Chip>{idea.platform}</Chip>}
   </span>
 );
@@ -465,7 +478,7 @@ function ReviewTab({
           </button>
         </div>
       </div>
-      <ul className="grid gap-4 lg:grid-cols-2">
+      <ul className="space-y-4">
         {[...suggestions]
           .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
           .map((s) => (
@@ -483,7 +496,7 @@ function ReviewTab({
                 <IdeaSummary idea={s} />
               </div>
               <details className="mt-4 text-sm">
-                <summary className="cursor-pointer font-medium opacity-70 hover:opacity-100">Outline, caption and why this score</summary>
+                <summary className="cursor-pointer font-medium opacity-70 hover:opacity-100">{ideaKind(s) === "series" ? "Episodes" : "Outline"}, caption and why this score</summary>
                 <div className="mt-4">
                   <IdeaMore idea={s} />
                 </div>
@@ -519,7 +532,7 @@ function IdeaRow({ idea, open, inStudio, onToggle, onDelete }: { idea: Idea; ope
           </span>
         </button>
         <div className="flex items-center gap-1.5">
-          <MakeVideoButton from={{ ideaId: idea.id }} label={inStudio ? "Make another" : "Make video"} />
+          <MakeVideoButton from={{ ideaId: idea.id }} series={ideaKind(idea) === "series"} label={inStudio ? "Make another" : ideaKind(idea) === "series" ? "Make series" : "Make video"} />
           <button type="button" aria-label={`Delete ${idea.title}`} title="Delete" className="rounded-full p-2 opacity-55 hover:bg-red-500/10 hover:text-red-400 hover:opacity-100" onClick={onDelete}>
             <Icon d={TRASH} />
           </button>
@@ -542,7 +555,9 @@ function IdeaRow({ idea, open, inStudio, onToggle, onDelete }: { idea: Idea; ope
 function IdeaSummary({ idea }: { idea: IdeaDraft }) {
   return (
     <div className="space-y-4 text-sm">
-      <p className="border-l-4 border-[var(--accent)] pl-3 font-display text-lg font-medium leading-snug">“{idea.hook}”</p>
+      <p className="border-l-4 border-[var(--accent)] pl-3 font-display text-lg font-medium leading-snug">
+        {ideaKind(idea) === "series" && <span className={`${label} mb-1 block font-sans`}>The running question</span>}“{idea.hook}”
+      </p>
       {(idea.viewer || idea.takeaway) && (
         <dl className="space-y-3">
           {idea.viewer && (
@@ -577,7 +592,7 @@ function IdeaMore({ idea }: { idea: IdeaDraft }) {
           <p className="leading-relaxed">{idea.scoreReason}</p>
         </Part>
       )}
-      <Part title="Outline">
+      <Part title={ideaKind(idea) === "series" ? "Episodes" : "Outline"}>
         <ol className="list-decimal space-y-1 pl-5 leading-relaxed">
           {idea.outline.map((beat, i) => (
             <li key={i}>{beat}</li>
@@ -585,7 +600,7 @@ function IdeaMore({ idea }: { idea: IdeaDraft }) {
         </ol>
       </Part>
       {idea.cta && (
-        <Part title="Closing ask">
+        <Part title={ideaKind(idea) === "series" ? "How the season ends" : "Closing ask"}>
           <p className="leading-relaxed">{idea.cta}</p>
         </Part>
       )}
@@ -689,7 +704,7 @@ function WriteDialog({
           ) : (
             <>
               <p role={error ? "alert" : undefined} className={`mr-auto min-w-0 flex-1 text-sm ${error ? "font-medium text-red-400" : "opacity-60"}`}>
-                {error || `Writes ${options.count * 5}, a separate judge scores them, you get the best ${options.count}. About $0.30, one to two minutes.`}
+                {error || `Writes ${options.count * 5} ${options.kind === "series" ? "series ideas" : "ideas"}, a separate judge scores them, you get the best ${options.count}. About $0.30 to $0.50, one to two minutes.`}
               </p>
               <button type="button" className={quietButton} onClick={onClose}>
                 Cancel
@@ -705,7 +720,7 @@ function WriteDialog({
           <div className="flex flex-col items-center px-4 py-10 text-center">
             <span aria-hidden className="h-10 w-10 animate-spin rounded-full border-[3px] border-[var(--line)] border-t-[var(--primary)]" />
             <p className="mt-5 font-display text-lg font-semibold">
-              Writing {options.count * 5} ideas from {learning} {learning === 1 ? "post" : "posts"}, then judging them
+              Writing {options.count * 5} {options.kind === "series" ? "series ideas" : "ideas"} from {learning} {learning === 1 ? "post" : "posts"}, then judging them
             </p>
             <p className="mt-1 text-sm opacity-60">
               <Elapsed since={generating} /> so far. It usually takes one to two minutes.
@@ -719,11 +734,37 @@ function WriteDialog({
         ) : (
           <>
             <div>
-              {step(1, "How will they be made?")}
+              {step(1, "Single videos or series?")}
+              <div role="radiogroup" aria-label="Single videos or series" className="grid gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    ["video", "Single videos", "Each idea is one video, complete on its own.", ICONS.film],
+                    ["series", "Series", "Each idea is a season of episodes with one running question.", ICONS.series],
+                  ] as const
+                ).map(([id, title, note, icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={(options.kind ?? "video") === id}
+                    onClick={() => set({ kind: id, ...(id === "series" ? { series: "" } : {}) })}
+                    className={`rounded-xl border p-3 text-left ${(options.kind ?? "video") === id ? "border-[var(--primary)] bg-[var(--tint)] ring-1 ring-[var(--primary)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-semibold">
+                      <Icon d={icon} />
+                      {title}
+                    </span>
+                    <span className="mt-1 block text-xs leading-snug opacity-65">{note}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              {step(2, "How will they be made?")}
               <ProductionPicker value={options.production ?? "mix"} onChange={(production) => set({ production })} />
             </div>
             <div>
-              {step(2, "Which saved posts should they learn from?")}
+              {step(3, "Which saved posts should they learn from?")}
               <PostPicker
                 posts={posts}
                 picked={picked}
@@ -737,7 +778,7 @@ function WriteDialog({
               />
             </div>
             <div>
-              {step(3, "Anything specific?", true)}
+              {step(4, "Anything specific?", true)}
               <textarea
                 className={fieldClass}
                 rows={2}
@@ -750,7 +791,7 @@ function WriteDialog({
             <details open={limits > 0 || undefined}>
               <summary className="cursor-pointer text-sm font-semibold">
                 More options
-                <span className="ml-2 font-normal opacity-50">{limits > 0 ? `${limits} set` : "how many, pillar, platform, series"}</span>
+                <span className="ml-2 font-normal opacity-50">{limits > 0 ? `${limits} set` : options.kind === "series" ? "how many, pillar, platform" : "how many, pillar, platform, series"}</span>
               </summary>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <Field name="How many to keep">
@@ -778,6 +819,7 @@ function WriteDialog({
                     ))}
                   </select>
                 </Field>
+                {options.kind !== "series" && (
                 <Field name="Series">
                   <select className={fieldClass} value={options.series ?? ""} onChange={(e) => set({ series: e.target.value })}>
                     <option value="">Any, including new</option>
@@ -788,6 +830,7 @@ function WriteDialog({
                     ))}
                   </select>
                 </Field>
+                )}
               </div>
             </details>
           </>

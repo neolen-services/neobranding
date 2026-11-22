@@ -25,6 +25,78 @@ const LATER_FRAMES = 4;
 const MAX_PICTURES = 6;
 const FRAME_HEIGHT = 768;
 
+/** A group of saved posts built on the same concept, as described to Claude. */
+export type ConceptGroup = { name: string; count: number; examples: string[] };
+
+/** What a concept is, said the same way wherever Claude is asked to group posts. */
+const CONCEPT_RULE = `A concept is the kind of bit or premise a post is built on and the way it is carried out, for example "An everyday object talks back to its owner", "Ranking things into tiers", "Day-by-day experiment on myself" or "Two friends mock a habit". Two posts share a concept when one could be described as "the same video with a different subject". The same subject alone is not a concept, and the same broad format alone (a list, a talking head) is not one either.`;
+
+const describeGroups = (groups: ConceptGroup[]) =>
+  groups.length
+    ? groups.map((g) => `- ${g.name} (${g.count} ${g.count === 1 ? "post" : "posts"}): ${g.examples.join(" / ")}`).join("\n")
+    : "(none yet)";
+
+const GroupingSchema = z.object({ groups: z.array(z.object({ name: z.string(), posts: z.array(z.string()) })) });
+
+const GROUPING_SYSTEM = `You sort a creator's saved short-form posts into groups of posts built on the same concept, so that similar videos sit together.
+
+${CONCEPT_RULE}
+
+You are given the posts to sort, each with a code (P1, P2, ...) and its analysis, and sometimes groups the creator already has.
+
+Rules:
+- Every post goes into exactly one group. Use each code once.
+- If a post is the same concept as a group the creator already has, use that group's name exactly.
+- Otherwise put posts of the same concept together under a new name of two to six words that a later post of the same concept could also carry. Name the concept, not the subject and not the creator.
+- A post unlike every other gets a group of its own, named for its concept. Do not force unlike posts together and do not make a catch-all group.`;
+
+/**
+ * Sorts analysed posts into groups by concept in one request, using only their saved analyses.
+ * Returns the group name for each post id.
+ */
+export async function groupPosts(apiKey: string, posts: ResearchItem[], existing: ConceptGroup[]): Promise<{ ok: true; groups: Map<string, string> } | { ok: false; error: string }> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  const coded = posts.filter((p) => p.analysis).map((post, i) => ({ code: `P${i + 1}`, post }));
+  if (coded.length === 0) return { ok: true, groups: new Map() };
+  const text = [
+    `GROUPS THE CREATOR ALREADY HAS\n${describeGroups(existing)}`,
+    `POSTS TO SORT\n${coded
+      .map(({ code, post }) => {
+        const a = post.analysis!;
+        return [`${code}: ${a.summary}`, `  Format: ${a.format}. Topic: ${a.topic}. Kind of hook: ${a.hookType}.`, `  Structure: ${a.skeleton.map((s, i) => `${i + 1}) ${s}`).join(" ")}`].join("\n");
+      })
+      .join("\n\n")}`,
+  ].join("\n\n");
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages.stream({
+      model: "claude-opus-5-5",
+      max_tokens: 24000,
+      // If the model declines for policy reasons, let the API retry on its default fallback model.
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: GROUPING_SYSTEM,
+      messages: [{ role: "user", content: text }],
+      output_config: { format: betaZodOutputFormat(GroupingSchema) },
+    }).finalMessage();
+    recordClaude("analysis", response.usage, "Grouping posts by concept");
+    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to group these posts." };
+    const out = response.parsed_output;
+    if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The grouping came back incomplete. Try again." };
+    const groups = new Map<string, string>();
+    for (const group of out.groups) {
+      for (const code of group.posts) {
+        const match = coded.find((c) => c.code === code.trim().toUpperCase());
+        // A code used twice keeps its first group.
+        if (match && group.name.trim() && !groups.has(match.post.id)) groups.set(match.post.id, group.name.trim());
+      }
+    }
+    return { ok: true, groups };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
+  }
+}
+
 const AnalysisSchema = z.object({
   summary: z.string(),
   format: z.enum(VIDEO_FORMATS),
@@ -38,6 +110,7 @@ const AnalysisSchema = z.object({
   cta: z.string(),
   whyItWorks: z.array(z.string()),
   skeleton: z.array(z.string()),
+  group: z.string(),
 });
 
 const SYSTEM = `You analyse short-form social videos and posts that performed well, so a creator can learn from their structure.
@@ -56,7 +129,8 @@ Fill in:
 - beats: four to seven short sentences, in order, saying what happens.
 - cta: the closing ask, copied or paraphrased. Empty if none.
 - whyItWorks: two to four specific reasons this post holds attention or gets shared. Point at things in this post, not general advice.
-- skeleton: the reusable structure as four to six steps, with the subject replaced by placeholders in square brackets, for example "Open on [surprising result] with text '[number] in [time]'". Another creator should be able to follow it with a different topic.`;
+- skeleton: the reusable structure as four to six steps, with the subject replaced by placeholders in square brackets, for example "Open on [surprising result] with text '[number] in [time]'". Another creator should be able to follow it with a different topic.
+- group: the concept group this post belongs to, so the creator's similar posts sit together. ${CONCEPT_RULE} You are given the groups the creator already has: if this post is the same concept as one of them, copy that group's name exactly. Otherwise give a new name of two to six words that a later post of the same concept could also carry; name the concept, not the subject and not the creator.`;
 
 type Frame = { label: string; base64: string };
 
@@ -108,7 +182,9 @@ export async function analyzePost(
   item: ResearchItem,
   itemDir: string,
   toolsDir: string | null,
-): Promise<{ ok: true; analysis: PostAnalysis } | { ok: false; error: string }> {
+  /** The concept groups the creator's other posts are already in. */
+  groups: ConceptGroup[] = [],
+): Promise<{ ok: true; analysis: PostAnalysis; group: string } | { ok: false; error: string }> {
   if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
 
   const video = item.media.find((m) => m.kind === "video");
@@ -184,30 +260,35 @@ export async function analyzePost(
       "",
       "Caption:",
       item.caption || "(no caption)",
+      "",
+      "Groups the creator already has:",
+      describeGroups(groups),
       frames.length === 0 ? "\nNo frames could be read from this post, so base the analysis on the text alone." : "",
     ].join("\n"),
   });
 
   const client = new Anthropic({ apiKey });
   try {
-    const response = await client.beta.messages.parse({
+    const response = await client.beta.messages.stream({
       model: "claude-opus-5-5",
-      max_tokens: 16000,
+      max_tokens: 24000,
       // If the model declines for policy reasons, let the API retry on its default fallback model.
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: SYSTEM,
       messages: [{ role: "user", content }],
       output_config: { format: betaZodOutputFormat(AnalysisSchema) },
-    });
+    }).finalMessage();
     recordClaude("analysis", response.usage, item.author || item.authorHandle);
     if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to analyse this post." };
     if (!response.parsed_output) return { ok: false, error: "The analysis came back incomplete. Try again." };
 
+    const { group, ...parsed } = response.parsed_output;
     return {
       ok: true,
+      group,
       analysis: {
-        ...response.parsed_output,
+        ...parsed,
         durationSeconds: seconds,
         cuts,
         wordsPerMinute,
@@ -224,6 +305,10 @@ export async function analyzePost(
 
 /** Turns an Anthropic SDK error into something a person can act on. */
 export function describeClaudeError(e: unknown): string {
+  // A reply that ran out of room stops part-way, and what arrived cannot be read.
+  if (e instanceof Error && /parse structured output|Unterminated string|Unexpected end of JSON/i.test(e.message)) {
+    return "Claude's reply was cut off before it finished, so nothing was saved. Try again; if it happens again, ask for fewer at once.";
+  }
   if (e instanceof Anthropic.AuthenticationError) return "The Claude API key was rejected. Check it in Settings.";
   if (e instanceof Anthropic.PermissionDeniedError) return "This Claude API key is not allowed to use the model.";
   if (e instanceof Anthropic.RateLimitError) return "Claude's rate limit was reached. Wait a minute and try again.";

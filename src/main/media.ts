@@ -10,8 +10,11 @@
 //   videos/<video id>/<take id>.<ext>     a scene's pictures and clips
 //   cast/<character id>/<take id>.<ext>   a character's reference pictures
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { createFalClient } from "@fal-ai/client";
 import { choiceLabel, MEDIA_FILE, MEDIA_PROVIDERS, type MediaChoice, type MediaTask, type Take, type UploadedFile } from "../shared/media";
 import type { ApiProvider } from "../shared/settings";
@@ -181,17 +184,22 @@ export async function makePicture(keys: Keys, choice: MediaChoice, input: { prom
   return made;
 }
 
-/** A still turned into a moving 9:16 clip of about `seconds`. */
-export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
+/**
+ * A picture turned into a moving 9:16 clip of about `seconds`. The clip starts on `image`; with `end` it
+ * also finishes on that picture, which is how one scene is made to stop where the next one starts.
+ */
+export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: Media; end?: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
   const key = needKey(keys, choice);
-  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), 15);
+  const { end } = input;
+  const kling = choice.provider === "fal" && /kling/i.test(choice.model);
+  // Between two pictures, Gemini Omni makes at most 10 seconds (fal.ai and Google both say so).
+  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), end && !kling && choice.provider !== "elevenlabs" ? 10 : 15);
   let made: Media;
   if (choice.provider === "fal") {
-    const kling = /kling/i.test(choice.model);
     const data = await fal(key, choice.model, async (upload) =>
       kling
-        ? { prompt: input.prompt, start_image_url: await upload(input.image), duration: String(seconds), generate_audio: false }
-        : { prompt: input.prompt, image_url: await upload(input.image), aspect_ratio: "9:16", resolution: "720p", duration: seconds },
+        ? { prompt: input.prompt, start_image_url: await upload(input.image), ...(end && { end_image_url: await upload(end) }), duration: String(seconds), generate_audio: false }
+        : { prompt: input.prompt, image_url: await upload(input.image), ...(end && { end_image_url: await upload(end) }), aspect_ratio: "9:16", resolution: "720p", duration: seconds },
     );
     if (!data.video?.url) throw new Error("fal.ai returned no clip.");
     made = await download(data.video.url, "video/mp4");
@@ -200,13 +208,16 @@ export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: 
       key,
       {
         model: choice.model,
+        // Two pictures, first then last, are animated from one to the other.
         input: [
           { type: "image", data: b64(input.image), mime_type: input.image.mime },
+          ...(end ? [{ type: "image", data: b64(end), mime_type: end.mime }] : []),
           { type: "text", text: input.prompt },
         ],
         response_format: { type: "video", aspect_ratio: "9:16", duration: `${seconds}s` },
-        // Without this Google decides for itself how to use the picture; with it the picture is the first frame.
-        generation_config: { video_config: { task: "image_to_video" } },
+        // With one picture this makes it the first frame, where Google would otherwise decide for itself how to use it.
+        // With two it is left out: Google's guide gives none for first-and-last frames, and a task limits the pictures allowed.
+        ...(!end && { generation_config: { video_config: { task: "image_to_video" } } }),
       },
       "video",
     );
@@ -219,6 +230,7 @@ export async function makeClip(keys: Keys, choice: MediaChoice, input: { image: 
       aspect_ratio: "9:16",
       duration_secs: /^veo/i.test(choice.model) ? allowed : seconds,
       start_frame: inline(input.image),
+      ...(end && { end_frame: inline(end) }),
       generate_audio: false,
     });
   }
@@ -260,6 +272,29 @@ export async function saveTake(dataDir: string, folder: "videos" | "cast", owner
   await mkdir(dirname(join(dataDir, file)), { recursive: true });
   await writeFile(join(dataDir, file), media.bytes);
   return { id, file, source, madeWith, createdAt: new Date().toISOString() };
+}
+
+/**
+ * The last frame of a stored clip, as a picture: what the next scene's clip starts on when it
+ * carries on from this one. `toolsDir` is where FFmpeg lives. The frame is written to a
+ * temporary folder that is removed again before returning.
+ */
+export async function lastFrame(dataDir: string, clip: Take, toolsDir: string): Promise<Media> {
+  const source = mediaFilePath(dataDir, clip.file);
+  if (!source) throw new Error("That clip's file is missing.");
+  const work = await mkdtemp(join(tmpdir(), "last-frame-"));
+  try {
+    const out = join(work, "frame.png");
+    // Reads only the final second and keeps overwriting one file, so what is left is the very last frame.
+    await promisify(execFile)(
+      join(toolsDir, `ffmpeg${process.platform === "win32" ? ".exe" : ""}`),
+      ["-y", "-hide_banner", "-loglevel", "error", "-sseof", "-1", "-i", source, "-update", "1", "-frames:v", "9999", out],
+      { windowsHide: true },
+    );
+    return { bytes: await readFile(out), mime: "image/png" };
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
 }
 
 /** Reads a stored take back, to send it on to a service. */

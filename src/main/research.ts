@@ -13,16 +13,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { analyzePost } from "./analyze";
+import { analyzePost, groupPosts, type ConceptGroup } from "./analyze";
 import { recordUsage } from "./usage";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import {
+  cleanGroupName,
   detectPlatform,
   postKey,
   PLATFORM_LABELS,
   SUPPORTED_LINKS_HINT,
+  type GroupingResult,
   type ResearchAudio,
   type ResearchEdit,
   type ResearchItem,
@@ -93,7 +95,7 @@ let ffmpegSetup: Promise<string | null> | undefined;
  * or null if it is unavailable. Never throws: without FFmpeg the app still
  * saves videos, at lower quality.
  */
-function ensureFfmpeg(dataDir: string): Promise<string | null> {
+export function ensureFfmpeg(dataDir: string): Promise<string | null> {
   const binDir = binDirFor(dataDir);
   if (existsSync(join(binDir, `ffmpeg${EXE}`)) && existsSync(join(binDir, `ffprobe${EXE}`))) {
     return Promise.resolve(binDir);
@@ -255,7 +257,20 @@ async function claimPost(dataDir: string, key: string): Promise<(() => Promise<v
   return null;
 }
 
+/** Called with every post that has just been saved, whichever way it arrived. */
+let afterSave: (item: ResearchItem) => void = () => undefined;
+export function onPostSaved(hook: (item: ResearchItem) => void): void {
+  afterSave = hook;
+}
+
+/** Downloads and saves a post from its link. */
 export async function addResearch(dataDir: string, sourceUrl: string, deepgramKey: string): Promise<ResearchResult> {
+  const result = await savePost(dataDir, sourceUrl, deepgramKey);
+  if (result.ok) afterSave(result.item);
+  return result;
+}
+
+async function savePost(dataDir: string, sourceUrl: string, deepgramKey: string): Promise<ResearchResult> {
   const url = sourceUrl.trim();
   const platform = detectPlatform(url);
   if (!platform) return { ok: false, error: SUPPORTED_LINKS_HINT };
@@ -578,18 +593,81 @@ export async function refreshResearchAudio(dataDir: string, id: string): Promise
  * Has Claude break the post down and saves the result with it. Costs money
  * once per post: the saved analysis is what every later step reads.
  */
-export async function analyzeResearch(dataDir: string, id: string, claudeKey: string): Promise<ResearchResult> {
-  const item = (await listResearch(dataDir)).find((i) => i.id === id);
+/** The concept groups posts are in, largest first, each with what a couple of its posts are. */
+function conceptGroups(items: ResearchItem[]): ConceptGroup[] {
+  const groups = new Map<string, ConceptGroup>();
+  for (const item of items) {
+    if (!item.group) continue;
+    const group = groups.get(item.group) ?? { name: item.group, count: 0, examples: [] };
+    group.count++;
+    if (group.examples.length < 2 && item.analysis?.summary) group.examples.push(item.analysis.summary);
+    groups.set(item.group, group);
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+/** A group name from Claude or the user, tidied, and spelt like the existing group it matches. */
+function settleGroup(name: unknown, existing: ConceptGroup[]): string {
+  const clean = cleanGroupName(name);
+  return existing.find((g) => g.name.toLowerCase() === clean.toLowerCase())?.name ?? clean;
+}
+
+/**
+ * Sorts analysed posts into concept groups in one request. By default only the
+ * posts that have no group yet are sorted, into the existing groups where they
+ * fit; with `all`, every analysed post is sorted afresh.
+ */
+export async function groupResearch(dataDir: string, claudeKey: string, all = false): Promise<GroupingResult> {
+  const items = await listResearch(dataDir);
+  const toSort = items.filter((i) => i.analysis && (all || !i.group));
+  if (toSort.length === 0) return { ok: true, items, grouped: 0 };
+  const existing = all ? [] : conceptGroups(items);
+  const result = await groupPosts(claudeKey, toSort, existing);
+  if (!result.ok) return result;
+
+  // Names that differ only in capitals are one group.
+  const settled: ConceptGroup[] = [...existing];
+  let grouped = 0;
+  for (const post of toSort) {
+    const name = settleGroup(result.groups.get(post.id), settled);
+    if (!name) continue;
+    if (!settled.some((g) => g.name === name)) settled.push({ name, count: 0, examples: [] });
+    // Read the post again before saving, in case its rating or note changed meanwhile.
+    const latest = (await listResearch(dataDir)).find((i) => i.id === post.id);
+    if (!latest) continue;
+    await writeMeta(dataDir, { ...latest, group: name });
+    grouped++;
+  }
+  return { ok: true, items: await listResearch(dataDir), grouped };
+}
+
+/** Analyses under way, by post id, so a post asked for twice at once is only analysed (and paid for) once. */
+const analysing = new Map<string, Promise<ResearchResult>>();
+
+/** Has Claude analyse a saved post and put it in a concept group. */
+export function analyzeResearch(dataDir: string, id: string, claudeKey: string): Promise<ResearchResult> {
+  const running = analysing.get(id);
+  if (running) return running;
+  const work = runAnalysis(dataDir, id, claudeKey).finally(() => analysing.delete(id));
+  analysing.set(id, work);
+  return work;
+}
+
+async function runAnalysis(dataDir: string, id: string, claudeKey: string): Promise<ResearchResult> {
+  const everything = await listResearch(dataDir);
+  const item = everything.find((i) => i.id === id);
   if (!item) return { ok: false, error: "That post is no longer saved." };
+  const groups = conceptGroups(everything.filter((i) => i.id !== id));
 
   // Frames need FFmpeg; without it the analysis falls back to the text alone.
   const toolsDir = await ensureFfmpeg(dataDir);
-  const result = await analyzePost(claudeKey, item, join(researchDir(dataDir), id), toolsDir);
+  const result = await analyzePost(claudeKey, item, join(researchDir(dataDir), id), toolsDir, groups);
   if (!result.ok) return result;
 
   // Read the post again before saving, in case its rating or note changed meanwhile.
   const latest = (await listResearch(dataDir)).find((i) => i.id === id) ?? item;
-  const updated = { ...latest, analysis: result.analysis };
+  // A group the user chose by hand is kept when a post is analysed again.
+  const updated = { ...latest, analysis: result.analysis, group: latest.group || settleGroup(result.group, groups) };
   await writeMeta(dataDir, updated);
   return { ok: true, item: updated };
 }
@@ -606,6 +684,7 @@ export async function updateResearch(dataDir: string, id: string, edit: Research
     updated.rating = rating;
   }
   if (edit.note !== undefined) updated.note = String(edit.note).trim();
+  if (edit.group !== undefined) updated.group = settleGroup(edit.group, conceptGroups((await listResearch(dataDir)).filter((i) => i.id !== id)));
   await writeMeta(dataDir, updated);
   return { ok: true, item: updated };
 }

@@ -77,14 +77,14 @@ export const AGENT_TOOLS: AgentToolInfo[] = [
   { name: "get_idea", group: "read", title: "Read an idea", description: "One idea in full: opening line, outline, caption and why it scored as it did." },
   { name: "list_generated_audio", group: "read", title: "List generated audio", description: "The voiceovers, sound effects and music already made." },
   { name: "list_voices", group: "read", title: "List ElevenLabs voices", description: "The voices in your ElevenLabs account." },
-  { name: "list_cast", group: "read", title: "List the cast", description: "Your characters with their personality, look and voice." },
+  { name: "list_cast", group: "read", title: "List characters", description: "Your characters with their personality, look and voice." },
   { name: "list_series", group: "read", title: "List series", description: "Your series and their plans." },
   { name: "list_videos", group: "read", title: "List Studio videos", description: "The videos being made and how far each has got." },
   { name: "get_video", group: "read", title: "Read a Studio video", description: "One video in full: claim, hooks, scenes, lines and results." },
   { name: "get_app_status", group: "read", title: "Check connections", description: "Which services have a key saved, and where your data folder is. Never the keys themselves." },
 
   { name: "save_research_post", group: "create", title: "Save a post to Research", description: "Downloads a post from an Instagram or YouTube Shorts link." },
-  { name: "analyze_research_posts", group: "create", title: "Analyse posts", description: "Has Claude break saved posts down. About $0.05 per post." },
+  { name: "analyze_research_posts", group: "create", title: "Analyse posts", description: "Has Claude break saved posts down. About $0.06 per post." },
   { name: "generate_ideas", group: "create", title: "Generate ideas", description: "Runs the idea process and shows candidates. About $0.25 a round." },
   { name: "save_generated_ideas", group: "create", title: "Save generated ideas", description: "Keeps the candidates you picked." },
   { name: "create_idea", group: "create", title: "Create an idea", description: "Saves an idea the agent wrote itself." },
@@ -100,8 +100,8 @@ export const AGENT_TOOLS: AgentToolInfo[] = [
   { name: "record_video_results", group: "create", title: "Record a video's results", description: "Saves the views, saves, shares and follows you tell it." },
 
   { name: "make_character_picture", group: "create", title: "Make a character's reference picture", description: "Makes a picture of a character from their look. Billed by the picture service." },
-  { name: "make_scene_pictures", group: "create", title: "Make scene pictures", description: "Makes a still for scenes of an approved script. Billed by the picture service." },
-  { name: "make_scene_clip", group: "create", title: "Make a scene's clip", description: "Turns a scene's picture into a moving clip. The costly step, so it asks first unless you change that." },
+  { name: "make_scene_pictures", group: "create", title: "Make storyboard pictures", description: "Makes the storyboard picture for scenes of an approved script: the frame each scene starts on. Billed by the picture service." },
+  { name: "make_scene_clip", group: "create", title: "Make a scene's clip", description: "Turns a scene's storyboard picture into a moving clip. The costly step, so it asks first unless you change that." },
   { name: "make_scene_lipsync", group: "create", title: "Lip-sync a scene", description: "Makes the character in a scene's picture speak its recorded line. Asks first unless you change that." },
 
   { name: "update_character", group: "change", title: "Change a character", description: "Edits a character's personality, way of talking, look or voice." },

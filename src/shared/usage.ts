@@ -17,7 +17,8 @@ export const USAGE_FEATURES: Record<UsageFeature, { label: string; service: Usag
   ideas: { label: "Idea generation", service: "claude" },
   // Ideas no longer have scripts; this names what was spent on them before.
   script: { label: "Idea scripts (earlier versions)", service: "claude" },
-  concepts: { label: "Studio idea options", service: "claude" },
+  // Studio no longer suggests ideas to choose from; this names what was spent on that before.
+  concepts: { label: "Studio idea options (earlier versions)", service: "claude" },
   video: { label: "Studio video scripts", service: "claude" },
   series: { label: "Series plans", service: "claude" },
   transcript: { label: "Transcripts", service: "deepgram" },

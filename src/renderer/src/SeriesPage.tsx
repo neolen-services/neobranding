@@ -6,8 +6,7 @@ import type { ResearchItem } from "@shared/research";
 import { productionLabel, type Character, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { DeleteButton } from "./CastView";
-import { IdeaStage } from "./IdeaStage";
-import { card, Chip, fieldClass, Icon, ICONS, label, postName, primaryButton, ProductionPicker, ProgressBars, smallButton, videoProgress } from "./studioUi";
+import { card, Chip, fieldClass, Icon, ICONS, label, postName, primaryButton, ProductionPicker, ProgressBars, smallButton, STAGES, videoProgress } from "./studioUi";
 
 export function SeriesPage({
   series,
@@ -21,10 +20,7 @@ export function SeriesPage({
   onOpenVideo,
   onDelete,
   onOpenCast,
-  autoSuggest,
 }: {
-  /** Ask Claude for ideas on arrival: the series was just started from the New dialog. */
-  autoSuggest?: boolean;
   series: Series;
   cast: Character[];
   brand: BrandKit;
@@ -100,7 +96,7 @@ export function SeriesPage({
             <div className="min-w-0 flex-1">
               <h2 className="truncate font-display text-xl font-semibold">{series.title}</h2>
               <p className="truncate text-sm opacity-60">
-                Series · {productionLabel(series.production)} · {series.ideaApprovedAt ? "idea approved, season not planned yet" : "idea not settled yet"}
+                Series · {productionLabel(series.production)} · season not planned yet
               </p>
             </div>
             <DeleteButton name="this series" onConfirm={onDelete} />
@@ -114,14 +110,14 @@ export function SeriesPage({
           )}
           <section className={`${card} space-y-4`}>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="font-display text-lg font-semibold">What you asked for</h3>
+              <h3 className="font-display text-lg font-semibold">Anything to add for the plan?</h3>
               <ProductionPicker compact value={series.production} onChange={(production) => void save({ ...series, production })} />
             </div>
             <textarea
               className={fieldClass}
               rows={3}
               aria-label="What the series is about"
-              placeholder="What the series is, who it is for, and anything it must include."
+              placeholder="Optional. For example: keep it to six episodes, or end on my own results."
               value={draft.brief}
               onChange={(e) => setDraft({ ...draft, brief: e.target.value })}
               onBlur={saveIfChanged}
@@ -129,18 +125,15 @@ export function SeriesPage({
             {fromIdeas.length > 0 && <p className="text-sm opacity-60">From your {fromIdeas.length === 1 ? "idea" : `${fromIdeas.length} ideas`}: {fromIdeas.join(" · ")}</p>}
             {inspired.length > 0 && <p className="text-sm opacity-60">Inspired by {inspired.length === 1 ? "a saved post" : `${inspired.length} saved posts`}: {inspired.join(" · ")}</p>}
           </section>
-          <IdeaStage
-            kind="series"
-            item={series}
-            settled={series.ideaApprovedAt !== ""}
-            autoStart={autoSuggest}
-            onChange={(item) => onChange(item as Series)}
-            next={
-              <button type="button" className={primaryButton} disabled={planning} onClick={() => void planSeason()}>
-                {planning ? "Planning the season… about 30 seconds" : "Plan the season (a few cents)"}
-              </button>
-            }
-          />
+          <section className={`${card} flex flex-col items-center px-6 py-10 text-center`}>
+            <h3 className="font-display text-xl font-semibold">Plan the season</h3>
+            <p className="mt-2 max-w-lg text-sm leading-relaxed opacity-70">
+              Claude plans the running question, the ending, five to eight episodes and any characters it needs, from the idea above. You can edit all of it afterwards.
+            </p>
+            <button type="button" className={`${primaryButton} mt-5`} disabled={planning} onClick={() => void planSeason()}>
+              {planning ? "Planning the season… about 30 seconds" : "Plan the season (a few cents)"}
+            </button>
+          </section>
         </div>
       </div>
     );
@@ -185,10 +178,10 @@ export function SeriesPage({
                   <li key={i} className="grid gap-x-5 gap-y-3 px-5 py-4 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:items-center">
                     <span
                       className={`flex h-9 w-9 items-center justify-center rounded-full font-display text-sm font-semibold ${
-                        progress?.done === 5 ? "bg-[var(--primary)] text-white" : video ? "border border-[var(--primary)]" : "border border-[var(--line)] opacity-60"
+                        progress?.done === STAGES.length ? "bg-[var(--primary)] text-white" : video ? "border border-[var(--primary)]" : "border border-[var(--line)] opacity-60"
                       }`}
                     >
-                      {progress?.done === 5 ? <Icon d={ICONS.check} /> : number}
+                      {progress?.done === STAGES.length ? <Icon d={ICONS.check} /> : number}
                     </span>
                     <div className="min-w-0">
                       <p className="font-medium leading-snug">{episode.teaches}</p>
@@ -243,7 +236,7 @@ export function SeriesPage({
               <div className="flex items-center justify-between gap-2">
                 <p className={label}>Cast</p>
                 <button type="button" className="text-xs underline opacity-60 hover:opacity-100" onClick={onOpenCast}>
-                  Open the cast
+                  Open Characters
                 </button>
               </div>
               <p className="mt-2 text-sm opacity-60">

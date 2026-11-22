@@ -26,6 +26,8 @@ import { adoptLegacyData, copyData, DB_FILE, defaultDataDir, readDataDir, writeD
 import {
   addResearch,
   analyzeResearch,
+  groupResearch,
+  onPostSaved,
   deleteResearch,
   listResearch,
   refreshResearchAudio,
@@ -41,6 +43,8 @@ import { startTelegram, telegramStatus, unlinkTelegram } from "./telegram";
 import { readUsage, setUsageDir } from "./usage";
 
 const SUGGESTIONS_SETTING = "idea_suggestions";
+/** "off" when the creator has turned automatic analysis of new posts off; anything else means on. */
+const AUTO_ANALYSE_SETTING = "auto_analyse";
 
 export type HandlerOptions = {
   /** Where downloaded tools (yt-dlp, FFmpeg) are kept. Not user data, so outside the data folder. */
@@ -76,6 +80,27 @@ export function createHandlers(options: HandlerOptions) {
 
   const agent: AgentContext = { dataDir: () => dataDir, store: db, key };
 
+  // A post that has just been saved (pasted, sent through Telegram, or saved by the agent) is analysed on its own,
+  // which also puts it in its concept group. One at a time, so each sees the groups the one before it made.
+  const autoAnalyse = () => db().getSetting(AUTO_ANALYSE_SETTING) !== "off";
+  const waitingForAnalysis = new Set<string>();
+  let analysisQueue: Promise<void> = Promise.resolve();
+  onPostSaved((item) => {
+    if (!autoAnalyse() || !key("anthropic")) return;
+    waitingForAnalysis.add(item.id);
+    analysisQueue = analysisQueue.then(async () => {
+      try {
+        // Skipped if the Analyse button or the agent got to it first.
+        const now = (await listResearch(dataDir)).find((i) => i.id === item.id);
+        if (now && !now.analysis) await analyzeResearch(dataDir, item.id, key("anthropic"));
+      } catch {
+        // The post stays unanalysed, and the Analyse button is still there for it.
+      } finally {
+        waitingForAnalysis.delete(item.id);
+      }
+    });
+  });
+
   const suggestions = (): IdeaSuggestion[] => {
     try {
       const saved: unknown = JSON.parse(db().getSetting(SUGGESTIONS_SETTING) || "[]");
@@ -110,13 +135,12 @@ export function createHandlers(options: HandlerOptions) {
 
     "series:create": (input: SeriesStart) => studio.createSeries(input),
     "series:planSeason": (id: unknown) => studio.planSeason(id),
-    /** The idea step, for a video or a series: suggest ideas (or change one), and settle on one. */
-    "studio:suggest": (kind: unknown, id: unknown, note: unknown, conceptId: unknown) => studio.suggest(kind, id, note, conceptId),
-    "studio:approveIdea": (kind: unknown, id: unknown, conceptId: unknown) => studio.approveIdea(kind, id, conceptId),
 
     "videos:list": () => studio.videos(),
     "videos:create": (input: NewVideo) => studio.createVideo(input),
     "videos:save": (input: unknown) => studio.saveVideo(input),
+    /** Gives a role in a video to another character, or to a new one ("new"). */
+    "videos:recast": (videoId: unknown, fromId: unknown, toId: unknown) => studio.recast(videoId, fromId, toId),
     "videos:delete": (id: unknown) => studio.deleteVideo(id),
     "videos:write": (id: unknown, note: unknown) => studio.writeScript(id, note),
     "videos:approve": (id: unknown) => studio.approve(id),
@@ -131,6 +155,8 @@ export function createHandlers(options: HandlerOptions) {
     "scene:picture": (videoId: unknown, sceneId: unknown, choice: unknown, note: unknown) => studio.scenePicture(videoId, sceneId, choice, note),
     "scene:clip": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneClip(videoId, sceneId, choice),
     "scene:lipsync": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneLipSync(videoId, sceneId, choice),
+    /** Says whether a scene carries straight on from the one before it (true) or is a new shot (false). */
+    "scene:flow": (videoId: unknown, sceneId: unknown, continues: unknown) => studio.sceneFlow(videoId, sceneId, continues),
     "scene:addFile": (videoId: unknown, sceneId: unknown, file: UploadedFile) => studio.addSceneFile(videoId, sceneId, file),
     "scene:changeTake": (videoId: unknown, sceneId: unknown, takeId: unknown, action: unknown) => studio.changeTake(videoId, sceneId, takeId, action),
 
@@ -199,6 +225,14 @@ export function createHandlers(options: HandlerOptions) {
     "research:add": (url: unknown) => addResearch(dataDir, String(url), key("deepgram")),
     "research:transcribe": (id: unknown) => transcribeResearch(dataDir, String(id), key("deepgram")),
     "research:analyze": (id: unknown) => analyzeResearch(dataDir, String(id), key("anthropic")),
+    /** Whether new posts are analysed on their own, and which are being analysed or waiting right now. */
+    "research:auto": () => ({ on: autoAnalyse(), analysing: [...waitingForAnalysis] }),
+    "research:setAuto": (on: unknown) => {
+      db().setSetting(AUTO_ANALYSE_SETTING, on === false ? "off" : "on");
+      return autoAnalyse();
+    },
+    /** Sorts analysed posts into groups of similar videos: only those without a group, or all of them afresh. */
+    "research:group": (all: unknown) => groupResearch(dataDir, key("anthropic"), all === true),
     "research:audio": (id: unknown) => refreshResearchAudio(dataDir, String(id)),
     "research:update": (id: unknown, edit: ResearchEdit) => updateResearch(dataDir, String(id), edit ?? {}),
     "research:delete": (id: unknown) => deleteResearch(dataDir, String(id)),

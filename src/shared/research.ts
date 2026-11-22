@@ -70,6 +70,8 @@ export type ResearchItem = {
   audio?: ResearchAudio | null;
   /** Claude's breakdown of the post. Missing until it has been analysed. */
   analysis?: PostAnalysis;
+  /** The concept group it belongs to, shared by posts built on the same concept. Set when it is analysed; the user can change it. Missing or "" until then. */
+  group?: string;
   /** The user's own score from 0 to 5, or null if not rated yet. */
   rating: number | null;
   /** The user's own note about the post. */
@@ -78,7 +80,17 @@ export type ResearchItem = {
 };
 
 /** The parts of a saved post the user can edit. */
-export type ResearchEdit = { rating?: number | null; note?: string };
+export type ResearchEdit = { rating?: number | null; note?: string; /** Moves the post to this concept group; "" takes it out of any. */ group?: string };
+
+/** What grouping posts by concept did. */
+export type GroupingResult = { ok: true; items: ResearchItem[]; grouped: number } | { ok: false; error: string };
+
+/** A group's name as it is kept: single spaces, no stray punctuation at the ends, at most 60 characters. */
+export const cleanGroupName = (name: unknown) =>
+  (typeof name === "string" ? name : "")
+    .replace(/\s+/g, " ")
+    .replace(/^["'“”.\s]+|["'“”.\s]+$/g, "")
+    .slice(0, 60);
 
 export type ResearchResult = { ok: true; item: ResearchItem } | { ok: false; error: string };
 

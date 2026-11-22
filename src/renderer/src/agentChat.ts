@@ -17,7 +17,7 @@ export type AgentRefs = {
 };
 export const NO_REFS: AgentRefs = { posts: new Map(), ideas: new Map(), audio: new Map(), videos: new Map(), series: new Map(), characters: new Map() };
 
-/** A chat kept open as a tab in the footer. */
+/** A chat kept open as a tab in the top bar. */
 export type AgentTab = { id: string; title: string; running: boolean; /** It has an answer you have not looked at. */ unread: boolean };
 
 const shortTitle = (text: string) => {
@@ -176,7 +176,7 @@ export function useAgentChat() {
     await run(id, () => api.decideAgent(id, decisions));
   }
 
-  /** Takes a chat off the footer. It stays in the history. */
+  /** Takes a chat off the top bar. It stays in the history. */
   function closeTab(id: string) {
     setOpen((list) => list.filter((t) => t.id !== id));
     if (id === chatId) newChat();

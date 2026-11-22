@@ -480,7 +480,7 @@ function mentionItems(refs: AgentRefs): MentionItem[] {
       (s): MentionItem => ({ kind: "series", id: s.id, label: oneLine(s.title, 60), hint: `${s.episodes.length} episodes`, group: "Series" }),
     ),
     ...[...refs.characters.values()].map(
-      (c): MentionItem => ({ kind: "character", id: c.id, label: oneLine(c.name, 40), hint: oneLine(c.role, 60), group: "Cast" }),
+      (c): MentionItem => ({ kind: "character", id: c.id, label: oneLine(c.name, 40), hint: oneLine(c.role, 60), group: "Characters" }),
     ),
     ...[...refs.audio.values()].map(
       (a): MentionItem => ({ kind: "audio", id: a.id, label: oneLine(a.title, 60), hint: AUDIO_KIND_LABELS[a.kind], group: "Generated audio" }),
@@ -807,7 +807,7 @@ function Chip({ kind, id }: { kind: ReferenceKind; id: string }) {
             : kind === "video" || kind === "series"
               ? "Open in Studio"
               : kind === "character"
-                ? "Open the cast"
+                ? "Open the character"
                 : kind === "research"
               ? "Open Research"
               : kind === "ideas"

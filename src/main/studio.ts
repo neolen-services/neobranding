@@ -9,7 +9,6 @@ import type { BrandKit } from "../shared/brand";
 import type { Idea } from "../shared/ideas";
 import type { ResearchItem } from "../shared/research";
 import {
-  CONCEPT_COUNT,
   parseCharacter,
   parseSeries,
   parseVideo,
@@ -17,7 +16,6 @@ import {
   SPEAKER_NARRATOR,
   speakerName,
   type Character,
-  type Concept,
   type Production,
   type Series,
   type StudioResult,
@@ -42,6 +40,7 @@ const VideoSchema = z.object({
   scenes: z.array(
     z.object({
       made_by: z.enum(["ai", "me"]),
+      flow: z.enum(["continues", "cut"]),
       seconds: z.number(),
       place: z.string(),
       characters: z.array(z.string()),
@@ -95,8 +94,9 @@ Write:
   - action: the one thing the viewer should do or check.
 - hooks: exactly three opening lines for the first three seconds, strongest first, each naming the viewer or their problem. The first is the one the scenes use.
 - overlay: the on-screen text of the opening, eight words or fewer.
-- scenes: the whole video in order. Each scene is ONE continuous shot of 3 to 8 seconds:
-  - made_by: "me" when the creator is on camera (they deliver the fact and the closing ask in their own face and voice unless told otherwise), "ai" for everything else: characters, the inside of the body, anything a phone cannot film.
+- scenes: the whole video in order. Each scene is ONE continuous shot of 4 to 8 seconds, never shorter (a shorter beat belongs inside the scene next to it):
+  - made_by: "me" when the creator is on camera (they deliver the fact and the closing ask in their own face and voice unless told otherwise), "ai" for everything else: characters, places a camera cannot go, anything a phone cannot film.
+  - flow: "continues" when this scene carries straight on from the one before it: the same place and the same moment, the action picking up exactly where the last frame left off, so the two play as one take (the camera may move or push in, but there is no cut). "cut" when it is a new shot: another place, another time, another subject, or a deliberate change of angle. The first scene is always "cut".
   - seconds, place (a short name, reused exactly when scenes share a place), characters (names of cast members seen; [] for none), action (what happens, one sentence), camera (framing and movement), text (on-screen words, six or fewer, or ""), sound (a sound effect or music cue, or "").
   - lines: what is said in the scene, each with speaker, text (the exact words) and delivery (one or two words such as "calm" or "mocking", or ""). speaker is exactly "ME" (the creator on camera), "NARRATOR" (a voice over the scene), or the exact name of a cast member.
   - Only ONE speaker is seen talking in a scene. A conversation is cut into alternating close shots. A wide shot with several characters has no spoken line, or a NARRATOR line.
@@ -108,6 +108,8 @@ Write:
 - new_characters: characters the script needs that are not in the cast, each with name, role, personality, speech (how they talk) and look (including one fixed colour or item of clothing). [] when the cast is enough. Keep casts small.
 
 Rules for the writing:
+- Make it play like one piece of film, not a slideshow. A viewer must never see the place, the angle and the subject all change at once every few seconds. Use as few places as the story allows, usually one to three, and stay in a place for several scenes before leaving it. Most scenes should be "continues". Cut only when the cut means something: a reaction, a reveal, a jump in place or time. When you cut within a place, the same people, clothes, props and light are still there.
+- Shape the video as a story in four parts, in this order: characters the viewer cares about (who they root for, and the one detail that makes them care), escalating tension (what stands in the way, getting worse at least twice), a moment of victory (where the video's one true fact or its one thing to do lands), and a surprising ending (a last beat the viewer did not see coming). The victory and the ending must be honest: a story may dramatise the problem, never the evidence, and never invent a result.
 - Write backwards from the action: decide what the viewer should do, then the proof, then what is at stake, then the hook.
 - Spoken words must fit: no more than ${WORDS_PER_SECOND} words for each second of a scene. Count them.
 - Entertainment is the delivery, never the goal. A story may dramatise the problem, never the evidence.
@@ -146,6 +148,7 @@ function describePost(post: ResearchItem): string {
 
 const describeIdea = (idea: Idea) =>
   [
+    idea.kind === "series" && "This is an idea for a SERIES: its opening line is the running question, its outline lists the episodes and its closing ask says how the season ends.",
     `Title: ${idea.title}`,
     idea.viewer && `For: ${idea.viewer}`,
     `Opening line: ${idea.hook}`,
@@ -169,51 +172,6 @@ const SERIES_PRODUCTION: Record<Production, string> = {
   me: "Filmed by the creator only. Nothing is generated, so there are no characters (new_characters is []) and every episode must be something one person can film with a phone.",
 };
 
-const ConceptsSchema = z.object({
-  concepts: z.array(
-    z.object({
-      title: z.string(),
-      angle: z.string(),
-      hook: z.string(),
-      characters: z.string(),
-      tension: z.string(),
-      victory: z.string(),
-      ending: z.string(),
-      viewer: z.string(),
-      takeaway: z.string(),
-      why: z.string(),
-    }),
-  ),
-});
-
-const CONCEPT_SYSTEM = `You help one creator decide what a short vertical video, or a series of them, should be, before any script is written.
-
-You are given the creator's brand, what they asked for, any saved ideas they picked, how it will be made, and sometimes how their earlier videos did and what they have already made.
-
-First think through at least ten clearly different ways to make it: different angles on the subject, different formats (a ranking, a test on themselves, a story, a myth and its correction, a day-by-day experiment, a conversation between characters, a before and after), different openings. Then return the ${CONCEPT_COUNT} strongest, strongest first. No two may share both an angle and a format.
-
-EVERY idea must be a story with these four parts, in this order. An idea that is missing one is not finished:
-1. characters: characters you care about. Who the viewer roots for, and the one detail that makes them care (what they want, what they are afraid of, what they keep getting wrong). It can be the creator, a made-up character, or something given a voice (an organ, a habit, a houseplant).
-2. tension: escalating tension. What stands in their way and how it gets worse step by step, at least two steps, each raising the stakes.
-3. victory: the moment of victory. The single moment the viewer has been waiting for, where the thing finally works or the truth lands. This is where the video's one true fact or its one thing to do belongs.
-4. ending: a surprising ending. A last beat the viewer did not see coming that changes how they see what came before. For a series, this is how the season ends.
-
-For each idea give:
-- title: a working title, eight words or fewer.
-- angle: one sentence on what makes this take different from the others.
-- hook: for a video, the opening line said in the first three seconds, naming the viewer or their problem. For a series, the one running question viewers wait to have answered.
-- characters, tension, victory, ending: one or two concrete sentences each, as described above. For a series, describe them across the whole season.
-- viewer: exactly who it is for, in one phrase.
-- takeaway: the one thing that viewer does or checks afterwards.
-- why: one honest sentence on why this could find the creator's kind of viewer, including its weak point if it has one.
-
-Rules:
-- Stay inside what the creator asked for and the saved ideas they picked. These are different ways to make THAT, not unrelated topics.
-- Fit how it is made. An AI-only idea never needs the creator on camera, so its characters are made up or given a voice. A filmed-only idea is something one person can film with a phone, so the character is the creator and nothing is generated.
-- The aim is the right followers, not the most views. Never rely on fear, invented numbers, invented studies or made-up testimonials.
-- The victory and the ending must be honest. A story may dramatise the problem, never the evidence. If the idea is a real experiment whose result is not known yet, the ending is what will be measured and shown whatever it is; never invent a result.
-- When asked to change ONE idea, return exactly one: that idea changed as the note asks, keeping whatever the note does not mention, and still with all four parts.`;
-
 /** The saved posts the creator picked as inspiration, by their analysis only. */
 const describeInspiration = (posts: ResearchItem[]) =>
   posts.filter((p) => p.analysis).length
@@ -222,87 +180,6 @@ const describeInspiration = (posts: ResearchItem[]) =>
         .map((p, i) => `Post ${i + 1}${p.rating ? ` (the creator rated it ${p.rating} of 5)` : ""}${p.note ? `\nThe creator's note on it: ${p.note}` : ""}\n${describePost(p)}`)
         .join("\n\n")}`
     : "";
-
-const describeConcept = (c: Concept) =>
-  [
-    `Title: ${c.title}`,
-    `Angle: ${c.angle}`,
-    `Opening or running question: ${c.hook}`,
-    `1. Characters you care about: ${c.characters}`,
-    `2. Escalating tension: ${c.tension}`,
-    `3. Moment of victory: ${c.victory}`,
-    `4. Surprising ending: ${c.ending}`,
-    `For: ${c.viewer}`,
-    `The viewer leaves with: ${c.takeaway}`,
-  ].join("\n");
-
-export type SuggestInput = {
-  kind: "video" | "series";
-  title: string;
-  /** What the creator asked for, in their words. */
-  brief: string;
-  brand: BrandKit;
-  production: Production;
-  ideas: Idea[];
-  /** Saved posts picked as inspiration. */
-  posts: ResearchItem[];
-  /** How the creator's earlier posted videos did, as lines of text, or "". */
-  learned: string;
-  /** Titles of what is already in Studio, so the suggestions do not repeat them. */
-  made: string[];
-  /** What the creator wants different this time. */
-  note?: string;
-  /** The ideas suggested before, when asking for new ones. */
-  previous?: Concept[];
-  /** The one idea to change as the note asks, instead of suggesting new ones. */
-  revise?: Concept;
-};
-
-/** Suggests the strongest different ways to make a video or series, or changes one of them as the creator asks. */
-export async function suggestConcepts(apiKey: string, input: SuggestInput): Promise<StudioResult<{ concepts: Concept[]; costUsd: number }>> {
-  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
-  const { kind, brand, ideas, note, previous, revise } = input;
-  if (revise && !note?.trim()) return { ok: false, error: "Say what should change first." };
-  const parts = [
-    `THE CREATOR'S BRAND\n${describeBrand(brand)}`,
-    `WHAT THEY ARE MAKING\n${kind === "series" ? "A series: a season of short videos with one running question." : "A single short video."}\nWorking title: ${input.title}\nWhat they asked for: ${input.brief.trim() || "(nothing more than the title and the saved ideas)"}`,
-    `HOW IT IS MADE\n${(kind === "series" ? SERIES_PRODUCTION : VIDEO_PRODUCTION)[input.production]}`,
-    ideas.length ? `SAVED IDEAS THE CREATOR PICKED\n${ideas.map((idea, i) => `Idea ${i + 1}\n${describeIdea(idea)}`).join("\n\n")}` : "",
-    describeInspiration(input.posts),
-    input.learned ? `HOW THIS CREATOR'S EARLIER VIDEOS DID (best first)\n${input.learned}` : "",
-    input.made.length ? `ALREADY IN THEIR STUDIO (do not repeat these)\n${input.made.map((t) => `- ${t}`).join("\n")}` : "",
-    revise
-      ? `THE ONE IDEA TO CHANGE\n${describeConcept(revise)}\n\nTHE CREATOR'S NOTE: ${note}\nReturn exactly one idea: this one, changed as the note asks.`
-      : previous?.length
-        ? `THE IDEAS SUGGESTED BEFORE, WHICH THE CREATOR DID NOT CHOOSE\n${previous.map((c) => `- ${c.title}: ${c.angle}`).join("\n")}\n\nTHE CREATOR'S NOTE: ${note?.trim() || "(none: they simply want different ones)"}\nSuggest ${CONCEPT_COUNT} new ideas that follow the note and are not these again.`
-        : note?.trim()
-          ? `THE CREATOR'S DIRECTION: ${note}`
-          : "",
-  ];
-  try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.beta.messages.parse({
-      model: "claude-opus-5-5",
-      max_tokens: 8000,
-      // If the model declines for policy reasons, let the API retry on its default fallback model.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default" as const,
-      system: CONCEPT_SYSTEM,
-      messages: [{ role: "user", content: parts.filter(Boolean).join("\n\n") }],
-      output_config: { format: betaZodOutputFormat(ConceptsSchema) },
-    });
-    recordClaude("concepts", response.usage, input.title);
-    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to suggest ideas for this." };
-    const out = response.parsed_output;
-    // An idea without all four parts of its story is not offered.
-    const whole = (out?.concepts ?? []).filter((c) => [c.title, c.hook, c.characters, c.tension, c.victory, c.ending].every((part) => part.trim()));
-    const concepts = whole.slice(0, revise ? 1 : CONCEPT_COUNT).map((c): Concept => ({ ...c, id: randomUUID() }));
-    if (response.stop_reason === "max_tokens" || concepts.length === 0) return { ok: false, error: "The ideas came back incomplete. Try again." };
-    return { ok: true, value: { concepts, costUsd: estimateCostUsd(response.usage) } };
-  } catch (e) {
-    return { ok: false, error: describeClaudeError(e) };
-  }
-}
 
 /** Characters the model proposed, as new cast members without a voice. */
 function castFrom(proposed: z.infer<typeof NewCharacter>[], existing: Character[]): Character[] {
@@ -323,8 +200,6 @@ export type WriteVideoInput = {
   characters: Character[];
   /** The saved ideas it was started from, to be turned into one video. */
   ideas?: Idea[];
-  /** The suggested idea the creator approved, if they chose one. */
-  concept?: Concept;
   /** Saved posts picked as inspiration (not the one post a remake is built on). */
   inspiration?: ResearchItem[];
   /** The post being remade; only its analysis is passed on, never its words. */
@@ -353,7 +228,6 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
     `THE CREATOR'S BRAND\n${describeBrand(brand)}`,
     `THE VIDEO\nTitle: ${video.title}\nKind: ${video.format === "episode" ? "an episode of a series" : "a single video"}, ${video.source === "remake" ? "a remake of the post analysed below" : "a new idea"}.\nAbout: ${video.brief || "(use the title)"}`,
     `HOW IT IS MADE\n${VIDEO_PRODUCTION[how]}`,
-    input.concept ? `THE IDEA THE CREATOR APPROVED\nWrite this video. Keep its angle and its opening, and play out its four story parts in order: the characters, the rising tension, the moment of victory, the surprising ending. Anything else below is background.\n${describeConcept(input.concept)}` : "",
     ideas.length === 1 ? `THE SAVED IDEA IT COMES FROM\n${describeIdea(ideas[0])}` : "",
     ideas.length > 1
       ? `THE SAVED IDEAS IT COMES FROM\nThe creator picked these to become ONE video. Find the single thread that joins them. If they do not fit one video, build on the first and take only what helps from the others. What the creator wrote under "About" decides how they are used.\n\n${ideas.map((idea, i) => `Idea ${i + 1}\n${describeIdea(idea)}`).join("\n\n")}`
@@ -380,16 +254,16 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
 
   try {
     const client = new Anthropic({ apiKey });
-    const response = await client.beta.messages.parse({
+    const response = await client.beta.messages.stream({
       model: "claude-opus-5-5",
-      max_tokens: 12000,
+      max_tokens: 32000,
       // If the model declines for policy reasons, let the API retry on its default fallback model.
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default" as const,
       system: VIDEO_SYSTEM,
       messages: [{ role: "user", content: parts.filter(Boolean).join("\n\n") }],
       output_config: { format: betaZodOutputFormat(VideoSchema) },
-    });
+    }).finalMessage();
     recordClaude("video", response.usage, video.title);
     if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to write this script." };
     const out = response.parsed_output;
@@ -421,6 +295,7 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
         clips: video.scenes[index]?.clips ?? [],
         clip: video.scenes[index]?.clip ?? "",
         madeBy: how === "mix" ? s.made_by : how,
+        continues: index > 0 && s.flow === "continues",
         seconds: s.seconds,
         place: s.place,
         characters: how === "me" ? [] : s.characters.map(idOf).filter(Boolean),
@@ -449,7 +324,7 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
 /** Plans a season from a title and a few words about it. Returns the series and any characters it added to the cast. */
 export async function planSeries(
   apiKey: string,
-  input: { title: string; about: string; brand: BrandKit; characters: Character[]; production: Production; ideas: Idea[]; concept?: Concept; posts?: ResearchItem[] },
+  input: { title: string; about: string; brand: BrandKit; characters: Character[]; production: Production; ideas: Idea[]; posts?: ResearchItem[] },
 ): Promise<StudioResult<{ series: Series; newCharacters: Character[] }>> {
   if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
   const title = input.title.trim();
@@ -457,9 +332,9 @@ export async function planSeries(
   const how = input.production;
   try {
     const client = new Anthropic({ apiKey });
-    const response = await client.beta.messages.parse({
+    const response = await client.beta.messages.stream({
       model: "claude-opus-5-5",
-      max_tokens: 8000,
+      max_tokens: 24000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default" as const,
       system: SERIES_SYSTEM,
@@ -470,7 +345,6 @@ export async function planSeries(
             `THE CREATOR'S BRAND\n${describeBrand(input.brand)}`,
             `THE SERIES\nTitle: ${title}\nAbout: ${input.about.trim() || "(use the title)"}`,
             `HOW IT IS MADE\n${SERIES_PRODUCTION[how]}`,
-            input.concept ? `THE IDEA THE CREATOR APPROVED\nPlan this series. Keep its angle and its running question, and spread its four story parts across the season: the characters early, the tension rising episode by episode, the moment of victory late, the surprising ending last.\n${describeConcept(input.concept)}` : "",
             input.ideas.length
               ? `SAVED IDEAS THE CREATOR PICKED FOR THIS SERIES\nBuild the season from these. Each can become an episode, in the order that tells the best story; add episodes of your own where the season needs them. What the creator wrote under "About" decides how they are used.\n\n${input.ideas.map((idea, i) => `Idea ${i + 1}\n${describeIdea(idea)}`).join("\n\n")}`
               : "",
@@ -484,7 +358,7 @@ export async function planSeries(
         },
       ],
       output_config: { format: betaZodOutputFormat(SeriesSchema) },
-    });
+    }).finalMessage();
     recordClaude("series", response.usage, title);
     if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to plan this series." };
     const out = response.parsed_output;

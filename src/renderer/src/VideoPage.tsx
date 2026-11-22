@@ -1,14 +1,13 @@
-// One video, worked on a stage at a time: Idea, Script, Preview, Make, Finish.
+// One video, worked on a stage at a time: Idea, Script, Cast, Preview, Storyboard, Make, Finish.
 // Each tab shows only what that stage needs, and the header always says what to do next.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import type { Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
 import {
   approvalProblem,
-  approvedConcept,
   EVIDENCE_LABELS,
-  pickedClip,
+  joinState, pickedClip,
   pickedPicture,
   productionLabel,
   RESULT_COUNTS,
@@ -23,9 +22,10 @@ import {
   type VideoResults,
 } from "@shared/studio";
 import { api } from "./api";
+import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
-import { IdeaStage } from "./IdeaStage";
 import { SceneMedia } from "./SceneMedia";
+import { StoryboardTab } from "./Storyboard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
 import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, ProductionPicker, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
 
@@ -42,12 +42,10 @@ export function VideoPage({
   onBack,
   onChange,
   onDelete,
-  onOpenCast,
   onOpenSettings,
-  autoSuggest,
+  onOpenBrand,
+  onCast,
 }: {
-  /** Ask Claude for ideas on arrival: the video was just started from the New dialog. */
-  autoSuggest?: boolean;
   video: Video;
   cast: Character[];
   brand: BrandKit;
@@ -57,8 +55,12 @@ export function VideoPage({
   onBack: () => void;
   onChange: (video: Video) => void;
   onDelete: () => Promise<void>;
-  onOpenCast: () => void;
+  /** Not used here any more: the cast is set up on this page's own Cast tab. */
+  onOpenCast?: () => void;
   onOpenSettings: () => void;
+  onOpenBrand: () => void;
+  /** A character was changed on the Cast tab. */
+  onCast: (character: Character) => void;
 }) {
   const progress = videoProgress(video, cast, brand);
   const [tab, setTab] = useState(progress.tab);
@@ -69,8 +71,7 @@ export function VideoPage({
   const written = video.scenes.length > 0;
   const approved = video.approvedAt !== "";
   /** Why a tab cannot be opened yet, or "" when it can. */
-  const ideaDone = video.ideaApprovedAt !== "" || written;
-  const locked = (index: number) => (index === 0 ? "" : !ideaDone ? "Approve an idea first." : index === 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : "");
+  const locked = (index: number) => (index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : "");
 
   // A rewrite takes the approval back, which can close the tab being looked at.
   useEffect(() => {
@@ -177,12 +178,14 @@ export function VideoPage({
           </p>
         )}
 
-        {tab === 0 && <IdeaTab {...shared} ideas={ideas} posts={posts} series={series} autoSuggest={autoSuggest} onNext={() => setTab(1)} />}
-        {tab === 1 && !written && ideaDone && <WriteScript {...shared} />}
+        {tab === 0 && <IdeaTab {...shared} ideas={ideas} posts={posts} series={series} onNext={() => setTab(1)} />}
+        {tab === 1 && !written && <WriteScript {...shared} />}
         {tab === 1 && written && <ScriptTab {...shared} onApproved={() => setTab(2)} />}
-        {tab === 2 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={onOpenCast} onOpenSettings={onOpenSettings} onNext={() => setTab(3)} />}
-        {tab === 3 && approved && <MakeTab {...shared} progress={progress} />}
-        {tab === 4 && approved && <FinishTab {...shared} />}
+        {tab === 2 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(3)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
+        {tab === 3 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onNext={() => setTab(4)} />}
+        {tab === 4 && approved && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(5)} />}
+        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(4)} />}
+        {tab === 6 && approved && <FinishTab {...shared} />}
       </div>
     </div>
   );
@@ -203,77 +206,94 @@ type Shared = {
 
 // ---------- 1. Idea ----------
 
-function IdeaTab({
-  video,
-  busy,
-  save,
-  setNotice,
-  onChange,
-  ideas,
-  posts,
-  series,
-  autoSuggest,
-  onNext,
-}: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series; autoSuggest?: boolean; onNext: () => void }) {
+function IdeaTab({ video, busy, save, ideas, posts, series, onNext }: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series; onNext: () => void }) {
   const [brief, setBrief] = useState(video.brief);
   const written = video.scenes.length > 0;
-  const from = video.ideaIds.map((id) => ideas.find((i) => i.id === id)?.title).filter(Boolean);
+  const idea = ideas.find((i) => i.id === video.ideaIds[0]);
   const inspired = video.postIds.map((id) => posts.find((p) => p.id === id)).filter((p) => p !== undefined).map(postName);
   const source = [
     series && `Episode ${video.episode ?? ""} of ${series.title}`,
     video.source === "remake" && "Your own version of a saved post",
-    from.length > 0 && `From your ${from.length === 1 ? "idea" : `${from.length} ideas`}: ${from.join(" · ")}`,
     inspired.length > 0 && `Inspired by ${inspired.length === 1 ? "a saved post" : `${inspired.length} saved posts`}: ${inspired.join(" · ")}`,
   ].filter(Boolean);
 
-  async function changeProduction(production: Production) {
-    const ok = await save({ production }, true);
-    if (ok && written) setNotice(`Set to “${productionLabel(production)}”. The script stays as it is until you ask for a rewrite on the Script tab.`);
-  }
-
   return (
     <div className="space-y-5">
-      <section className={`${card} space-y-4`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="font-display text-lg font-semibold">What you asked for</h3>
-          <ProductionPicker compact value={video.production} onChange={(p) => void changeProduction(p)} disabled={busy !== ""} />
-        </div>
+      {idea && (
+        <section className={`${card} space-y-4`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className={label}>The idea this video comes from</p>
+            <span className="flex flex-wrap gap-1.5">
+              <Chip>{productionLabel(video.production)}</Chip>
+              {idea.pillar && <Chip>{idea.pillar}</Chip>}
+            </span>
+          </div>
+          <h3 className="font-display text-xl font-semibold leading-snug">{idea.title}</h3>
+          <p className="border-l-4 border-[var(--accent)] pl-3 font-display text-lg font-medium leading-snug">“{idea.hook}”</p>
+          <div className="grid gap-x-8 gap-y-4 text-sm lg:grid-cols-2">
+            <dl className="space-y-3">
+              {idea.viewer && (
+                <div>
+                  <dt className={label}>Who it is for</dt>
+                  <dd className="mt-1">{idea.viewer}</dd>
+                </div>
+              )}
+              {idea.takeaway && (
+                <div>
+                  <dt className={label}>What they leave with</dt>
+                  <dd className="mt-1">{idea.takeaway}</dd>
+                </div>
+              )}
+              {idea.cta && (
+                <div>
+                  <dt className={label}>Closing ask</dt>
+                  <dd className="mt-1">{idea.cta}</dd>
+                </div>
+              )}
+            </dl>
+            <div>
+              <p className={label}>Outline</p>
+              <ol className="mt-1 list-decimal space-y-1 pl-5 leading-relaxed">
+                {idea.outline.map((beat, i) => (
+                  <li key={i}>{beat}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className={`${card} space-y-3`}>
+        <h3 className="font-display text-lg font-semibold">{idea ? "Anything to add for the script?" : "What this video is about"}</h3>
         <textarea
           className={fieldClass}
           rows={3}
-          aria-label="What the video is about"
-          placeholder="The topic, who it is for, and anything it must include."
+          aria-label={idea ? "Anything to add for the script" : "What the video is about"}
+          placeholder={idea ? "Optional. For example: keep it under 40 seconds, or let me say the closing line myself." : "The topic, who it is for, and anything it must include."}
           value={brief}
+          disabled={busy !== ""}
           onChange={(e) => setBrief(e.target.value)}
           onBlur={() => brief.trim() !== video.brief && void save({ brief }, true)}
         />
-        {source.length > 0 && <p className="text-sm opacity-60">{source.join(" · ")}</p>}
-      </section>
-
-      <IdeaStage
-        kind="video"
-        item={video}
-        settled={video.ideaApprovedAt !== "" || written}
-        autoStart={autoSuggest}
-        onChange={(item) => onChange(item as Video)}
-        next={
+        {(source.length > 0 || !idea) && <p className="text-sm opacity-60">{[...source, !idea && `Made: ${productionLabel(video.production).toLowerCase()}`].filter(Boolean).join(" · ")}</p>}
+        {written && <p className="text-sm opacity-60">The script is already written. What you change here is used the next time you ask for a rewrite.</p>}
+        <div className="border-t border-[var(--line)] pt-4">
           <button type="button" className={`${primaryButton} flex items-center gap-2`} onClick={onNext}>
             {written ? "Go to the script" : "On to the script"}
             <Icon d={ICONS.arrow} />
           </button>
-        }
-      />
+        </div>
+      </section>
     </div>
   );
 }
 
 /** The Script tab before there is a script: the idea is settled, and writing it is the one thing to do. */
 function WriteScript({ video, busy, run }: Shared) {
-  const concept = approvedConcept(video);
   return (
     <section className={`${card} mx-auto flex max-w-2xl flex-col items-center px-6 py-10 text-center`}>
       <h3 className="font-display text-xl font-semibold">Write the script</h3>
-      <p className="mt-2 text-sm leading-relaxed opacity-70">{concept ? `From the idea you approved: “${concept.title}”.` : "From your own words, as you wrote them on the Idea tab."}</p>
+      <p className="mt-2 text-sm leading-relaxed opacity-70">{video.ideaIds.length > 0 ? `From your idea “${video.title}”.` : "From what is written on the Idea tab."}</p>
       <button type="button" className={`${primaryButton} mt-5`} disabled={busy !== ""} onClick={() => void run("Writing the script", () => api.writeVideo(video.id, ""))}>
         {busy === "Writing the script" ? "Writing the script… about 40 seconds" : `Write the script (${SCRIPT_COST})`}
       </button>
@@ -384,7 +404,7 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
               </h3>
               <p className="mt-2 text-sm opacity-70">Editing a line or asking for a rewrite takes the approval back.</p>
               <button type="button" className={`${primaryButton} mt-4 flex w-full items-center justify-center gap-2`} onClick={onApproved}>
-                Go to the preview
+                Go to the cast
                 <Icon d={ICONS.arrow} />
               </button>
             </>
@@ -563,7 +583,10 @@ function ScriptScene({
       </div>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-medium uppercase tracking-wide opacity-55">{scene.place || "No place given"}</p>
+          <p className="text-xs font-medium uppercase tracking-wide opacity-55">
+            {scene.place || "No place given"}
+            {scene.continues && index > 0 && <span className="normal-case tracking-normal"> · carries on from scene {index}, no cut</span>}
+          </p>
           <div role="radiogroup" aria-label={`Who makes scene ${index + 1}`} className="inline-flex rounded-full border border-[var(--line)] p-0.5 text-xs font-medium">
             {(
               [
@@ -616,13 +639,31 @@ function ScriptScene({
 function LineText({ text, disabled, onSave }: { text: string; disabled: boolean; onSave: (text: string) => void }) {
   const [draft, setDraft] = useState(text);
   useEffect(() => setDraft(text), [text]);
+  const box = useRef<HTMLTextAreaElement>(null);
+
+  // The box is as tall as its words, however they wrap, so the whole line is always in view.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight + 2}px`;
+    };
+    fit();
+    // A narrower or wider column wraps the words differently.
+    const watcher = new ResizeObserver(fit);
+    watcher.observe(el.parentElement ?? el);
+    return () => watcher.disconnect();
+  }, [draft]);
+
   return (
     <textarea
-      rows={Math.max(1, Math.ceil(draft.length / 70))}
+      ref={box}
+      rows={1}
       aria-label="Line"
       title="Click to edit. Saved when you click away."
       disabled={disabled}
-      className="-mx-1.5 mt-0.5 block w-[calc(100%+0.75rem)] resize-none rounded-md border border-transparent bg-transparent px-1.5 py-1 leading-relaxed hover:border-[var(--line)] focus:border-[var(--primary)] focus:bg-[var(--surface)] focus:outline-none"
+      className="-mx-1.5 mt-0.5 block w-[calc(100%+0.75rem)] resize-none overflow-hidden rounded-md border border-transparent bg-transparent px-1.5 py-1 leading-relaxed hover:border-[var(--line)] focus:border-[var(--primary)] focus:bg-[var(--surface)] focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
@@ -787,7 +828,7 @@ function PreviewTab({
             <p className="mt-3 rounded-lg border border-[var(--accent)] px-3 py-2 text-sm">
               No voice chosen for {progress.voiceless.join(", ")}, so their lines cannot be spoken.{" "}
               <button type="button" className="font-medium underline" onClick={onOpenCast}>
-                Open the cast
+                Go to the Cast tab
               </button>
             </p>
           )}
@@ -824,89 +865,104 @@ function PreviewTab({
   );
 }
 
-// ---------- 4. Make ----------
+// ---------- Make ----------
 
-function MakeTab({ video, busy, save, setError, setNotice, onChange, progress }: Shared & { progress: Progress }) {
-  const [look, setLook] = useState(video.look);
+/** The clips: one for each scene, made from its storyboard picture or filmed by the creator. */
+function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStoryboard }: Shared & { progress: Progress; onStoryboard: () => void }) {
   const [making, setMaking] = useState("");
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
   const ai = video.scenes.filter((s) => s.madeBy === "ai");
-  const missing = ai.filter((s) => s.pictures.length === 0);
+  const noPicture = ai.filter((s) => !pickedPicture(s)).length;
+  /** Whether a scene's clip is still to make: it has its storyboard picture, and no clip or one that no longer joins the clip before it. */
+  const toMake = (scenes: Scene[], i: number) => scenes[i].madeBy === "ai" && Boolean(pickedPicture(scenes[i])) && (!pickedClip(scenes[i]) || joinState(scenes, i) === "stale");
+  const waiting = video.scenes.filter((_, i) => toMake(video.scenes, i)).length;
+  const stale = video.scenes.filter((_, i) => joinState(video.scenes, i) === "stale").length;
 
-  /** Makes a still for every AI scene that has none, one after another, stopping at the first that fails. */
-  async function makeMissingPictures() {
+  /** Makes every clip that is still to make, from the first scene down, because a scene that carries on starts on the clip before it. Stops at the first that fails. */
+  async function makeClips() {
     if (!choices) return;
     setError("");
     setNotice("");
-    for (const [i, scene] of missing.entries()) {
-      setMaking(`Making picture ${i + 1} of ${missing.length}`);
+    let current = video;
+    let made = 0;
+    for (let i = 0; i < current.scenes.length; i++) {
+      if (!toMake(current.scenes, i)) continue;
+      setMaking(`Making the clip for scene ${i + 1}`);
       try {
-        const result = await api.makeScenePicture(video.id, scene.id, choices.picture);
+        const result = await api.makeSceneClip(current.id, current.scenes[i].id, choices.clip);
         if (!result.ok) {
-          setError(result.error);
+          setError(`Scene ${i + 1}: ${result.error}`);
           break;
         }
-        onChange(result.video);
+        current = result.video;
+        made++;
+        onChange(current);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "The picture could not be made.");
+        setError(e instanceof Error ? e.message : "The clip could not be made.");
         break;
       }
     }
+    if (made > 0) setNotice(`${plural(made, "clip")} made.`);
     setMaking("");
   }
 
   if (!choices) return null;
   const off = busy !== "" || making !== "";
   const counts = [
-    ai.length > 0 && `${ai.filter((s) => pickedPicture(s)).length} of ${ai.length} AI scenes have a picture`,
-    ai.length > 0 && `${ai.filter((s) => pickedClip(s)).length} of ${ai.length} have a clip`,
+    ai.length > 0 && `${ai.filter((s) => pickedClip(s)).length} of ${plural(ai.length, "AI clip")} made`,
+    stale > 0 && `${plural(stale, "clip")} to remake so the scenes join`,
     video.scenes.length > ai.length && `${video.scenes.length - ai.length - progress.needFilming} of ${plural(video.scenes.length - ai.length, "filmed scene")} added`,
   ].filter(Boolean);
 
   return (
     <div className="space-y-5">
       <section className={`${card} space-y-4`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="font-display text-lg font-semibold">Pictures first, then clips</h3>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-display text-lg font-semibold">Make the clips</h3>
             <p className="mt-0.5 text-sm opacity-60">{counts.join(" · ")}</p>
+            {ai.length > 0 && (
+              <p className="mt-1.5 max-w-3xl text-sm opacity-60">
+                Each clip starts on its scene's storyboard picture. Where a scene carries on from the one before, that clip is made to end on this scene's picture and this one starts on its
+                last frame, so the two play as one take. Clips are the costly step, and they are made from the first scene down.
+              </p>
+            )}
           </div>
-          {missing.length > 0 && (
-            <button type="button" className={primaryButton} disabled={off} onClick={makeMissingPictures}>
-              {making ? `${making}…` : `Make ${plural(missing.length, "missing picture")}`}
+          {waiting > 0 && (
+            <button type="button" className={primaryButton} disabled={off} onClick={makeClips}>
+              {making ? `${making}… this can take minutes` : `Make ${plural(waiting, "clip")}`}
             </button>
           )}
         </div>
+        {noPicture > 0 && (
+          <p className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-4 py-3 text-sm">
+            <span className="min-w-0 flex-1">
+              {plural(noPicture, "scene")} {noPicture === 1 ? "has" : "have"} no storyboard picture yet, so {noPicture === 1 ? "its clip" : "their clips"} cannot be made.
+            </span>
+            <button type="button" className={smallButton} onClick={onStoryboard}>
+              Open the storyboard
+            </button>
+          </p>
+        )}
         {ai.length > 0 && (
-          <div className="grid gap-4 border-t border-[var(--line)] pt-4 md:grid-cols-3">
-            <ServicePicker task="picture" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />
+          <div className="grid gap-4 border-t border-[var(--line)] pt-4 md:grid-cols-2">
             <ServicePicker task="clip" value={choices.clip} keys={keys} onChange={(c) => setChoice("clip", c)} stacked />
             <ServicePicker task="lipsync" value={choices.lipsync} keys={keys} onChange={(c) => setChoice("lipsync", c)} stacked />
-            <label className="block text-sm md:col-span-3">
-              <span className={label}>Look every AI scene shares</span>
-              <input
-                className={`${fieldClass} mt-1.5`}
-                placeholder="For example: realistic film, warm evening light, shallow focus"
-                value={look}
-                onChange={(e) => setLook(e.target.value)}
-                onBlur={() => look.trim() !== video.look && void save({ look: look.trim() }, true)}
-              />
-            </label>
           </div>
         )}
       </section>
 
       <div className="grid gap-4 xl:grid-cols-2">
         {video.scenes.map((scene, index) => (
-          <SceneMedia key={scene.id} video={video} scene={scene} index={index} choices={choices} disabled={off} onVideo={onChange} />
+          <SceneMedia key={scene.id} video={video} scene={scene} index={index} choices={choices} disabled={off} onVideo={onChange} onStoryboard={onStoryboard} />
         ))}
       </div>
     </div>
   );
 }
 
-// ---------- 5. Finish ----------
+// ---------- Finish ----------
 
 function FinishTab({ video, busy, run }: Shared) {
   const [copied, setCopied] = useState(false);

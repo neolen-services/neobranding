@@ -4,8 +4,8 @@ import type { ApiProvider } from "./settings";
 /** The three jobs a service can do for a scene. */
 export type MediaTask = "picture" | "clip" | "lipsync";
 export const MEDIA_TASKS: Record<MediaTask, { label: string; description: string }> = {
-  picture: { label: "Pictures", description: "A still for a scene or a character, made from a description and reference pictures." },
-  clip: { label: "Clips", description: "A still turned into a few seconds of moving video." },
+  picture: { label: "Pictures", description: "A storyboard picture for a scene, or a picture of a character, made from a description and reference pictures." },
+  clip: { label: "Clips", description: "A scene's storyboard picture turned into a few seconds of moving video." },
   lipsync: { label: "Lip-sync", description: "A character's still made to speak a recorded line." },
 };
 
@@ -89,6 +89,13 @@ export type Take = {
   source: "ai" | "lipsync" | "filmed" | "upload";
   /** The service and model that made it, for display. "" for a file you added. */
   madeWith: string;
+  /**
+   * For a clip: the id of what its first frame came from. That is the scene's storyboard picture, or,
+   * for a scene that carries on from the one before, that scene's clip (the clip starts on its last frame).
+   */
+  from?: string;
+  /** For a clip made to end on a picture: the id of that picture, which is the next scene's storyboard picture. */
+  to?: string;
   createdAt: string;
 };
 
@@ -99,7 +106,7 @@ export function parseTakes(input: unknown): Take[] {
   if (!Array.isArray(input)) return [];
   return input.flatMap((t): Take[] => {
     if (!t || typeof t !== "object") return [];
-    const { id, file, source, madeWith, createdAt } = t as Record<string, unknown>;
+    const { id, file, source, madeWith, from, to, createdAt } = t as Record<string, unknown>;
     if (typeof id !== "string" || typeof file !== "string" || !MEDIA_FILE.test(file)) return [];
     return [
       {
@@ -107,6 +114,8 @@ export function parseTakes(input: unknown): Take[] {
         file,
         source: source === "lipsync" || source === "filmed" || source === "upload" ? source : "ai",
         madeWith: typeof madeWith === "string" ? madeWith : "",
+        ...(typeof from === "string" && from ? { from } : {}),
+        ...(typeof to === "string" && to ? { to } : {}),
         createdAt: typeof createdAt === "string" ? createdAt : "",
       },
     ];

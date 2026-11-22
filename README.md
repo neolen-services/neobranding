@@ -13,12 +13,12 @@ Everything runs on your own computer with your own API keys. There are no accoun
 | | |
 |---|---|
 | **Brand kit** | Your name, topics, audience, positioning, content pillars, voice and platform bios in one place. |
-| **Research** | Paste an Instagram or YouTube Shorts link and the app saves the video or pictures, the caption, the numbers, the sound used and a transcript. Rate posts and add notes. |
+| **Research** | Paste an Instagram or YouTube Shorts link and the app saves the video or pictures, the caption, the numbers, the sound used and a transcript. Rate posts and add notes. When a post is analysed it is also put in a group with the saved posts built on the same concept, so similar videos sit together. |
 | **Analysis** | Claude looks at frames, transcript and caption and records the hook, the structure and why the post works. Each post is analysed once and the result is saved. |
 | **Ideas** | Claude writes many ideas, each modelled on one analysed post, then a separate pass judges them and keeps the best. |
 | **Agent** | A chat, available on every screen, that can read and change your brand, research and ideas and carry out the actions above. Type `@` to point it at your brand kit, all of your research or ideas, or one specific post, idea or audio file. Before it changes or deletes anything it shows you what it wants to do and waits for you to allow it; **Settings → Agent tool permissions** sets which actions ask first. |
-| **Studio** | Turns one or more saved ideas, your own words, or your own version of a saved post into a video script written as scenes. You choose whether it is made with AI only, filmed by you, or a mix, and each scene is marked as made with AI or filmed by you; the claim is checked against your rules, and you approve the script before anything costly is made. Series get a season plan with a running question. AI lines are spoken in each character's voice. With a fal.ai, Google or ElevenLabs key, each scene gets a still picture, then a clip or a lip-synced clip, and you choose which service does which job. |
-| **Cast** | Characters you make once and reuse: personality, way of talking, look and an ElevenLabs voice. |
+| **Studio** | Turns a saved idea, or your own version of a saved post, into a video script written as scenes. The idea already says whether it is a single video or a series and whether it is made with AI only, filmed by you, or a mix; each scene is marked as made with AI or filmed by you; the claim is checked against your rules, and you approve the script before anything costly is made. Series get a season plan with a running question. A Cast step lists the characters a script uses, where each role can be given to a character you already have so its voice and pictures are reused. AI lines are spoken in each character's voice. With a fal.ai, Google or ElevenLabs key, a Storyboard step makes one picture for each scene, the frame it starts on, and you look through the whole video that way before anything costly is made. The Make step then turns each storyboard picture into a clip or a lip-synced clip, and you choose which service does which job. A scene that carries on from the one before is drawn from the picture before it, the clip before it is made to end on its picture, and its own clip starts on that clip's last frame, so the two play as one take with no cut. |
+| **Characters** | Characters you make once and reuse in any video or series: personality, way of talking, look and an ElevenLabs voice. |
 | **Audio** | With an ElevenLabs key, the agent can make voiceovers in a voice from your account (including your own cloned voice), sound effects and music, and plays them in the chat. |
 | **Usage** | Shows what the app has used on your services and what for: Claude tokens and their estimated cost, minutes transcribed, and audio generated. |
 | **Telegram** | Send links to your own Telegram bot from your phone and they are saved to Research. |
@@ -72,11 +72,11 @@ npm run dev
 1. **Create your brand.** The app opens on a short set of questions: who you are, what you cover, who it is for and what you want to achieve.
 2. **Add your Claude key.** Open **Settings** (bottom of the menu) and paste your Anthropic API key. Add the Deepgram key and Telegram token there too if you want them.
 3. **Save posts you like.** In **Research**, paste a link to a public Instagram post (reel, video, photo or carousel) or a YouTube Short. Give the good ones a star rating and a note.
-4. **Analyse them.** Press **Analyse posts**. You need at least five analysed posts before ideas can be written.
-5. **Write ideas.** In **Ideas**, press **Write new ideas**, choose how many to keep, and save the ones you like.
-6. **Make the video.** Open a saved idea and press **Make this video**, or start one in **Studio** from several ideas at once. Studio writes the script as scenes for you to approve.
+4. **They are analysed for you.** Each new post is analysed as soon as it is saved (about $0.06 on your Claude account) and put in a group with the saved posts built on the same concept. You can switch this off on the Research page; **Analyse posts** then does it when you ask. You need at least five analysed posts before ideas can be written, unless you tick the posts to learn from.
+5. **Write ideas.** In **Ideas**, press **Write new ideas**, say whether you want single videos or series and how they will be made, and save the ones you like.
+6. **Make it.** Press **Make video** on a saved idea, or pick the idea in **Studio**. Studio writes the script as scenes for you to approve; a series idea gets its season planned first.
 
-Or ask the agent: press **Agent** in the bottom-right corner on any screen and type what you want, for example "Analyse my saved posts and give me five ideas".
+Or ask the agent: press **Agent** in the top-right corner on any screen and type what you want, for example "Analyse my saved posts and give me five ideas".
 
 ### Saving links from your phone
 
@@ -91,7 +91,7 @@ The app is free. The AI features use your own Anthropic account, so you pay Anth
 
 | Action | Rough cost |
 |---|---|
-| Analyse one post | $0.05 |
+| Analyse one post | $0.06 |
 | One round of ideas (writes many, keeps the best) | $0.25 |
 | One video script in Studio | $0.10 |
 | A question to the agent | $0.05 to $0.15, plus whatever actions it runs |

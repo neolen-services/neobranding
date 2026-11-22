@@ -8,7 +8,7 @@ import { BrandView } from "./BrandView";
 import { Dashboard } from "./Dashboard";
 import { IdeasView } from "./IdeasView";
 import { ResearchView } from "./ResearchView";
-import { SettingsView } from "./SettingsView";
+import { SettingsView, type SettingsTab } from "./SettingsView";
 import { UsageView } from "./UsageView";
 import { CastView } from "./CastView";
 import { OpenVideoContext, StudioView } from "./StudioView";
@@ -25,12 +25,12 @@ type Screen =
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: "Dashboard",
   agent: "Agent",
-  brand: "Brand",
+  brand: "Settings",
   ideas: "Ideas",
   edit: "Edit brand",
   research: "Research",
   studio: "Studio",
-  cast: "Cast",
+  cast: "Characters",
   usage: "Usage",
   settings: "Settings",
 };
@@ -117,8 +117,11 @@ export function App() {
     setDockOpen(true);
   };
 
+  /** Opens Settings on the tab where keys are entered. */
+  const openKeys = () => setScreen({ name: "settings", brand, focus: "connections" });
+
   const navItem = (name: Page, label: string, icon: ReactNode) => {
-    const current = page === name || (name === "brand" && page === "edit");
+    const current = page === name || (name === "settings" && (page === "brand" || page === "edit"));
     return (
       <button
         type="button"
@@ -166,16 +169,7 @@ export function App() {
             {navItem("ideas", "Ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
             {navItem("studio", "Studio", <Icon d="M4 9h16v10H4zM4 9l1.500-4 3 4 2-4 3 4 2-4 3 4" />)}
-          </nav>
-
-          {sidebarOpen ? (
-            <p className="mt-6 px-3 text-xs font-medium text-white/40">Brand</p>
-          ) : (
-            <div className="mx-2 mt-4 border-t border-white/10" />
-          )}
-          <nav className="mt-2 space-y-1">
-            {navItem("brand", "Brand kit", <Icon d="M12 3l2.5 5.5L20 9.3l-4 4 1 5.7-5-2.8-5 2.8 1-5.7-4-4 5.5-.8z" />)}
-            {navItem("cast", "Cast", <Icon d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 2.700-5 6-5s6 2 6 5M16 11a3 3 0 1 0 0-6M21 20c0-2.500-1.700-4.200-4-4.800" />)}
+            {navItem("cast", "Characters", <Icon d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 2.700-5 6-5s6 2 6 5M16 11a3 3 0 1 0 0-6M21 20c0-2.500-1.700-4.200-4-4.800" />)}
           </nav>
 
           <nav className="mt-auto space-y-1 border-t border-white/10 pt-3">
@@ -191,7 +185,7 @@ export function App() {
 
       {/* The content sits on a rounded panel inset from the dark frame. */}
       <div className="flex min-w-0 flex-1 flex-col">
-      <div className="m-2 mb-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-[var(--bg)]">
+      <div className="m-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-[var(--bg)]">
         <header className="flex shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--surface)] px-4 py-3">
           <button
             type="button"
@@ -204,69 +198,12 @@ export function App() {
             <Icon d="M4 5h16v14H4zM9 5v14" />
           </button>
           <span className="h-4 w-px bg-[var(--line)]" />
-          <h1 className="font-display font-semibold">{PAGE_TITLES[page]}</h1>
-        </header>
+          <h1 className="shrink-0 font-display font-semibold">{PAGE_TITLES[page]}</h1>
 
-        <OpenVideoContext.Provider value={(id) => setScreen({ name: "studio", brand, focus: id })}>
-        <main className={`min-h-0 flex-1 ${page === "agent" ? "overflow-hidden" : "overflow-y-auto"}`}>
-          {onAgentPage && (
-            <AgentChatPanel
-              chat={agent}
-              variant="page"
-              onOpenReference={openReference}
-              onScreen={onScreen}
-              onOpenSettings={() => go("settings")}
-              actions={
-                <IconButton
-                  label="Open as a small window"
-                  onClick={() => {
-                    setDockOpen(true);
-                    go(lastPage.current);
-                  }}
-                >
-                  <path d="M4 5h16v14H4zM12 12h6v5h-6z" />
-                </IconButton>
-              }
-            />
-          )}
-          {page === "dashboard" && (
-            <Dashboard brand={brand} onOpenIdeas={() => go("ideas")} onOpenBrand={() => go("brand")} />
-          )}
-          {page === "brand" && (
-            <BrandView
-              brand={brand}
-              onEdit={(section) => setScreen({ name: "edit", brand, focus: section === undefined ? undefined : String(section) })}
-              onChange={(changed) => setScreen({ name: "brand", brand: changed })}
-              onOpenSettings={() => go("settings")}
-            />
-          )}
-          {page === "ideas" && (
-            <IdeasView key={screen.focus} brand={brand} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "idea", id } : null)} onOpenSettings={() => go("settings")} onOpenResearch={() => go("research")} />
-          )}
-          {page === "research" && <ResearchView key={screen.focus} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "post", id } : null)} onOpenSettings={() => go("settings")} />}
-          {page === "studio" && (
-            <StudioView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={() => go("settings")} onOpenCast={() => go("cast")} />
-          )}
-          {page === "cast" && <CastView brand={brand} onOpenSettings={() => go("settings")} onOpenBrand={() => go("brand")} />}
-          {page === "usage" && <UsageView />}
-          {page === "settings" && <SettingsView />}
-          {page === "edit" && (
-            <BrandForm
-              mode="edit"
-              section={screen.focus === undefined ? undefined : Number(screen.focus)}
-              initial={brand}
-              onSaved={(saved) => setScreen({ name: "brand", brand: saved })}
-              onCancel={() => go("brand")}
-            />
-          )}
-        </main>
-        </OpenVideoContext.Provider>
-      </div>
-
-        {/* The agent is one click away on every screen. */}
-        <footer className="flex h-10 min-w-0 shrink-0 items-center justify-end gap-1 px-3">
+          {/* The agent is one click away on every screen: open chats, a new chat, and the history. */}
+          <div className="ml-auto flex min-w-0 items-center gap-1">
           {/* One tab for each chat kept open; the newest are shown if there are many. */}
-          {agent.tabs.slice(-4).map((tab) => {
+          {agent.tabs.slice(-3).map((tab) => {
             const showing = tab.id === agent.chatId && (dockOpen || onAgentPage);
             return (
               <button
@@ -279,8 +216,8 @@ export function App() {
                   void agent.openChat(tab.id);
                   if (!onAgentPage) openDock();
                 }}
-                className={`flex min-w-0 max-w-[14rem] items-center gap-2 rounded-lg px-3 py-1 text-sm font-medium ${
-                  showing ? "bg-white/10 text-white" : "text-white/55 hover:bg-white/5 hover:text-white"
+                className={`hidden min-w-0 max-w-[11rem] items-center gap-2 rounded-lg px-3 py-1 text-sm font-medium md:flex ${
+                  showing ? "bg-[var(--tint)]" : "opacity-60 hover:bg-[var(--tint)] hover:opacity-100"
                 }`}
               >
                 {(tab.running || tab.unread) && (
@@ -297,7 +234,7 @@ export function App() {
               agent.newChat();
               if (!onAgentPage) openDock();
             }}
-            className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-1 text-sm font-medium text-white/85 hover:bg-white/5 hover:text-white"
+            className="flex shrink-0 items-center gap-2 rounded-full border border-[var(--line)] px-3.5 py-1 text-sm font-medium hover:border-[var(--ink)]"
           >
             <Icon d="M5 4l14 8-6 2-2 6z" />
             Agent
@@ -309,7 +246,7 @@ export function App() {
               title="Chat history"
               aria-expanded={historyOpen}
               onClick={() => setHistoryOpen(!historyOpen)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
+              className="flex h-8 w-8 items-center justify-center rounded-full opacity-60 hover:bg-[var(--tint)] hover:opacity-100"
             >
               <Icon d="M4 12a8 8 0 1 0 2.5-5.800M4 4v4h4M12 8v4l3 2" />
             </button>
@@ -317,7 +254,7 @@ export function App() {
               <>
                 {/* Clicking anywhere else closes the list. */}
                 <div className="fixed inset-0 z-40" onClick={() => setHistoryOpen(false)} />
-                <div className="absolute bottom-9 right-0 z-50 max-h-80 w-96 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1.5 text-[var(--ink)] shadow-2xl">
+                <div className="absolute right-0 top-10 z-50 max-h-80 w-96 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--surface)] p-1.5 text-[var(--ink)] shadow-2xl">
                   <p className="px-2.5 py-1.5 text-xs opacity-50">Chat history</p>
                   {agent.chats.length === 0 && <p className="px-2.5 py-2 text-sm opacity-60">No chats yet.</p>}
                   {agent.chats.map((c) => (
@@ -344,21 +281,85 @@ export function App() {
               </>
             )}
           </div>
-        </footer>
+          </div>
+        </header>
+
+        <OpenVideoContext.Provider value={(id) => setScreen({ name: "studio", brand, focus: id })}>
+        <main className={`min-h-0 flex-1 ${page === "agent" ? "overflow-hidden" : "overflow-y-auto"}`}>
+          {onAgentPage && (
+            <AgentChatPanel
+              chat={agent}
+              variant="page"
+              onOpenReference={openReference}
+              onScreen={onScreen}
+              onOpenSettings={openKeys}
+              actions={
+                <IconButton
+                  label="Open as a small window"
+                  onClick={() => {
+                    setDockOpen(true);
+                    go(lastPage.current);
+                  }}
+                >
+                  <path d="M4 5h16v14H4zM12 12h6v5h-6z" />
+                </IconButton>
+              }
+            />
+          )}
+          {page === "dashboard" && (
+            <Dashboard brand={brand} onOpenIdeas={() => go("ideas")} onOpenBrand={() => go("brand")} />
+          )}
+          {/* The brand kit is a tab of Settings; "brand" opens Settings on it. */}
+          {(page === "settings" || page === "brand") && (
+            <SettingsView
+              key={`${page}:${screen.focus ?? ""}`}
+              initialTab={page === "brand" ? "brand" : (screen.focus as SettingsTab | undefined)}
+              brandKit={
+                <BrandView
+                  brand={brand}
+                  onEdit={(section) => setScreen({ name: "edit", brand, focus: section === undefined ? undefined : String(section) })}
+                  onChange={(changed) => setScreen({ name: "brand", brand: changed })}
+                  onOpenSettings={openKeys}
+                />
+              }
+            />
+          )}
+          {page === "ideas" && (
+            <IdeasView key={screen.focus} brand={brand} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "idea", id } : null)} onOpenSettings={openKeys} onOpenResearch={() => go("research")} />
+          )}
+          {page === "research" && <ResearchView key={screen.focus} focusId={screen.focus} onOpenItem={(id) => setOpenItem(id ? { kind: "post", id } : null)} onOpenSettings={openKeys} />}
+          {page === "studio" && (
+            <StudioView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={openKeys} onOpenCast={() => go("cast")} onOpenBrand={() => go("brand")} />
+          )}
+          {page === "cast" && <CastView brand={brand} onOpenSettings={openKeys} onOpenBrand={() => go("brand")} />}
+          {page === "usage" && <UsageView />}
+          {page === "edit" && (
+            <BrandForm
+              mode="edit"
+              section={screen.focus === undefined ? undefined : Number(screen.focus)}
+              initial={brand}
+              onSaved={(saved) => setScreen({ name: "brand", brand: saved })}
+              onCancel={() => go("brand")}
+            />
+          )}
+        </main>
+        </OpenVideoContext.Provider>
+      </div>
+
       </div>
 
       {dockOpen && !onAgentPage && (
         <div
           role="dialog"
           aria-label="Agent chat"
-          className="fixed bottom-12 right-4 z-40 flex h-[min(640px,calc(100vh-5rem))] w-[440px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg)] shadow-2xl"
+          className="fixed right-4 top-16 z-40 flex h-[min(640px,calc(100vh-5rem))] w-[440px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg)] shadow-2xl"
         >
           <AgentChatPanel
             chat={agent}
             variant="dock"
             onOpenReference={openReference}
               onScreen={onScreen}
-            onOpenSettings={() => go("settings")}
+            onOpenSettings={openKeys}
             actions={
               <>
                 <IconButton label="Minimise" onClick={() => setDockOpen(false)}>
@@ -371,7 +372,7 @@ export function App() {
                   label="Close this chat"
                   onClick={() => {
                     setDockOpen(false);
-                    // Takes it off the footer; it stays in the history.
+                    // Takes it off the top bar; it stays in the history.
                     agent.closeTab(agent.chatId);
                   }}
                 >

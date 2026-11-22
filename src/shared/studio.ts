@@ -41,6 +41,8 @@ export type Scene = {
   id: string;
   /** Generated with AI, or filmed by the creator. */
   madeBy: "ai" | "me";
+  /** It carries straight on from the scene before, with no cut: the two clips meet on this scene's storyboard picture. Never true for the first scene. */
+  continues: boolean;
   seconds: number;
   place: string;
   /** Ids of the characters seen in it. */
@@ -54,7 +56,7 @@ export type Scene = {
   /** A sound effect or music cue, or "". */
   sound: string;
   lines: SceneLine[];
-  /** Every still made for the scene, and the id of the one in use ("" for none). */
+  /** Every storyboard picture made for the scene (the frame it starts on), and the id of the one in use ("" for none). */
   pictures: Take[];
   picture: string;
   /** Every clip made or filmed for the scene, and the id of the one in use. */
@@ -64,6 +66,24 @@ export type Scene = {
 
 export const pickedPicture = (scene: Scene) => scene.pictures.find((t) => t.id === scene.picture);
 export const pickedClip = (scene: Scene) => scene.clips.find((t) => t.id === scene.clip);
+
+/**
+ * Whether an AI scene that carries on from the one before really does, once both have a clip.
+ * "joined": its clip starts on the last frame of the clip now in use before it, or the two clips meet on
+ * this scene's storyboard picture (that clip ends on it and this one starts on it).
+ * "stale": one of the two was made or changed since, so there is a jump between them.
+ * Null when there is nothing to judge: a new shot, a scene the creator films or added a clip for, or a clip still missing.
+ */
+export function joinState(scenes: Scene[], index: number): "joined" | "stale" | null {
+  const scene = scenes[index];
+  const before = scenes[index - 1];
+  if (!scene || !before || !scene.continues || scene.madeBy !== "ai") return null;
+  const clip = pickedClip(scene);
+  const beforeClip = pickedClip(before);
+  if (!clip || !beforeClip || clip.source === "filmed") return null;
+  if (clip.from === beforeClip.id) return "joined";
+  return scene.picture !== "" && clip.from === scene.picture && beforeClip.to === scene.picture ? "joined" : "stale";
+}
 
 export type EvidenceLevel = "strong" | "early" | "personal" | "none";
 export const EVIDENCE_LABELS: Record<EvidenceLevel, string> = {
@@ -98,53 +118,10 @@ export const parseProduction = (v: unknown): Production => (v === "ai" || v === 
 /** The most saved ideas one video or series can be started from. */
 export const MAX_IDEAS = 10;
 
-/** One way a video or series could go, suggested by Claude for the creator to choose from before anything is written. */
-export type Concept = {
-  id: string;
-  title: string;
-  /** What makes this take different from the others, in one sentence. */
-  angle: string;
-  /** A video's opening line, or a series' running question. */
-  hook: string;
-  /** The story every idea must have, in order: who we care about, how the tension rises, the win, and the ending nobody expects. */
-  characters: string;
-  tension: string;
-  victory: string;
-  ending: string;
-  /** Exactly who it is for. */
-  viewer: string;
-  /** The one thing that viewer does or checks afterwards. */
-  takeaway: string;
-  /** Why it could work, with its weak point. */
-  why: string;
-};
-/** The four parts of an idea's story, in the order they play out. */
-export const STORY_PARTS = [
-  ["characters", "Characters you care about"],
-  ["tension", "Escalating tension"],
-  ["victory", "Moment of victory"],
-  ["ending", "Surprising ending"],
-] as const satisfies readonly (readonly [keyof Concept, string])[];
-/** How many ideas Claude suggests at a time. */
-export const CONCEPT_COUNT = 5;
-
-/** The idea step that videos and series share: what Claude suggested and what the creator settled on. */
-export type IdeaStep = {
-  /** The ideas Claude suggested; [] until asked. */
-  concepts: Concept[];
-  /** The suggested idea the creator approved, or "" (none yet, or they kept their own words). */
-  conceptId: string;
-  /** When the creator settled the idea, or "". */
-  ideaApprovedAt: string;
-  /** The title was filled in by the app, so the approved idea's title replaces it. */
-  autoTitle: boolean;
-};
-export const approvedConcept = (item: IdeaStep) => item.concepts.find((c) => c.id === item.conceptId);
-
 /** One rule the script was checked against. */
 export type ScriptCheck = { rule: string; ok: boolean; note: string };
 
-export type Video = IdeaStep & {
+export type Video = {
   id: string;
   title: string;
   format: "single" | "episode";
@@ -212,7 +189,7 @@ export type SeriesEpisode = {
   endsOn: string;
 };
 
-export type Series = IdeaStep & {
+export type Series = {
   id: string;
   title: string;
   /** What the creator asked for, in their words. The ideas and the season plan are made from this. */
@@ -239,8 +216,8 @@ export type Series = IdeaStep & {
   createdAt: string;
 };
 
-/** The five stages of a video; the last two are built later. */
-export const VIDEO_STAGES = ["Idea", "Script", "Preview", "Make", "Finish"] as const;
+/** The stages of a video as the agent names them. */
+export const VIDEO_STAGES = ["Idea", "Script", "Preview", "Storyboard", "Make", "Finish"] as const;
 
 /** What comes back from making or adding a picture or clip. */
 export type TakeResult = { ok: true; video: Video } | { ok: false; error: string };
@@ -249,8 +226,9 @@ export type TakeResult = { ok: true; video: Video } | { ok: false; error: string
 export function videoStage(video: Video): number {
   if (video.scenes.length === 0) return 0;
   if (!video.approvedAt) return 1;
-  if (video.results) return 4;
-  return video.scenes.some((s) => s.clips.length > 0) ? 3 : 2;
+  if (video.results) return 5;
+  if (video.scenes.some((s) => s.clips.length > 0)) return 4;
+  return video.scenes.some((s) => s.pictures.length > 0) ? 3 : 2;
 }
 
 /** Whether the script can be approved, or why not. */
@@ -287,7 +265,7 @@ export type NewVideo = {
 
 /** What a new series is planned from, besides its title and what it is about. */
 export type NewSeries = { ideaIds?: string[]; postIds?: string[]; production?: Production };
-/** A series started without a plan yet: its idea is settled first, then the season is planned. */
+/** A series started from an idea, before its season is planned. */
 export type SeriesStart = NewSeries & { title?: string; brief?: string };
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
@@ -303,14 +281,6 @@ function parseVoice(input: unknown): SpeakingVoice | null {
   const id = str(v.id);
   if (!/^[\w-]{6,64}$/.test(id)) return null;
   return { id, name: str(v.name) || "Voice", category: str(v.category) };
-}
-
-function parseIdeaStep(i: Record<string, unknown>): IdeaStep {
-  const concepts = objs(i.concepts)
-    .map((c): Concept => ({ id: str(c.id), title: str(c.title), angle: str(c.angle), hook: str(c.hook), characters: str(c.characters), tension: str(c.tension), victory: str(c.victory), ending: str(c.ending), viewer: str(c.viewer), takeaway: str(c.takeaway), why: str(c.why) }))
-    .filter((c) => c.id && c.title);
-  const conceptId = concepts.some((c) => c.id === str(i.conceptId)) ? str(i.conceptId) : "";
-  return { concepts, conceptId, ideaApprovedAt: str(i.ideaApprovedAt), autoTitle: i.autoTitle === true };
 }
 
 /** Validates and normalises a character from untrusted input. Throws with a readable message. */
@@ -337,6 +307,7 @@ function parseScene(input: Record<string, unknown>, index: number): Scene {
   return {
     id: str(input.id) || `scene-${index + 1}`,
     madeBy: input.madeBy === "me" ? "me" : "ai",
+    continues: index > 0 && input.continues === true,
     seconds: Math.min(Math.max(Math.round(seconds), 1), 30),
     place: str(input.place),
     characters: strs(input.characters),
@@ -400,7 +371,6 @@ export function parseVideo(input: unknown): Video {
   if (!id || !title) throw new Error("A video needs a title.");
   const episode = typeof i.episode === "number" && i.episode >= 1 ? Math.round(i.episode) : null;
   return {
-    ...parseIdeaStep(i),
     id,
     title,
     format: i.format === "episode" ? "episode" : "single",
@@ -440,7 +410,6 @@ export function parseSeries(input: unknown): Series {
   const title = str(i.title);
   if (!id || !title) throw new Error("A series needs a title.");
   return {
-    ...parseIdeaStep(i),
     id,
     title,
     brief: str(i.brief),

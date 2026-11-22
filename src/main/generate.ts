@@ -124,10 +124,20 @@ export function describeBrand(brand: BrandKit): string {
 
 /** What the writer and the judge are told about how the ideas will be made. */
 const HOW_MADE: Record<Production, string> = {
-  ai: "AI only. Every scene is generated and the creator is never on camera or heard. Ideas can use made-up characters, things given a voice, the inside of the body, or anything a phone cannot film. None may need the creator on screen.",
+  ai: "AI only. Every scene is generated and the creator is never on camera or heard. Ideas can use made-up characters, things given a voice, places a camera cannot go, or anything a phone cannot film. None may need the creator on screen.",
   me: "Filmed by the creator only, alone with a phone. Nothing is generated: no made-up characters and no scenes a phone cannot film.",
-  mix: "A mix. The creator is on camera for part of it (usually the fact and the closing ask), and AI generates the rest: characters, the inside of the body, anything a phone cannot film.",
+  mix: "A mix. The creator is on camera for part of it (usually the fact and the closing ask), and AI generates the rest: characters, places a camera cannot go, anything a phone cannot film.",
 };
+
+/** What the writer is told when every idea is to be a series instead of a single video. */
+const SERIES_REQUEST = `Every idea is a SERIES, not a single video: a season of five to eight short episodes that people follow because one question runs through it, while each episode still gives them something complete. Still model each one on a library post: its structure becomes the shape every episode repeats. Fill the fields like this:
+- title: the series' name.
+- hooks: three versions of the one running question viewers wait to have answered, each phrased as the opening line of episode one.
+- outline: the episodes in order, five to eight lines, each saying what that episode teaches and what it stops on to make them want the next.
+- cta: how the season ends. If it is a real experiment whose result is not known, say what will be measured and shown whatever it is; never invent a result.
+- takeaway: what a viewer gains by following the whole season.
+- caption: the caption of the first episode.
+- series: the same as the title.`;
 
 /** A post the user rated highly or that has more likes counts for more. */
 const weight = (post: ResearchItem) => (post.rating ?? 3) * 1_000_000_000 + (post.likeCount ?? 0);
@@ -171,6 +181,7 @@ export async function generateIdeas(
     };
   }
   const how = options.production ? HOW_MADE[options.production] : "";
+  const asSeries = options.kind === "series";
   const templates = analysed.slice(0, MAX_TEMPLATES).map((post, i) => ({ code: `P${i + 1}`, post }));
 
   const wanted = Math.min(Math.max(Math.round(options.count) || 5, 1), 10);
@@ -178,11 +189,13 @@ export async function generateIdeas(
 
   const request = [
     `Write ${candidates} ideas.`,
+    asSeries && SERIES_REQUEST,
     how && `How every idea will be made: ${how}`,
     chosen.length > 0 && `The creator chose these ${analysed.length === 1 ? "post" : `${analysed.length} posts`} to learn from, so every idea is modelled on one of them.`,
     options.pillar && `Every idea must belong to the content pillar "${options.pillar}".`,
     options.platform && `Every idea must be made for ${options.platform}.`,
     options.series &&
+      !asSeries &&
       `Every idea must be a new episode of the creator's existing series "${options.series}": same kind of structure, a different subject each time. Use that exact series name for every idea.`,
     options.notes && `Extra direction from the creator: ${options.notes}`,
     existingTitles.length > 0 &&
@@ -198,8 +211,8 @@ export async function generateIdeas(
   const client = new Anthropic({ apiKey });
   const common = {
     model: "claude-opus-5-5",
-    // Above about 16,000 the SDK insists on streaming; 30 ideas fit well inside this.
-    max_tokens: 16000,
+    // Room for the model's own thinking as well as up to 30 ideas. The requests are streamed, so a long reply is not timed out.
+    max_tokens: 48000,
     // If the model declines for policy reasons, let the API retry on its default fallback model.
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default" as const,
@@ -207,7 +220,7 @@ export async function generateIdeas(
 
   try {
     // 1. Write.
-    const written = await client.beta.messages.parse({
+    const written = await client.beta.messages.stream({
       ...common,
       system: WRITER_SYSTEM,
       messages: [
@@ -219,7 +232,7 @@ export async function generateIdeas(
         },
       ],
       output_config: { format: betaZodOutputFormat(WriterSchema) },
-    });
+    }).finalMessage();
     if (written.stop_reason === "refusal") return { ok: false, error: "Claude declined this request. Try different direction notes." };
     const drafts = written.parsed_output?.ideas ?? [];
     if (written.stop_reason === "max_tokens" || drafts.length === 0) {
@@ -229,13 +242,13 @@ export async function generateIdeas(
     recordClaude("ideas", written.usage, "Writing ideas");
 
     // 2. Judge.
-    const judged = await client.beta.messages.parse({
+    const judged = await client.beta.messages.stream({
       ...common,
       system: JUDGE_SYSTEM,
       messages: [
         {
           role: "user",
-          content: `THE CREATOR\n${brandText}\n\n${how ? `HOW THESE IDEAS WILL BE MADE\n${how}\n\n` : ""}IDEAS TO JUDGE\n${drafts
+          content: `THE CREATOR\n${brandText}\n\n${how ? `HOW THESE IDEAS WILL BE MADE\n${how}\n\n` : ""}${asSeries ? "THESE ARE IDEAS FOR SERIES, NOT SINGLE VIDEOS\nEach is a season of episodes. Its opening lines are the running question as episode one would open, and its outline lists the episodes. Judge stopScroll and rightViewer on that opening; worthSaving on whether the right viewer would follow to see the next episode; easyToFilm on whether the creator could keep making it for the whole season.\n\n" : ""}IDEAS TO JUDGE\n${drafts
             .map((d, i) =>
               [
                 `Idea ${i + 1}: ${d.title}`,
@@ -250,7 +263,7 @@ export async function generateIdeas(
         },
       ],
       output_config: { format: betaZodOutputFormat(JudgeSchema) },
-    });
+    }).finalMessage();
     const scores = new Map((judged.parsed_output?.scores ?? []).map((s) => [Math.round(s.idea) - 1, s]));
     recordClaude("ideas", judged.usage, "Judging ideas");
     const costUsd = estimateCostUsd(written.usage) + estimateCostUsd(judged.usage);
@@ -274,6 +287,7 @@ export async function generateIdeas(
             )
           : undefined;
         return {
+          kind: asSeries ? "series" : "video",
           title: d.title,
           viewer: d.viewer,
           takeaway: d.takeaway,

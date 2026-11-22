@@ -1,9 +1,9 @@
 // Small pieces every Studio screen shares: buttons, chips, the "how it is made" choice, the idea picker, a dialog.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
-import type { Idea } from "@shared/ideas";
+import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { MAX_IDEAS, pickedClip, pickedPicture, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
+import { MAX_IDEAS, joinState, pickedClip, pickedPicture, productionLabel, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
 import { api } from "./api";
 
 export const fieldClass =
@@ -119,7 +119,13 @@ type PickItem = {
   facets: Record<string, string>;
   /** Whether each "Show" choice includes it, by the choice's id. */
   shows: Record<string, boolean>;
+  /** The group it belongs to, when the picker shows its rows in groups. "" for none. */
+  group?: string;
 };
+
+/** Headings for rows that are alone in their group, and for rows in none. */
+const ALONE = "\u0000alone";
+const UNGROUPED = "\u0000none";
 
 /** A list to tick from, with a search box and a Filter button. Used for saved ideas and saved posts. */
 function Picker({
@@ -132,6 +138,8 @@ function Picker({
   shows,
   none,
   selectAll,
+  grouped,
+  single,
 }: {
   items: PickItem[];
   picked: string[];
@@ -147,8 +155,14 @@ function Picker({
   none: string;
   /** Offers "Select all", and says this when nothing is ticked. */
   selectAll?: string;
+  /** Shows the rows under their groups, each group with a tick box that selects all of it. */
+  grouped?: boolean;
+  /** Only one row can be picked: choosing another replaces it. */
+  single?: boolean;
 }) {
   const [query, setQuery] = useState("");
+  /** The groups opened to show their rows. Groups start closed, so the list reads as a list of groups. */
+  const [opened, setOpened] = useState<Set<string>>(new Set());
   const [filtering, setFiltering] = useState(false);
   const [chosen, setChosen] = useState<Record<string, string>>({});
   const [show, setShow] = useState("all");
@@ -166,6 +180,42 @@ function Picker({
     setChosen({});
     setShow("all");
   };
+
+  const row = (item: PickItem) => {
+    const on = picked.includes(item.id);
+    const blocked = !on && Boolean(item.blocked);
+    return (
+      <li key={item.id}>
+        <label
+          title={blocked ? item.blocked : undefined}
+          className={`flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm ${blocked ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-[var(--tint)]"} ${on ? "bg-[var(--tint)]" : ""}`}
+        >
+          <input
+            type={single ? "radio" : "checkbox"}
+            checked={on}
+            disabled={blocked || (!single && !on && full)}
+            onChange={() => onChange(single ? [item.id] : on ? picked.filter((id) => id !== item.id) : [...picked, item.id])}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium">{item.title}</span>
+            <span className="block truncate text-xs opacity-60">{blocked ? item.blocked : item.sub}</span>
+          </span>
+          {item.badge && <span className="shrink-0 text-xs tabular-nums opacity-60">{item.badge}</span>}
+        </label>
+      </li>
+    );
+  };
+
+  // Groups of two or more first, biggest first; then everything that is alone in its group; then what has none.
+  const sizes = new Map<string, number>();
+  for (const i of items) if (i.group) sizes.set(i.group, (sizes.get(i.group) ?? 0) + 1);
+  const sectionOf = (i: PickItem) => (!i.group ? UNGROUPED : (sizes.get(i.group) ?? 0) > 1 ? i.group : ALONE);
+  const order = (key: string) => (key === UNGROUPED ? 2 : key === ALONE ? 1 : 0);
+  const sections = grouped
+    ? [...new Set(shown.map(sectionOf))]
+        .sort((a, b) => order(a) - order(b) || (sizes.get(b) ?? 0) - (sizes.get(a) ?? 0) || a.localeCompare(b))
+        .map((key) => ({ key, name: key === ALONE ? "One of a kind" : key === UNGROUPED ? "No group yet" : key, rows: shown.filter((i) => sectionOf(i) === key) }))
+    : [];
 
   return (
     <div>
@@ -187,7 +237,7 @@ function Picker({
       </div>
 
       {filtering && (
-        <div className="mt-2 grid gap-2 rounded-xl border border-[var(--line)] p-3 sm:grid-cols-3">
+        <div className={`mt-2 grid gap-2 rounded-xl border border-[var(--line)] p-3 ${filters.length > 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
           {filters.map((f) => (
             <label key={f.name} className="block text-xs">
               <span className="mb-1 block opacity-60">{f.name}</span>
@@ -214,7 +264,15 @@ function Picker({
         </div>
       )}
 
-      <ul className="mt-2 max-h-48 space-y-0.5 overflow-y-auto rounded-xl border border-[var(--line)] p-1.5">
+      {grouped && sections.length > 0 && (
+        <p className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs opacity-70">
+          <span>Tick a group to take every post in it, or open it to pick one by one.</span>
+          <button type="button" className="underline" onClick={() => setOpened(opened.size > 0 ? new Set() : new Set(sections.map((x) => x.key)))}>
+            {opened.size > 0 ? "Close all groups" : "Open all groups"}
+          </button>
+        </p>
+      )}
+      <ul className={`mt-2 space-y-0.5 overflow-y-auto rounded-xl border border-[var(--line)] p-1.5 ${grouped ? "max-h-72" : "max-h-48"}`}>
         {shown.length === 0 && (
           <li className="px-2 py-2 text-sm opacity-60">
             Nothing matches that.{" "}
@@ -225,28 +283,53 @@ function Picker({
             )}
           </li>
         )}
-        {shown.map((item) => {
-          const on = picked.includes(item.id);
-          const blocked = !on && Boolean(item.blocked);
-          return (
-            <li key={item.id}>
-              <label
-                title={blocked ? item.blocked : undefined}
-                className={`flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm ${blocked ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-[var(--tint)]"} ${on ? "bg-[var(--tint)]" : ""}`}
-              >
-                <input type="checkbox" checked={on} disabled={blocked || (!on && full)} onChange={() => onChange(on ? picked.filter((id) => id !== item.id) : [...picked, item.id])} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{item.title}</span>
-                  <span className="block truncate text-xs opacity-60">{blocked ? item.blocked : item.sub}</span>
-                </span>
-                {item.badge && <span className="shrink-0 text-xs tabular-nums opacity-60">{item.badge}</span>}
-              </label>
-            </li>
-          );
-        })}
+        {!grouped && shown.map(row)}
+        {grouped &&
+          sections.map(({ key, name, rows }) => {
+            const can = rows.filter((i) => !i.blocked);
+            const ticked = can.filter((i) => picked.includes(i.id)).length;
+            const all = can.length > 0 && ticked === can.length;
+            // A search or a filter opens every group, so what was found is in view.
+            const open = opened.has(key) || q !== "" || active > 0;
+            return (
+              <li key={key}>
+                <div className={`flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm ${ticked > 0 ? "bg-[var(--tint)]" : "hover:bg-[var(--tint)]"}`}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Every post in ${name}`}
+                    title={can.length === 0 ? "Nothing here can be ticked yet." : all ? "Untick the whole group" : "Tick the whole group"}
+                    checked={all}
+                    ref={(el) => {
+                      if (el) el.indeterminate = ticked > 0 && !all;
+                    }}
+                    disabled={can.length === 0 || (!all && full)}
+                    onChange={() =>
+                      onChange(all ? picked.filter((id) => !can.some((i) => i.id === id)) : [...new Set([...picked, ...can.map((i) => i.id)])].slice(0, max))
+                    }
+                  />
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    onClick={() => {
+                      const next = new Set(opened);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      setOpened(next);
+                    }}
+                  >
+                    <span className="truncate font-semibold">{name}</span>
+                    <span className="shrink-0 rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs tabular-nums opacity-80">{ticked > 0 ? `${ticked} of ${rows.length}` : rows.length}</span>
+                    <Icon d="M6 9l6 6 6-6" className={`ml-auto h-4 w-4 opacity-50 transition-transform ${open ? "" : "-rotate-90"}`} />
+                  </button>
+                </div>
+                {open && <ul className="mb-1 ml-4 space-y-0.5 border-l border-[var(--line)] pl-2">{rows.map(row)}</ul>}
+              </li>
+            );
+          })}
       </ul>
       <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs opacity-70">
-        <span>{picked.length === 0 ? (selectAll ?? `Tick as many as you like, up to ${max}.`) : `${picked.length} picked${full ? " (that is the most)" : ""}.`}</span>
+        <span>{single ? (picked.length === 0 ? "Pick one." : "") : picked.length === 0 ? (selectAll ?? `Tick as many as you like, up to ${max}.`) : `${picked.length} picked${full ? " (that is the most)" : ""}.`}</span>
         {selectAll !== undefined && (
           <button
             type="button"
@@ -257,7 +340,7 @@ function Picker({
             Select all{q || active > 0 ? " shown" : ""}
           </button>
         )}
-        {picked.length > 0 && (
+        {picked.length > 0 && !single && (
           <button type="button" className="underline" onClick={() => onChange([])}>
             Clear
           </button>
@@ -267,28 +350,44 @@ function Picker({
   );
 }
 
-/** Saved ideas to tick: search, filter by pillar, series and what is already made, and as many ticks as you like. */
-export function IdeaPicker({ ideas, picked, onChange, used }: { ideas: Idea[]; picked: string[]; onChange: (ids: string[]) => void; /** Ideas already made into a video. */ used?: Set<string> }) {
+/** Saved ideas to choose from: search, and filter by kind, how it is made, pillar and what is already in Studio. With `single`, one idea only. */
+export function IdeaPicker({
+  ideas,
+  picked,
+  onChange,
+  used,
+  single,
+}: {
+  ideas: Idea[];
+  picked: string[];
+  onChange: (ids: string[]) => void;
+  /** Ideas already made into a video or series. */
+  used?: Set<string>;
+  single?: boolean;
+}) {
+  const kind = (i: Idea) => (ideaKind(i) === "series" ? "Series" : "Single video");
   return (
     <Picker
       items={ideas.map((i) => ({
         id: i.id,
         title: i.title,
-        sub: [i.pillar, i.series, used?.has(i.id) && "already made into a video"].filter(Boolean).join(" · ") || i.hook,
+        sub: [kind(i), i.production && productionLabel(i.production), i.pillar, used?.has(i.id) && "already in Studio"].filter(Boolean).join(" · "),
         badge: i.score !== undefined ? String(i.score) : undefined,
         text: [i.title, i.hook, i.pillar, i.series ?? ""].join(" "),
-        facets: { Pillar: i.pillar, Series: i.series ?? "" },
+        facets: { Kind: kind(i), "Made with": i.production ? productionLabel(i.production) : "", Pillar: i.pillar },
         shows: { fresh: !used?.has(i.id) },
       }))}
       picked={picked}
       onChange={onChange}
-      max={MAX_IDEAS}
+      max={single ? 1 : MAX_IDEAS}
+      single={single}
       search="Search your ideas"
       filters={[
+        { name: "Kind", any: "Videos and series" },
+        { name: "Made with", any: "Made any way" },
         { name: "Pillar", any: "Any pillar" },
-        { name: "Series", any: "Any series" },
       ]}
-      shows={[{ id: "fresh", label: "Not made into a video yet" }]}
+      shows={[{ id: "fresh", label: "Not in Studio yet" }]}
       none="No saved ideas yet. Ideas you keep on the Ideas page appear here."
     />
   );
@@ -318,19 +417,22 @@ export function PostPicker({
       items={posts.map((p) => ({
         id: p.id,
         title: postName(p),
-        sub: [p.analysis?.topic, p.analysis?.format, p.platform === "youtube" ? "YouTube" : "Instagram"].filter(Boolean).join(" · "),
+        sub: [p.group, p.analysis?.topic, p.analysis?.format, p.platform === "youtube" ? "YouTube" : "Instagram"].filter(Boolean).join(" · "),
         badge: p.rating ? `${p.rating}★` : undefined,
         blocked: p.analysis ? "" : "Not analysed yet. Analyse it in Research to use it.",
-        text: [postName(p), p.authorHandle, p.caption, p.note, p.analysis?.topic ?? "", p.analysis?.format ?? ""].join(" "),
-        facets: { Platform: p.platform === "youtube" ? "YouTube" : "Instagram", Format: p.analysis?.format ?? "" },
+        text: [postName(p), p.authorHandle, p.caption, p.note, p.group ?? "", p.analysis?.topic ?? "", p.analysis?.format ?? ""].join(" "),
+        group: p.group ?? "",
+        facets: { Concept: p.group ?? "", Platform: p.platform === "youtube" ? "YouTube" : "Instagram", Format: p.analysis?.format ?? "" },
         shows: { top: (p.rating ?? 0) >= 4, analysed: Boolean(p.analysis) },
       }))}
       picked={picked}
       onChange={onChange}
       max={max}
       selectAll={selectAll}
+      grouped={posts.some((p) => p.group)}
       search="Search your saved posts"
       filters={[
+        { name: "Concept", any: "Any concept" },
         { name: "Platform", any: "Any platform" },
         { name: "Format", any: "Any format" },
       ]}
@@ -405,11 +507,34 @@ export function PlayLine({ file, label: name }: { file: string; label: string })
   );
 }
 
-/** The five tabs of a video's page, in the order the work is done. */
-export const STAGES = ["Idea", "Script", "Preview", "Make", "Finish"] as const;
+/** The tabs of a video's page, in the order the work is done. */
+export const STAGES = ["Idea", "Script", "Cast", "Preview", "Storyboard", "Make", "Finish"] as const;
+
+/** One character in a video's script, and what the video still needs from them. */
+export type CastMember = { character: Character; /** How many lines they speak. */ lines: number; /** How many scenes they are seen or heard in. */ scenes: number; needs: string[] };
+
+/** Everyone a video's script uses: its characters, the narrator and the creator, and how many of them are not set up yet. */
+export function videoCast(video: Video, cast: Character[], brand: BrandKit | null) {
+  const members = cast
+    .map((character): CastMember => {
+      const inScene = (s: Video["scenes"][number]) => s.characters.includes(character.id) || s.lines.some((l) => l.speaker === character.id);
+      const lines = video.scenes.reduce((n, s) => n + s.lines.filter((l) => l.speaker === character.id).length, 0);
+      const needs = [
+        lines > 0 && !character.voice && "a voice",
+        // Only a generated scene needs their picture; a filmed one has the real thing.
+        video.scenes.some((s) => s.madeBy === "ai" && inScene(s)) && character.pictures.length === 0 && "a reference picture",
+      ].filter((x): x is string => Boolean(x));
+      return { character, lines, scenes: video.scenes.filter(inScene).length, needs };
+    })
+    .filter((m) => m.scenes > 0);
+  const spoken = video.scenes.flatMap((s) => s.lines);
+  const narratorLines = spoken.filter((l) => l.speaker === SPEAKER_NARRATOR).length;
+  const narratorReady = narratorLines === 0 || Boolean(brand?.speakingVoice);
+  return { members, narratorLines, narratorReady, myLines: spoken.filter((l) => l.speaker === SPEAKER_ME).length, unready: members.filter((m) => m.needs.length > 0).length + (narratorReady ? 0 : 1) };
+}
 
 export type VideoProgress = {
-  /** How many of the five stages are behind it (0 to 5). */
+  /** How many of the stages are behind it (0 to all of them). */
   done: number;
   /** The tab where the next thing to do is. */
   tab: number;
@@ -421,7 +546,9 @@ export type VideoProgress = {
   unvoiced: number;
   /** Speakers whose lines cannot be voiced until a voice is chosen. */
   voiceless: string[];
+  /** AI scenes with no storyboard picture yet. */
   needPicture: number;
+  /** AI scenes with no clip, or with a clip that no longer joins the one before it. */
   needClip: number;
   needFilming: number;
 };
@@ -442,28 +569,29 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   ];
   const ai = video.scenes.filter((s) => s.madeBy === "ai");
   const needPicture = ai.filter((s) => !pickedPicture(s)).length;
-  const needClip = ai.filter((s) => pickedPicture(s) && !pickedClip(s)).length;
+  const needClip = video.scenes.filter((s, i) => s.madeBy === "ai" && (!pickedClip(s) || joinState(video.scenes, i) === "stale")).length;
   const needFilming = video.scenes.filter((s) => s.madeBy === "me" && !pickedClip(s)).length;
   const base = { aiLines: lines.length, unvoiced, voiceless, needPicture, needClip, needFilming };
 
-  if (video.scenes.length === 0 && !video.ideaApprovedAt) return { ...base, done: 0, tab: 0, next: video.concepts.length ? "Choose and approve an idea" : "Get ideas for this video", waiting: true };
   if (video.scenes.length === 0) return { ...base, done: 1, tab: 1, next: "Write the script", waiting: true };
   if (!video.approvedAt) return { ...base, done: 1, tab: 1, next: "Review and approve the script", waiting: true };
   if (video.results) {
     const views = video.results.views;
-    return { ...base, done: 5, tab: 4, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
+    return { ...base, done: 7, tab: 6, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
   }
-  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 2, tab: 2, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
-  if (needPicture > 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(needPicture, "scene picture")}`, waiting: true };
-  if (needClip > 0) return { ...base, done: 3, tab: 3, next: `Turn ${plural(needClip, "picture")} into ${needClip === 1 ? "a clip" : "clips"}`, waiting: true };
-  if (needFilming > 0) return { ...base, done: 3, tab: 3, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
-  return { ...base, done: 4, tab: 4, next: "Post it, then record how it did", waiting: true };
+  const unready = videoCast(video, cast, brand).unready;
+  if (unready > 0) return { ...base, done: 2, tab: 2, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
+  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
+  if (needPicture > 0) return { ...base, done: 4, tab: 4, next: `Make ${plural(needPicture, "storyboard picture")}`, waiting: true };
+  if (needClip > 0) return { ...base, done: 5, tab: 5, next: `Make ${plural(needClip, "clip")} from the storyboard`, waiting: true };
+  if (needFilming > 0) return { ...base, done: 5, tab: 5, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
+  return { ...base, done: 6, tab: 6, next: "Post it, then record how it did", waiting: true };
 }
 
-/** Five short bars, filled for the stages already behind a video. */
+/** One short bar for each stage, filled for those already behind a video. */
 export function ProgressBars({ done }: { done: number }) {
   return (
-    <span className="flex gap-1" role="img" aria-label={`${Math.min(done, 5)} of 5 stages done`}>
+    <span className="flex gap-1" role="img" aria-label={`${Math.min(done, STAGES.length)} of ${STAGES.length} stages done`}>
       {STAGES.map((name, i) => (
         <span key={name} title={name} className={`h-1 w-5 rounded-full ${i < done ? "bg-[var(--primary)]" : "bg-[var(--tint)]"}`} />
       ))}

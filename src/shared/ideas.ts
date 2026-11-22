@@ -1,8 +1,14 @@
 // Short-video idea types, shared by the main process and the UI.
 import { parseProduction, type Production } from "./studio";
 
-/** What the model suggests for one video. */
+/** What an idea is for: one video, or a series of episodes. */
+export type IdeaKind = "video" | "series";
+export const ideaKind = (idea: { kind?: IdeaKind }): IdeaKind => (idea.kind === "series" ? "series" : "video");
+
+/** What the model suggests for one video, or for one series. */
 export type IdeaDraft = {
+  /** A single video, or a series. Missing on older ideas, which are all single videos. For a series, hook is its running question, outline lists its episodes and cta says how the season ends. */
+  kind?: IdeaKind;
   title: string;
   /** The opening line, spoken in the first three seconds. */
   hook: string;
@@ -65,6 +71,8 @@ export type GenerateOptions = {
   notes: string;
   /** Write new episodes of this existing series, or "" for any. */
   series?: string;
+  /** Whether each idea is one video or a whole series. Left out, single videos. */
+  kind?: IdeaKind;
   /** How the ideas will be made. Left out, they are written to be filmed by the creator alone, as before. */
   production?: Production;
   /** The saved posts to learn from. Empty or left out means every analysed post. */
@@ -91,6 +99,7 @@ export function parseIdea(input: unknown): Idea {
   if (!id || !title) throw new Error("An idea needs an id and a title.");
   return {
     id,
+    kind: i.kind === "series" ? "series" : "video",
     title,
     hook: str(i.hook),
     outline: list(i.outline),
