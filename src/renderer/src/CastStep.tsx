@@ -2,6 +2,7 @@
 // The Cast page in the side menu is the whole cast across every video; this is only who is in this one.
 import { useState } from "react";
 import type { BrandKit } from "@shared/brand";
+import type { MediaChoice } from "@shared/media";
 import type { Character, StudioResult, Video } from "@shared/studio";
 import { api } from "./api";
 import { readUpload, ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
@@ -103,6 +104,7 @@ export function CastStep({
           onCast={onCast}
           onOpenSettings={onOpenSettings}
           makePicture={choices ? () => api.makeCharacterPicture(member.character.id, choices.picture) : undefined}
+          pictureChoice={choices?.picture}
         />
       ))}
     </div>
@@ -120,6 +122,7 @@ function MemberCard({
   onCast,
   onOpenSettings,
   makePicture,
+  pictureChoice,
 }: {
   member: CastMember;
   video: Video;
@@ -130,6 +133,8 @@ function MemberCard({
   onOpenSettings: () => void;
   /** Makes a reference picture with the service chosen above; missing until the choices have loaded. */
   makePicture?: () => Promise<StudioResult<Character>>;
+  /** The service that makes pictures on this page. */
+  pictureChoice?: MediaChoice;
 }) {
   const { character } = member;
   const [draft, setDraft] = useState<Record<TextField, string>>({ look: character.look, personality: character.personality, speech: character.speech });
@@ -206,6 +211,30 @@ function MemberCard({
           </span>
         )}
         <div className="mt-3 space-y-2">
+          <div className="rounded-xl border border-[var(--line)] p-2">
+            <p className="text-xs font-medium uppercase tracking-wide opacity-55">Character sheet</p>
+            {character.sheet ? (
+              <img src={api.studioFileUrl(character.sheet.file)} alt={`${character.name} from the front, from the back, and their face`} className="mt-1.5 aspect-video w-full rounded-lg bg-black object-cover" />
+            ) : (
+              <p className="mt-1 text-xs leading-snug opacity-60">Front, back and face in one picture. Storyboards and clips use it to keep {character.name} looking the same.</p>
+            )}
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className={`${smallButton} flex-1`}
+                disabled={busy || !pictureChoice}
+                title={character.pictures.length || character.look.trim() ? "Drawn from their main picture, so it is the same person." : "Add a picture or write their look first."}
+                onClick={() => void run("Sheet", () => api.makeCharacterSheet(character.id, pictureChoice))}
+              >
+                {working === "Sheet" ? "Making the sheet…" : character.sheet ? "Make it again" : "Make character sheet"}
+              </button>
+              {character.sheet && (
+                <button type="button" className={smallButton} disabled={busy} onClick={() => void run("Removing", () => api.removeCharacterSheet(character.id))}>
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
           <button
             type="button"
             className={`${main ? smallButton : `${primaryButton} !px-3 !py-1.5 !text-xs`} w-full`}

@@ -15,10 +15,18 @@ export type Character = {
   look: string;
   /** The ElevenLabs voice their lines are spoken in, or null until one is chosen. */
   voice: SpeakingVoice | null;
-  /** Reference pictures that keep the character looking the same in every scene. The first is the main one. */
+  /** Pictures of the character. The first is the main one: their portrait, which is also what lip-sync makes speak. */
   pictures: Take[];
+  /**
+   * Their character sheet: one wide picture showing them from the front, from the back and their face close up.
+   * It is what storyboards and clips are given to keep them looking the same. Null until one is made.
+   */
+  sheet: Take | null;
   createdAt: string;
 };
+
+/** The picture that shows what a character looks like to a picture or video model: their sheet, or their portrait until they have one. */
+export const characterReference = (character: Character): Take | undefined => character.sheet ?? character.pictures[0];
 
 /** Who says a line: the creator on camera, the narrator (the brand's speaking voice), or a character's id. */
 export const SPEAKER_ME = "me";
@@ -72,10 +80,12 @@ export type Scene = {
 export type StoryboardReview = {
   /** The id of the storyboard that was looked at. */
   picture: string;
-  /** Whether it is good to approve as it is. */
+  /** Whether it is good to approve as it is: nothing in it would make the video wrong. */
   ok: boolean;
-  /** What is wrong with it, one problem each; [] when nothing is. */
+  /** What must be fixed because it would make the video wrong, one problem each; [] when nothing is. */
   problems: string[];
+  /** Small flaws a viewer would not notice in the finished video. Listed for the creator, never a reason to make it again. */
+  minor: string[];
   /** What to ask for when making it again, ready to use as the change note; "" when nothing needs changing. */
   fix: string;
   checkedAt: string;
@@ -316,6 +326,7 @@ export function parseCharacter(input: unknown): Character {
     look: str(i.look),
     voice: parseVoice(i.voice),
     pictures: parseTakes(i.pictures),
+    sheet: parseTakes([i.sheet])[0] ?? null,
     createdAt: str(i.createdAt) || now(),
   };
 }
@@ -324,7 +335,7 @@ function parseReview(input: unknown): StoryboardReview | null {
   if (!input || typeof input !== "object") return null;
   const r = input as Record<string, unknown>;
   if (!str(r.picture)) return null;
-  return { picture: str(r.picture), ok: r.ok === true, problems: strs(r.problems), fix: str(r.fix), checkedAt: str(r.checkedAt) };
+  return { picture: str(r.picture), ok: r.ok === true, problems: strs(r.problems), minor: strs(r.minor), fix: str(r.fix), checkedAt: str(r.checkedAt) };
 }
 
 function parseScene(input: Record<string, unknown>, index: number): Scene {

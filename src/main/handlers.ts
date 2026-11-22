@@ -150,6 +150,8 @@ export function createHandlers(options: HandlerOptions) {
     "media:settings": () => studio.mediaSettings(),
     "media:setSettings": (input: unknown) => studio.setMediaSettings(input),
     "cast:picture": (id: unknown, choice: unknown) => studio.characterPicture(id, choice),
+    /** Makes a character's sheet (front, back and face in one picture), or with `remove` takes it away. */
+    "cast:sheet": (id: unknown, choice: unknown, remove: unknown) => studio.characterSheet(id, choice, remove),
     "cast:addPicture": (id: unknown, file: UploadedFile) => studio.addCharacterPicture(id, file),
     "cast:changePicture": (id: unknown, takeId: unknown, action: unknown) => studio.changeCharacterPicture(id, takeId, action),
     "scene:picture": (videoId: unknown, sceneId: unknown, choice: unknown, note: unknown) => studio.scenePicture(videoId, sceneId, choice, note),

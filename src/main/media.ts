@@ -148,17 +148,18 @@ async function eleven(key: string, kind: "image" | "video", body: Record<string,
 const used = (task: MediaTask, choice: MediaChoice, detail: string, seconds?: number) =>
   recordUsage({ feature: task, detail: `${detail} · ${choiceLabel(task, choice)}`, ...(seconds && { seconds }) });
 
-/** A 9:16 still from a description, using the reference pictures to keep characters and places the same. */
-export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; detail: string }): Promise<Media> {
+/** A still (9:16, or 16:9 when `wide`) from a description, using the reference pictures to keep characters and places the same. */
+export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; detail: string; /** Tall unless a wide picture is asked for. */ wide?: boolean }): Promise<Media> {
   const key = needKey(keys, choice);
   const { prompt, references } = input;
+  const shape = input.wide ? "16:9" : "9:16";
   let made: Media;
   if (choice.provider === "fal") {
     // fal's "edit" models need at least one picture; without references the same model's plain form is used.
     const model = references.length ? choice.model : choice.model.replace(/\/edit$/, "");
     const data = await fal(key, model, async (upload) => ({
       prompt,
-      aspect_ratio: "9:16",
+      aspect_ratio: shape,
       num_images: 1,
       output_format: "png",
       ...(references.length && { image_urls: await Promise.all(references.map(upload)) }),
@@ -172,13 +173,13 @@ export async function makePicture(keys: Keys, choice: MediaChoice, input: { prom
       {
         model: choice.model,
         input: [{ type: "text", text: prompt }, ...references.map((r) => ({ type: "image", mime_type: r.mime, data: b64(r) }))],
-        response_format: { type: "image", aspect_ratio: "9:16" },
+        response_format: { type: "image", aspect_ratio: shape },
       },
       "image",
       { "Api-Revision": "2026-05-20" },
     );
   } else {
-    made = await eleven(key, "image", { model_id: choice.model, prompt, aspect_ratio: "9:16", ...(references.length && { images: references.map(inline) }) });
+    made = await eleven(key, "image", { model_id: choice.model, prompt, aspect_ratio: shape, ...(references.length && { images: references.map(inline) }) });
   }
   used("picture", choice, input.detail);
   return made;

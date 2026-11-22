@@ -83,6 +83,9 @@ const api = {
   mediaSettings: (): Promise<MediaSettings> => ipcRenderer.invoke("media:settings"),
   setMediaSettings: (changes: Partial<MediaSettings>): Promise<MediaSettings> => ipcRenderer.invoke("media:setSettings", changes),
   makeCharacterPicture: (id: string, choice?: MediaChoice): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:picture", id, choice),
+  /** Makes a character's sheet: front, back and face in one picture, drawn from their portrait. Billed by the picture service. */
+  makeCharacterSheet: (id: string, choice?: MediaChoice): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:sheet", id, choice),
+  removeCharacterSheet: (id: string): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:sheet", id, undefined, true),
   addCharacterPicture: (id: string, file: UploadedFile): Promise<StudioResult<Character>> => ipcRenderer.invoke("cast:addPicture", id, file),
   /** "first" makes it the main reference; "remove" deletes it. */
   changeCharacterPicture: (id: string, takeId: string, action: "first" | "remove"): Promise<StudioResult<Character>> =>

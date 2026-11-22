@@ -325,27 +325,46 @@ const StoryboardSchema = z.object({
   scenes: z.array(
     z.object({
       scene: z.number(),
-      ok: z.boolean(),
-      problems: z.array(z.string()),
+      characters: z.array(z.object({ name: z.string(), same_person: z.boolean(), difference: z.string() })),
+      must_fix: z.array(z.string()),
+      minor: z.array(z.string()),
       fix: z.string(),
     }),
   ),
 });
 
-const STORYBOARD_SYSTEM = `You check the storyboards of a short vertical video before any costly video is made from them. You are shown the script of each scene and, as pictures, its storyboard: one sheet of four frames in a 2 by 2 grid, read left to right and top to bottom, showing one continuous shot from its first moment (frame 1) to its last (frame 4). A video model will later be told to follow each sheet, so what is wrong on a sheet will be wrong in the video.
+const STORYBOARD_SYSTEM = `You check the storyboards of a short vertical video before any costly video is made from them. You are shown the script of each scene and, as pictures, its storyboard: one sheet of four frames in a 2 by 2 grid, read left to right and top to bottom, showing one continuous shot from its first moment (frame 1) to its last (frame 4).
 
-Look closely at every sheet and judge only what you can see. For each scene check:
-- The sheet itself: exactly four frames in a grid, each a tall picture, in an order that reads as one shot moving forward. No writing, captions, speech bubbles or arrows other than small frame numbers.
-- The script: the place, the action and the camera note are what the frames show, the action starts in frame 1 and is finished by frame 4, and whoever speaks is in the shot.
-- One take: the same place, people, clothes, props and light in all four frames. Nothing appears, vanishes or changes for no reason.
-- The characters: each looks like their description, and the same from frame to frame and from scene to scene. Faces, hands and bodies are not malformed.
-- Continuity: where a scene is marked as carrying on from the one before, its frame 1 matches the last frame of that scene's sheet (place, people, clothes, position). Where a scene is in a place seen earlier, the place looks the same.
-- The look: every sheet is in the look the video asks for, and they match each other.
+HOW THE STORYBOARD IS USED
+A video model is given the sheet as a guide, together with the script and each character's own reference picture, and makes one moving shot. It takes from the sheet what happens and in what order, who is in the shot and roughly where, the place, the framing and the look. It does not copy the sheet pixel by pixel, and small differences between frames never reach the video. But who is in the shot does reach it: if the storyboard shows a different-looking person from the character's reference picture, the video model is pulled between the two and the character comes out wrong. So judge each sheet by one question: would a video made from it come out wrong?
+
+MUST FIX: only what would make the video wrong
+- The wrong thing happens: the action, the place or the order of events does not match the script, or the action does not start in frame 1 and finish by frame 4.
+- The wrong people: a character the script puts in the shot is missing, someone who speaks is not there, or a main character is plainly a different person from their reference picture (when you are shown one), from their description, or from the other frames. A different face shape, age, hair, build or outfit counts; a slightly different expression or angle does not.
+- Not one shot: the frames show different places or times, or a cut, so it cannot be one continuous take.
+- It is not a storyboard: not four frames in a grid, or frames in an order that cannot be followed.
+- Writing in the frames (captions, speech bubbles, labels) other than small frame numbers, because a video model tends to copy it.
+- A scene marked as carrying on does not start where the scene before ends: a different place, different people, or a clearly different position.
+- A main character is badly malformed (extra limbs, a broken face) in a way that would be copied.
+
+MINOR: note it, but it is not a reason to make the sheet again
+- People, objects or furniture in the background that differ between frames.
+- Small drift in a prop, a colour, a hairstyle, the light or the exact framing.
+- A frame that is a little less sharp, or frame numbers that look different.
+- Anything a viewer would not notice in a few seconds of moving video.
+Making a sheet again redraws all four frames and brings new small flaws of its own, so asking for a redraw over a minor flaw makes things worse, not better. When in doubt, it is minor.
+
+THE CHARACTERS: ALWAYS COMPARE
+When you are shown a character's reference picture, compare it with that character in every frame of every sheet you check, on every check, including a re-check. Look at the face shape, age, skin, hair and its style, any beard or glasses, the build, and the clothes and their colours. Answer in "characters" for each character who is in the scene: same_person true only if a viewer would take them for the same person in the same outfit; difference says in one sentence what differs and in which frames ("" when the same). A different expression, pose or camera angle is not a difference. A face too small or turned away to judge counts as the same. A character who is clearly a different person, or in different clothes, in any frame is always something that must be fixed, never minor.
+
+IF YOU CHECKED A SCENE BEFORE
+For some scenes you are told what the last check asked for and that the sheet was made again since. For those scenes do two things only: say whether each thing that had to be fixed is fixed now, and say whether the new sheet has anything that MUST be fixed. The comparison of the characters with their reference pictures is still done in full. Do not go looking for new small flaws. If what was asked for is fixed and nothing else would make the video wrong, the sheet is done.
 
 Answer for every scene you were asked to check, using its number.
-- ok: true only if you would make the video from this sheet as it is. Small imperfections a viewer would not notice in motion are fine; do not invent problems.
-- problems: each real problem in one plain sentence that says which frame it is in and what is wrong. [] when ok.
-- fix: one or two sentences the creator can send back to the picture model to make the sheet again without the problems, written as an instruction ("Keep ... ", "Show ..."). "" when ok.
+- characters: one entry for each character in the scene whose reference picture you were shown; [] when you were shown none or nobody is in the shot.
+- must_fix: each such problem in one plain sentence that names the frame and says what is wrong. [] when there is none, which should be the usual answer for a sheet that tells the scene's story.
+- minor: up to three small flaws, one short sentence each. [] is fine.
+- fix: only when must_fix is not empty: one or two sentences the creator can send to the picture model to put right everything in must_fix at once, written as an instruction ("Show ...", "Keep ..."). Otherwise "".
 Write plainly, for a creator who is not a film maker.`;
 
 /**
@@ -355,8 +374,18 @@ Write plainly, for a creator who is not a film maker.`;
  */
 export async function reviewStoryboards(
   apiKey: string,
-  input: { video: Video; characters: Character[]; look: string; sheets: { scene: number; bytes: Buffer; mime: string }[]; check: number[] },
-): Promise<StudioResult<{ reviews: { scene: number; ok: boolean; problems: string[]; fix: string }[]; costUsd: number }>> {
+  input: {
+    video: Video;
+    characters: Character[];
+    look: string;
+    sheets: { scene: number; bytes: Buffer; mime: string }[];
+    check: number[];
+    /** What each character should look like, as a picture: their character sheet or portrait. */
+    faces?: { name: string; bytes: Buffer; mime: string }[];
+    /** For a scene whose storyboard was made again after a check: what that check said had to be fixed. */
+    before?: { scene: number; problems: string[]; fix: string }[];
+  },
+): Promise<StudioResult<{ reviews: { scene: number; ok: boolean; problems: string[]; minor: string[]; fix: string }[]; costUsd: number }>> {
   if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
   if (input.sheets.length === 0 || input.check.length === 0) return { ok: false, error: "There is no storyboard to check yet." };
   const { video } = input;
@@ -385,9 +414,20 @@ export async function reviewStoryboards(
                       }`,
                   )
                   .join("\n\n")}`,
+                input.before?.length
+                  ? `CHECKED BEFORE\nThese storyboards were made again after the last check. For each, this is what had to be fixed:\n${input.before
+                      .map((b) => `Scene ${b.scene}: ${b.problems.join(" ") || "(nothing listed)"}${b.fix ? ` The creator asked the picture model: ${b.fix}` : ""}`)
+                      .join("\n")}`
+                  : "",
                 `CHECK THESE SCENES: ${input.check.join(", ")}. The storyboards follow, each after its scene number.`,
-              ].join("\n\n"),
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
             },
+            ...(input.faces ?? []).flatMap((face) => [
+              { type: "text" as const, text: `What ${face.name} looks like (their reference picture, not a storyboard):` },
+              { type: "image" as const, source: { type: "base64" as const, media_type: face.mime as "image/jpeg" | "image/png" | "image/webp", data: face.bytes.toString("base64") } },
+            ]),
             ...input.sheets.flatMap((sheet) => [
               { type: "text" as const, text: `Storyboard of scene ${sheet.scene}${input.check.includes(sheet.scene) ? "" : " (shown for continuity only, do not answer for it)"}:` },
               { type: "image" as const, source: { type: "base64" as const, media_type: sheet.mime as "image/jpeg" | "image/png" | "image/webp", data: sheet.bytes.toString("base64") } },
@@ -403,7 +443,14 @@ export async function reviewStoryboards(
     if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The check came back incomplete. Try again." };
     const reviews = out.scenes
       .filter((r) => input.check.includes(Math.round(r.scene)))
-      .map((r) => ({ scene: Math.round(r.scene), ok: r.ok && r.problems.length === 0, problems: r.problems.map((p) => p.trim()).filter(Boolean), fix: r.fix.trim() }));
+      .map((r) => {
+        // A character who is not the same person as their reference picture is always something to fix, whatever else was said.
+        const changed = r.characters.filter((c) => !c.same_person && c.name.trim());
+        const likeness = changed.map((c) => `${c.name.trim()} does not look like their reference picture${c.difference.trim() ? `: ${c.difference.trim()}` : "."}`);
+        const problems = [...likeness, ...r.must_fix.map((p) => p.trim()).filter(Boolean)];
+        const redraw = changed.length ? `Draw ${changed.map((c) => c.name.trim()).join(" and ")} exactly as in their reference picture in every frame: the same face, age, hair, build and clothes.` : "";
+        return { scene: Math.round(r.scene), ok: problems.length === 0, problems, minor: r.minor.map((p) => p.trim()).filter(Boolean).slice(0, 3), fix: problems.length ? [redraw, r.fix.trim()].filter(Boolean).join(" ") : "" };
+      });
     if (reviews.length === 0) return { ok: false, error: "The check came back empty. Try again." };
     return { ok: true, value: { reviews, costUsd: estimateCostUsd(response.usage) } };
   } catch (e) {

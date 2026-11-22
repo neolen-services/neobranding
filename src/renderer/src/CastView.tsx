@@ -406,6 +406,30 @@ function CharacterPage({
               )}
 
               <div className="mt-4 space-y-2">
+                <div className="rounded-xl border border-[var(--line)] p-2">
+                  <p className="text-xs font-medium uppercase tracking-wide opacity-55">Character sheet</p>
+                  {character.sheet ? (
+                    <img src={api.studioFileUrl(character.sheet.file)} alt={`${character.name} from the front, from the back, and their face`} className="mt-1.5 aspect-video w-full rounded-lg bg-black object-cover" />
+                  ) : (
+                    <p className="mt-1 text-xs leading-snug opacity-60">Front, back and face in one picture. Storyboards and clips use it to keep {character.name} looking the same.</p>
+                  )}
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      className={`${smallButton} flex-1`}
+                      disabled={busy || !choices}
+                      title={character.pictures.length || character.look.trim() ? "Drawn from their main picture, so it is the same person." : "Add a picture or write their look first."}
+                      onClick={() => pictures("Sheet", () => api.makeCharacterSheet(character.id, choices?.picture))}
+                    >
+                      {working === "Sheet" ? "Making the sheet…" : character.sheet ? "Make it again" : "Make character sheet"}
+                    </button>
+                    {character.sheet && (
+                      <button type="button" className={smallButton} disabled={busy} onClick={() => pictures("Removing", () => api.removeCharacterSheet(character.id))}>
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
                 <button
                   type="button"
                   className={`${character.pictures.length ? quietButton : primaryButton} w-full`}

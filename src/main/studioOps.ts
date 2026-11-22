@@ -26,7 +26,7 @@ import type { Store } from "./store";
 import { planSeries, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
 import { readFile } from "node:fs/promises";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaSettings, type MediaTask, type UploadedFile } from "../shared/media";
-import { pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
+import { characterReference, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
 import { audioFilePath } from "./audio";
 import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
 
@@ -103,7 +103,9 @@ export function studioOps(ctx: StudioContext) {
   }
 
   /** The characters seen or heard in a scene. */
-  const castOf = (scene: Scene) => cast().filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id));
+  // A script sometimes names someone in what happens without listing them among those seen, so the name counts too.
+  const named = (text: string, name: string) => name.trim().length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "iu").test(text);
+  const castOf = (scene: Scene) => cast().filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id) || named(scene.action, c.name));
 
   /**
    * What a scene's clip is made from: its storyboard, and, for a scene that carries on from the one
@@ -470,6 +472,50 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
+    /**
+     * Makes a character's sheet: one wide picture showing them from the front, from the back and their face
+     * close up, drawn from their portrait so it is the same person. With `remove` the sheet is taken away instead.
+     */
+    async characterSheet(id: unknown, override: unknown, remove?: unknown): Promise<StudioResult<Character>> {
+      try {
+        const character = cast().find((c) => c.id === String(id));
+        if (!character) return { ok: false, error: "That character no longer exists." };
+        if (remove === true) {
+          if (character.sheet) await deleteTake(ctx.dataDir(), character.sheet);
+          const cleared = { ...character, sheet: null };
+          db().saveDoc("characters", cleared);
+          return { ok: true, value: cleared };
+        }
+        const portrait = character.pictures[0];
+        if (!portrait && !character.look) return { ok: false, error: "Add a picture of the character or describe their look first." };
+        const choice = choose("picture", override);
+        const media = await makePicture(ctx.key, choice, {
+          prompt: [
+            "A character sheet of ONE character, so they can be drawn the same way in every shot of a video.",
+            "One wide picture with three views side by side on a plain light background, in even light: on the left the whole body from the FRONT, standing; in the middle the whole body from the BACK, standing the same way; on the right a close-up of the FACE and shoulders, facing the camera.",
+            "It is the same person in all three views: the same face, hair, build, skin, and exactly the same clothes, shoes and accessories. The back view shows the back of the same hair and clothes.",
+            portrait ? "The reference picture shows this character. Keep them exactly as they are in it: do not change their face, age, hair, build or outfit." : "",
+            `Character: ${character.name}${character.role ? `, ${character.role}` : ""}.`,
+            character.look && `Look: ${character.look}`,
+            "No text, labels, captions, arrows or logos.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          references: portrait ? [await loadTake(ctx.dataDir(), portrait)] : [],
+          detail: `${character.name} · character sheet`,
+          wide: true,
+        });
+        const take = await saveTake(ctx.dataDir(), "cast", character.id, media, "ai", choiceLabel("picture", choice));
+        const fresh = cast().find((c) => c.id === character.id) ?? character;
+        if (fresh.sheet) await deleteTake(ctx.dataDir(), fresh.sheet);
+        const saved = { ...fresh, sheet: take };
+        db().saveDoc("characters", saved);
+        return { ok: true, value: saved };
+      } catch (e) {
+        return fail(e, "The character sheet could not be made.");
+      }
+    },
+
     /** Adds a picture the creator chose themselves as a character's reference. */
     async addCharacterPicture(id: unknown, upload: UploadedFile): Promise<StudioResult<Character>> {
       try {
@@ -518,7 +564,7 @@ export function studioOps(ctx: StudioContext) {
         const asked = typeof note === "string" ? note.trim() : "";
         const current = asked ? pickedPicture(scene) : undefined;
         const first = current ?? setPicture;
-        const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, first ? 3 : 4);
+        const withPictures = inScene.filter((c) => characterReference(c)).slice(0, first ? 3 : 4);
         const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
         const said = scene.lines.map((l) => `${speakerName(l.speaker, cast())}: ${l.text}`).join(" / ");
         const media = await makePicture(ctx.key, choice, {
@@ -534,21 +580,22 @@ export function studioOps(ctx: StudioContext) {
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The ${first ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture in every frame: same face, hair, clothes and colours.`
+              ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide what each character looks like: draw each one exactly as in their picture in every frame, with the same face, age, hair, build, clothes and colours, from whatever side the frame shows them. Do not copy the layout or the plain background of a character sheet.`
               : "",
             current
-              ? `The FIRST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else exactly as it is in that picture: the same four frames in the same order, the same composition, place, people, faces, clothes, props, light and colours. Change only what the instruction names, in every frame it applies to.`
+              ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else exactly as it is in that picture: the same four frames in the same order, the same composition, place, people, faces, clothes, props, light and colours. Change only what the instruction names, in every frame it applies to.`
               : setPicture && carriesOn
-              ? `The FIRST reference picture is the storyboard of the shot just before this one (scene ${index}). This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
+              ? `The LAST reference picture is the storyboard of the shot just before this one (scene ${index}). Take the place, the positions and the light from it, and the characters' faces and clothes from their own pictures. This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
               : setPicture
-                ? `The FIRST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). Keep the same walls, furniture, props, light, time of day and what everyone wears.`
+                ? `The LAST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). Take the place from it, and the characters' faces and clothes from their own pictures. Keep the same walls, furniture, props, light, time of day and what everyone wears.`
                 : "",
+            "Keep the background simple and the same in every frame: no people, objects or clutter that the action above does not need. Anyone or anything in the background of frame 1 stays the same, in the same spot, in all four frames.",
             "No captions, subtitles, speech bubbles, arrows, notes, logos or any other writing. A small frame number in a corner of each frame is the only text allowed.",
             asked && !current ? `Change from the last attempt: ${asked}` : "",
           ]
             .filter(Boolean)
             .join("\n"),
-          references: await Promise.all([...(first ? [first] : []), ...withPictures.map((c) => c.pictures[0])].map((take) => loadTake(ctx.dataDir(), take))),
+          references: await Promise.all([...withPictures.map((c) => characterReference(c)!), ...(first ? [first] : [])].map((take) => loadTake(ctx.dataDir(), take))),
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
         const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("picture", choice));
@@ -581,7 +628,18 @@ export function studioOps(ctx: StudioContext) {
           characters: cast().filter((c) => video.scenes.some((s) => s.characters.includes(c.id) || s.lines.some((l) => l.speaker === c.id))),
           look: video.look || series().find((s) => s.id === video.seriesId)?.look || "",
           sheets,
+          faces: await Promise.all(
+            cast()
+              .filter((c) => characterReference(c) && check.some((i) => castOf(video.scenes[i]).some((x) => x.id === c.id)))
+              .slice(0, 6)
+              .map(async (c) => ({ name: c.name, ...(await forLooking(ctx.dataDir(), characterReference(c)!, toolsDir)) })),
+          ),
           check: check.map((i) => i + 1),
+          // A storyboard made again since its last check is checked against what that check asked for, not from scratch.
+          before: check
+            .map((i) => ({ i, review: video.scenes[i].review }))
+            .filter(({ i, review }) => review && review.picture !== video.scenes[i].picture && review.problems.length > 0)
+            .map(({ i, review }) => ({ scene: i + 1, problems: review!.problems, fix: review!.fix })),
         });
         if (!result.ok) return result;
         // The video may have changed while Claude was looking: each answer is kept with the storyboard it was about.
@@ -594,7 +652,7 @@ export function studioOps(ctx: StudioContext) {
           scenes: now.scenes.map((s, i) => {
             const r = result.value.reviews.find((x) => x.scene === i + 1);
             const picture = looked.get(i + 1);
-            return r && picture ? { ...s, review: { picture, ok: r.ok, problems: r.problems, fix: r.fix, checkedAt } } : s;
+            return r && picture ? { ...s, review: { picture, ok: r.ok, problems: r.problems, minor: r.minor, fix: r.fix, checkedAt } } : s;
           }),
           updatedAt: checkedAt,
         };
@@ -635,13 +693,13 @@ export function studioOps(ctx: StudioContext) {
         if (!source.ok) return source;
         const { video, scene, index } = source;
         const choice = choose("clip", override);
-        const inScene = castOf(scene).filter((c) => c.pictures[0]);
+        const inScene = castOf(scene).filter((c) => characterReference(c));
         const references: ClipReference[] = [
           {
             media: source.storyboard,
             role: "the storyboard of this shot: a sheet of numbered frames in reading order, showing what happens from its first moment to its last. Follow those frames in order as ONE continuous shot. It is a plan, not a picture to show: never show the sheet, the grid, the borders or the numbers",
           },
-          ...(await Promise.all(inScene.map(async (c) => ({ media: await loadTake(ctx.dataDir(), c.pictures[0]), role: `${c.name}: keep the same face, hair, clothes and colours` })))),
+          ...(await Promise.all(inScene.map(async (c) => ({ media: await loadTake(ctx.dataDir(), characterReference(c)!), role: `${c.name}${c.sheet ? ", on a character sheet (front, back and face)" : ""}: this decides what they look like. Keep the same face, hair, build, clothes and colours; never show the sheet itself` })))),
         ];
         const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
         const media = await makeClip(ctx.key, choice, {

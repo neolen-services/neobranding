@@ -55,7 +55,7 @@ export function StoryboardTab({
       if (!result.ok) return setError(result.error);
       onChange(result.video);
       const bad = result.video.scenes.filter((s) => s.review?.picture === s.picture && !s.review.ok).length;
-      setNotice(bad === 0 ? "Checked: no problems found. Look through them yourself, then approve each one." : `Checked: ${plural(bad, "storyboard")} could be better. The notes are under each one.`);
+      setNotice(bad === 0 ? "Checked: nothing has to be fixed. Look through them yourself, then approve each one." : `Checked: ${plural(bad, "storyboard")} ${bad === 1 ? "has" : "have"} something that would make the video wrong. The notes are under each one.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The storyboards could not be checked.");
     } finally {
@@ -113,12 +113,36 @@ export function StoryboardTab({
     setMaking("");
   }
 
+  /** Approves every storyboard in use that is not approved yet, one after another. */
+  async function approveAll() {
+    setError("");
+    setNotice("");
+    setMaking("Approving");
+    let done = 0;
+    try {
+      for (const scene of drawn.filter((s) => !storyboardApproved(s))) {
+        const result = await api.approveStoryboard(video.id, scene.id, true);
+        if (!result.ok) {
+          setError(result.error);
+          break;
+        }
+        done++;
+        onChange(result.video);
+      }
+      if (done > 0) setNotice(`${plural(done, "storyboard")} approved.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That did not work.");
+    } finally {
+      setMaking("");
+    }
+  }
+
   if (!choices) return null;
   const off = busy !== "" || making !== "" || checking;
   const counts = [
     ai.length > 0 && `${ai.length - missing.length} of ${plural(ai.length, "storyboard")} made`,
     drawn.length > 0 && `${approved} approved`,
-    withProblems > 0 && `${withProblems} with notes from the check`,
+    withProblems > 0 && `${withProblems} with something to fix`,
     carryOn > 0 && `${plural(carryOn, "scene")} ${carryOn === 1 ? "carries" : "carry"} on from the one before`,
     filmed > 0 && `${plural(filmed, "scene")} you film`,
   ].filter(Boolean);
@@ -133,10 +157,15 @@ export function StoryboardTab({
             <p className="mt-1.5 max-w-3xl text-sm opacity-60">
               One storyboard for each scene: a sheet of four frames that shows what happens in it, from its first moment to its last. Look through them in order and redo any that is off
               before a clip is made. A scene that carries on is drawn from the storyboard before it, so work from the first scene down. The check looks at every sheet and tells you
-              what is wrong with it; whether to make one again is up to you. Approve each scene to move on.
+              what would make the video wrong; small flaws a viewer would not notice are listed apart and are not worth a redraw. Approve each scene to move on.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {approved < drawn.length && (
+              <button type="button" className={quietButton} disabled={off} title="Approves every storyboard as it is." onClick={approveAll}>
+                {making === "Approving" ? "Approving…" : `Approve all ${drawn.length - approved}`}
+              </button>
+            )}
             {drawn.length > 0 && (
               <button
                 type="button"
@@ -183,8 +212,8 @@ export function StoryboardTab({
         ))}
       </ol>
 
-      <section className={`${card} flex flex-wrap items-center justify-between gap-3`}>
-        <p className="text-sm opacity-70">
+      <section className={`${card} flex flex-wrap items-center gap-3`}>
+        <p className="min-w-0 flex-1 text-sm opacity-70">
           {missing.length > 0
             ? `${plural(missing.length, "scene")} still ${missing.length === 1 ? "needs" : "need"} a storyboard. A clip can only be made for a scene that has one.`
             : approved < drawn.length
@@ -193,6 +222,17 @@ export function StoryboardTab({
               ? "Every storyboard is approved. Next, watch them play in order with the voices before any clip is made."
               : "You film every scene of this video, so there is nothing to draw. Add your clips on the Make tab."}
         </p>
+        {approved < drawn.length && (
+          <button
+            type="button"
+            className={quietButton}
+            disabled={off}
+            title={withProblems > 0 ? "Approves every storyboard as it is, including those the check says have something to fix." : "Approves every storyboard as it is."}
+            onClick={approveAll}
+          >
+            {making === "Approving" ? "Approving…" : `Approve all ${drawn.length - approved}`}
+          </button>
+        )}
         <button type="button" className={`${primaryButton} flex items-center gap-2`} disabled={off || missing.length > 0 || approved < drawn.length} onClick={onNext}>
           Next: preview it
           <Icon d={ICONS.arrow} />
@@ -264,7 +304,7 @@ function Panel({
         <span className="min-w-0 flex-1 truncate text-xs opacity-60" title={scene.place}>
           {scene.seconds}s{scene.place && ` · ${scene.place}`}
         </span>
-        {filmed ? <Chip tone="warn">You film</Chip> : isApproved ? <Chip tone="good">Approved</Chip> : review ? <Chip tone={review.ok ? "good" : "warn"}>{review.ok ? "Looks good" : "Has notes"}</Chip> : null}
+        {filmed ? <Chip tone="warn">You film</Chip> : isApproved ? <Chip tone="good">Approved</Chip> : review ? <Chip tone={review.ok ? "good" : "warn"}>{review.ok ? "Ready to approve" : "To fix"}</Chip> : null}
       </div>
 
       {index > 0 && !filmed ? (
@@ -316,13 +356,26 @@ function Panel({
 
       {review && (
         <div className={`rounded-xl border px-3 py-2 text-sm ${review.ok ? "border-emerald-400/40 bg-emerald-500/10" : "border-[var(--accent)]/50 bg-[var(--accent)]/10"}`}>
-          <p className="text-xs font-medium uppercase tracking-wide opacity-70">{review.ok ? "The check found no problems" : "What the check found"}</p>
+          <p className="text-xs font-medium uppercase tracking-wide opacity-70">{review.ok ? "Nothing has to be fixed" : "Would make the video wrong"}</p>
           {review.problems.length > 0 && (
             <ul className="mt-1.5 list-disc space-y-1 pl-4 leading-snug">
               {review.problems.map((problem, i) => (
                 <li key={i}>{problem}</li>
               ))}
             </ul>
+          )}
+          {review.minor.length > 0 && (
+            <details className="mt-2 text-xs opacity-70">
+              <summary className="cursor-pointer">
+                {review.minor.length === 1 ? "1 small thing" : `${review.minor.length} small things`} a viewer would not notice
+              </summary>
+              <ul className="mt-1 list-disc space-y-1 pl-4 leading-snug">
+                {review.minor.map((flaw, i) => (
+                  <li key={i}>{flaw}</li>
+                ))}
+              </ul>
+              <p className="mt-1">Making it again over these would only bring new ones.</p>
+            </details>
           )}
           {review.fix && (
             <>
