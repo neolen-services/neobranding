@@ -4,12 +4,10 @@
 //
 // It is one line of JSON per request, in usage.jsonl in the data folder.
 // Lines are only ever added, so two copies of the app can write to it safely.
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { estimateCostUsd } from "../shared/analysis";
-import type { Idea } from "../shared/ideas";
-import type { ResearchItem } from "../shared/research";
 import { USAGE_FEATURES, type UsageEvent, type UsageFeature, type UsageReport, type UsageRow } from "../shared/usage";
 
 export const USAGE_FILE = "usage.jsonl";
@@ -56,28 +54,8 @@ export function recordClaude(
   });
 }
 
-/**
- * The first time the log is read, it is started with what is already known:
- * analyses made before the log existed each saved their cost and date. Earlier agent chats and idea rounds are not added, because their saved
- * totals overlap with these.
- */
-function startLog(dir: string, posts: ResearchItem[], ideas: Idea[]): void {
-  if (existsSync(join(dir, USAGE_FILE))) return;
-  const earlier: UsageEvent[] = [
-    ...posts.flatMap((p): UsageEvent[] =>
-      p.analysis ? [{ at: p.analysis.analyzedAt, feature: "analysis", detail: p.author || p.authorHandle, costUsd: p.analysis.costUsd, earlier: true }] : [],
-    ),
-  ].sort((a, b) => a.at.localeCompare(b.at));
-  try {
-    append(dir, earlier);
-  } catch {
-    // Without the earlier entries the log simply starts empty.
-  }
-}
-
 /** Totals by kind of use, and the latest requests, for everything at or after `since` (ISO time, or "" for all). */
-export async function readUsage(dir: string, since: string, known: { posts: ResearchItem[]; ideas: Idea[] }): Promise<UsageReport> {
-  startLog(dir, known.posts, known.ideas);
+export async function readUsage(dir: string, since: string): Promise<UsageReport> {
   let lines: string[] = [];
   try {
     lines = (await readFile(join(dir, USAGE_FILE), "utf8")).split("\n");

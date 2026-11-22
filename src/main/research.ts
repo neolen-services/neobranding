@@ -178,17 +178,8 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : n
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const extensionOf = (file: string) => file.split(".").pop()!.toLowerCase();
 
-/** Items saved before image support stored a single video; read them in the current shape. */
-function normalize(stored: Record<string, unknown>): ResearchItem {
-  // Posts saved before ratings and notes existed start unrated with an empty note.
-  const raw: Record<string, unknown> = { rating: null, note: "", ...stored };
-  if (Array.isArray(raw.media)) return raw as unknown as ResearchItem;
-  const { videoFile, thumbnailFile, ...rest } = raw;
-  return {
-    ...(rest as unknown as ResearchItem),
-    media: videoFile ? [{ kind: "video", file: str(videoFile), posterFile: str(thumbnailFile) }] : [],
-  };
-}
+/** A saved post as it is read back: unrated with an empty note until the creator rates it or writes one. */
+const normalize = (stored: Record<string, unknown>): ResearchItem => ({ rating: null, note: "", ...stored }) as unknown as ResearchItem;
 
 export async function listResearch(dataDir: string): Promise<ResearchItem[]> {
   const root = researchDir(dataDir);

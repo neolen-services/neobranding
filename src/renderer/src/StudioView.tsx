@@ -3,10 +3,10 @@ import { createContext, useContext, useEffect, useState, type FormEvent } from "
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { pickedClip, pickedPicture, productionLabel, type Character, type NewVideo, type Production, type Series, type Video } from "@shared/studio";
+import { pickedClip, pickedPicture, productionLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { SeriesPage } from "./SeriesPage";
-import { card, Chip, Dialog, fieldClass, Icon, ICONS, IdeaPicker, label, PostPicker, primaryButton, ProductionPicker, ProgressBars, quietButton, STAGES, videoProgress } from "./studioUi";
+import { card, Chip, Dialog, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, videoProgress } from "./studioUi";
 import { VideoPage } from "./VideoPage";
 
 /** Opens a video in Studio from anywhere in the app. Provided by the app shell. */
@@ -116,7 +116,6 @@ export function StudioView({
           setOpen(null);
           void reload();
         }}
-        onOpenCast={onOpenCast}
         onOpenSettings={onOpenSettings}
         onOpenBrand={onOpenBrand}
         onCast={(changed) => setCast((list) => list.map((c) => (c.id === changed.id ? changed : c)))}

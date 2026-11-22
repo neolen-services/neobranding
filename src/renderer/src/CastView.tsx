@@ -2,17 +2,18 @@
 // The page is a wall of portraits; each character opens to its own page, where everything about it is changed.
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
-import type { Character, Series, StudioResult, Video } from "@shared/studio";
+import type { Character, Series, Video } from "@shared/studio";
 import { api } from "./api";
-import { readUpload, ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, primaryButton, quietButton, smallButton } from "./studioUi";
+import { CharacterLooks, picturesMissing } from "./CharacterLooks";
+import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, primaryButton, quietButton } from "./studioUi";
 import { VoiceChooser } from "./VoicePicker";
 
 type TextField = "name" | "role" | "personality" | "speech" | "look";
 
 /** What a character still needs before it can appear and speak in a scene. */
 function missing(character: Character): string[] {
-  return [!character.look.trim() && "a look", character.pictures.length === 0 && "a reference picture", !character.voice && "a voice"].filter((x): x is string => Boolean(x));
+  return [!character.look.trim() && "a look", ...picturesMissing(character), !character.voice && "a voice"].filter((x): x is string => Boolean(x));
 }
 
 /** The videos and series a character is in. */
@@ -263,7 +264,6 @@ function CharacterPage({
   /** The box just saved, to show a tick beside it. */
   const [saved, setSaved] = useState<TextField | "">("");
   const [error, setError] = useState("");
-  const [working, setWorking] = useState("");
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
 
@@ -280,23 +280,7 @@ function CharacterPage({
     setTimeout(() => setSaved((now) => (now === field ? "" : now)), 1800);
   }
 
-  /** Runs one change to the reference pictures and shows the result. */
-  async function pictures(what: string, work: () => Promise<StudioResult<Character>>) {
-    setWorking(what);
-    setError("");
-    try {
-      const result = await work();
-      if (result.ok) onChange(result.value);
-      else setError(result.error);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "That did not work.");
-    } finally {
-      setWorking("");
-    }
-  }
-
   const needs = missing(character);
-  const busy = working !== "";
   const field = (key: TextField, name: string, placeholder: string, rows = 0, help?: string) => (
     <label className="block text-sm">
       <span className="flex items-center gap-2 font-medium">
@@ -349,122 +333,12 @@ function CharacterPage({
           </p>
         )}
 
-        <div className="grid gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
+        <div className="grid gap-5 lg:grid-cols-[22rem_minmax(0,1fr)]">
           {/* How they look: the picture every scene starts from. */}
           <aside className="space-y-4 lg:sticky lg:top-28 lg:self-start">
-            <section className={`${card} !p-4`}>
-              <Portrait character={character} className="aspect-[9/16] w-full rounded-xl" />
-              <p className="mt-3 text-xs leading-relaxed opacity-60">
-                {character.pictures.length > 0
-                  ? `Every scene with ${character.name} starts from this picture, so they look the same each time.`
-                  : `No reference picture yet. Without one, ${character.name} can look different in every scene.`}
-              </p>
-
-              {character.pictures.length > 1 && (
-                <div className="mt-3">
-                  <p className="mb-1.5 text-xs opacity-55">All pictures · click one to make it the main one</p>
-                  <ul className="flex flex-wrap gap-2">
-                    {character.pictures.map((picture, i) => (
-                      <li key={picture.id} className="group relative">
-                        <button
-                          type="button"
-                          aria-pressed={i === 0}
-                          aria-label={`Reference picture ${i + 1}${i === 0 ? " (the main one)" : ""}`}
-                          title={i === 0 ? "The main picture" : "Make this the main picture"}
-                          disabled={busy}
-                          onClick={() => i !== 0 && pictures("Choosing", () => api.changeCharacterPicture(character.id, picture.id, "first"))}
-                          className={`block aspect-[9/16] w-12 overflow-hidden rounded-md border-2 bg-black ${i === 0 ? "border-[var(--primary)]" : "border-transparent opacity-60 hover:opacity-100"}`}
-                        >
-                          <img src={api.studioFileUrl(picture.file)} alt="" className="h-full w-full object-cover" />
-                        </button>
-                        <span className="absolute -right-1.5 -top-1.5 hidden gap-0.5 group-focus-within:flex group-hover:flex">
-                          <a
-                            href={api.studioFileUrl(picture.file)}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label={`Open reference picture ${i + 1}`}
-                            title="Open full size"
-                            className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--surface)] hover:border-[var(--ink)]"
-                          >
-                            <Icon d={ICONS.open} className="h-3 w-3" />
-                          </a>
-                          <button
-                            type="button"
-                            aria-label={`Remove reference picture ${i + 1}`}
-                            title="Remove"
-                            disabled={busy}
-                            onClick={() => pictures("Removing", () => api.changeCharacterPicture(character.id, picture.id, "remove"))}
-                            className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--surface)] hover:border-red-400 hover:text-red-400"
-                          >
-                            <Icon d={ICONS.close} className="h-3 w-3" />
-                          </button>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              <div className="mt-4 space-y-2">
-                <div className="rounded-xl border border-[var(--line)] p-2">
-                  <p className="text-xs font-medium uppercase tracking-wide opacity-55">Character sheet</p>
-                  {character.sheet ? (
-                    <img src={api.studioFileUrl(character.sheet.file)} alt={`${character.name} from the front, from the back, and their face`} className="mt-1.5 aspect-video w-full rounded-lg bg-black object-cover" />
-                  ) : (
-                    <p className="mt-1 text-xs leading-snug opacity-60">Front, back and face in one picture. Storyboards and clips use it to keep {character.name} looking the same.</p>
-                  )}
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      className={`${smallButton} flex-1`}
-                      disabled={busy || !choices}
-                      title={character.pictures.length || character.look.trim() ? "Drawn from their main picture, so it is the same person." : "Add a picture or write their look first."}
-                      onClick={() => pictures("Sheet", () => api.makeCharacterSheet(character.id, choices?.picture))}
-                    >
-                      {working === "Sheet" ? "Making the sheet…" : character.sheet ? "Make it again" : "Make character sheet"}
-                    </button>
-                    {character.sheet && (
-                      <button type="button" className={smallButton} disabled={busy} onClick={() => pictures("Removing", () => api.removeCharacterSheet(character.id))}>
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className={`${character.pictures.length ? quietButton : primaryButton} w-full`}
-                  disabled={busy || !choices}
-                  title={character.look.trim() ? undefined : "Write their look first: the picture is made from it."}
-                  onClick={() => choices && pictures("Making", () => api.makeCharacterPicture(character.id, choices.picture))}
-                >
-                  {working === "Making" ? "Making the picture…" : character.pictures.length ? "Make another picture" : "Make a reference picture"}
-                </button>
-                <div className="flex gap-2">
-                  <label className={`${smallButton} flex-1 cursor-pointer text-center ${busy ? "pointer-events-none opacity-40" : ""}`}>
-                    {working === "Adding" ? "Adding…" : "Add your own picture"}
-                    <input
-                      type="file"
-                      hidden
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (file) await pictures("Adding", async () => api.addCharacterPicture(character.id, await readUpload(file)));
-                      }}
-                    />
-                  </label>
-                  {character.pictures.length === 1 && (
-                    <button type="button" className={smallButton} disabled={busy} onClick={() => pictures("Removing", () => api.changeCharacterPicture(character.id, character.pictures[0].id, "remove"))}>
-                      Remove
-                    </button>
-                  )}
-                </div>
-                {choices && (
-                  <div className="pt-1">
-                    <ServicePicker task="picture" label="Pictures made with" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />
-                  </div>
-                )}
-              </div>
+            <section className={`${card} space-y-3 !p-4`}>
+              <CharacterLooks character={character} choice={choices?.picture} onChange={onChange} onError={setError} />
+              {choices && <ServicePicker task="picture" label="Pictures made with" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />}
             </section>
           </aside>
 

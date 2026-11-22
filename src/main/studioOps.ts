@@ -505,7 +505,8 @@ export function studioOps(ctx: StudioContext) {
           detail: `${character.name} · character sheet`,
           wide: true,
         });
-        const take = await saveTake(ctx.dataDir(), "cast", character.id, media, "ai", choiceLabel("picture", choice));
+        // The sheet remembers the portrait it was drawn from, so a change of main portrait shows it as out of date.
+        const take = { ...(await saveTake(ctx.dataDir(), "cast", character.id, media, "ai", choiceLabel("picture", choice))), ...(portrait && { from: portrait.id }) };
         const fresh = cast().find((c) => c.id === character.id) ?? character;
         if (fresh.sheet) await deleteTake(ctx.dataDir(), fresh.sheet);
         const saved = { ...fresh, sheet: take };
@@ -607,19 +608,23 @@ export function studioOps(ctx: StudioContext) {
 
     /**
      * Has Claude look at the storyboards and say, scene by scene, whether each is good to make the video from.
-     * With a scene id only that scene is checked (the storyboard before it is shown too, for continuity);
-     * otherwise every AI scene that has a storyboard. What it says is kept on each scene.
+     * With a scene id only that scene is checked, with "new" only those not checked yet, otherwise every AI scene
+     * that has a storyboard. The storyboard before a checked one is shown too, for continuity. What it says is kept on each scene.
      */
     async storyboardReview(videoId: unknown, sceneId?: unknown): Promise<TakeResult> {
       try {
         const video = findVideo(videoId);
         if (!video) return { ok: false, error: "That video no longer exists." };
-        const only = sceneId === undefined || sceneId === null ? -1 : video.scenes.findIndex((s) => s.id === String(sceneId));
-        if (sceneId !== undefined && sceneId !== null && only < 0) return { ok: false, error: "That scene no longer exists." };
+        // "new" checks only the storyboards not looked at yet, so one already checked is not paid for twice.
+        const fresh = sceneId === "new";
+        const all = fresh || sceneId === undefined || sceneId === null;
+        const only = all ? -1 : video.scenes.findIndex((s) => s.id === String(sceneId));
+        if (!all && only < 0) return { ok: false, error: "That scene no longer exists." };
         const has = (i: number) => video.scenes[i]?.madeBy === "ai" && pickedPicture(video.scenes[i]) !== undefined;
-        const check = video.scenes.map((_, i) => i).filter((i) => has(i) && (only < 0 || i === only));
-        if (check.length === 0) return { ok: false, error: "There is no storyboard to check yet. Make one first." };
-        const shown = video.scenes.map((_, i) => i).filter((i) => has(i) && (only < 0 || i === only || i === only - 1));
+        const check = video.scenes.map((_, i) => i).filter((i) => has(i) && (fresh ? video.scenes[i].review?.picture !== video.scenes[i].picture : all || i === only));
+        if (check.length === 0) return { ok: false, error: fresh && video.scenes.some((_, i) => has(i)) ? "Every storyboard has been checked already." : "There is no storyboard to check yet. Make one first." };
+        // The storyboard before each checked one is shown too, so continuity can be judged.
+        const shown = video.scenes.map((_, i) => i).filter((i) => has(i) && (check.includes(i) || check.includes(i + 1)));
         const toolsDir = await ensureFfmpeg(ctx.dataDir());
         const sheets = await Promise.all(shown.map(async (i) => ({ scene: i + 1, ...(await forLooking(ctx.dataDir(), pickedPicture(video.scenes[i])!, toolsDir)) })));
         const looked = new Map(shown.map((i) => [i + 1, video.scenes[i].picture]));

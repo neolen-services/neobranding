@@ -416,8 +416,7 @@ export function parseVideo(input: unknown): Video {
     brief: str(i.brief),
     look: str(i.look),
     production: parseProduction(i.production),
-    // Older videos kept a single idea as "ideaId".
-    ideaIds: ideaList(i.ideaIds).length ? ideaList(i.ideaIds) : ideaList([i.ideaId]),
+    ideaIds: ideaList(i.ideaIds),
     postIds: ideaList(i.postIds),
     postId: str(i.postId),
     seriesId: str(i.seriesId),

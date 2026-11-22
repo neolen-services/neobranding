@@ -28,6 +28,8 @@ import { describeBrand } from "./generate";
 import { recordClaude } from "./usage";
 
 const WORDS_PER_SECOND = 2.5;
+/** How many lines are sent to be spoken at the same time. */
+const VOICES_AT_ONCE = 4;
 /** Health topics switch on the health rules. The app itself is not about any one subject. */
 const HEALTH_TOPIC = /health|fitness|medic|nutrition|wellness|diet|longevity|sleep|weight/i;
 
@@ -522,11 +524,6 @@ export async function planSeries(
   }
 }
 
-/** The lines of a video that are spoken by an AI voice and have no audio yet. */
-export function linesToVoice(video: Video): number {
-  return video.scenes.reduce((n, s) => n + s.lines.filter((l) => l.speaker !== SPEAKER_ME && !l.audioId).length, 0);
-}
-
 /**
  * Speaks every AI line that has no audio yet, in its character's voice (the
  * brand's speaking voice for the narrator). The creator's own lines are never
@@ -544,38 +541,38 @@ export async function voiceVideo(
   const skipped = new Set<string>();
   let made = 0;
   let failure = "";
-  const scenes = [];
+  // Every line still to be spoken, with who speaks it. Lines are independent, so several are made at once.
+  const todo: { scene: number; line: number; who: string; voice: { id: string; name: string } }[] = [];
   for (const [index, scene] of video.scenes.entries()) {
-    const lines = [];
-    for (const line of scene.lines) {
-      if (line.speaker === SPEAKER_ME || line.audioId || failure) {
-        lines.push(line);
-        continue;
-      }
+    for (const [at, line] of scene.lines.entries()) {
+      if (line.speaker === SPEAKER_ME || line.audioId) continue;
       const who = speakerName(line.speaker, characters);
       const voice = line.speaker === SPEAKER_NARRATOR ? brand.speakingVoice : characters.find((c) => c.id === line.speaker)?.voice;
-      if (!voice) {
-        skipped.add(who);
-        lines.push(line);
-        continue;
-      }
-      const spoken = await generateSpeech(dataDir, elevenKey, {
-        text: line.text,
-        voiceId: voice.id,
-        voiceName: voice.name,
-        title: `${video.title} · scene ${index + 1} · ${who}`,
-      });
-      if (!spoken.ok) {
-        // The first failure (a bad key, no credit) would repeat for every line, so stop there.
-        failure = spoken.error;
-        lines.push(line);
-        continue;
-      }
-      made++;
-      lines.push({ ...line, audioId: spoken.audio.id, audioFile: spoken.audio.file });
+      if (voice) todo.push({ scene: index, line: at, who, voice });
+      else skipped.add(who);
     }
-    scenes.push({ ...scene, lines });
   }
+  const spoken = new Map<string, { audioId: string; audioFile: string }>();
+  let next = 0;
+  const worker = async () => {
+    // The first failure (a bad key, no credit) would repeat for every line, so nothing new is started after it.
+    while (next < todo.length && !failure) {
+      const job = todo[next++];
+      const result = await generateSpeech(dataDir, elevenKey, {
+        text: video.scenes[job.scene].lines[job.line].text,
+        voiceId: job.voice.id,
+        voiceName: job.voice.name,
+        title: `${video.title} · scene ${job.scene + 1} · ${job.who}`,
+      });
+      if (!result.ok) failure ||= result.error;
+      else {
+        made++;
+        spoken.set(`${job.scene}:${job.line}`, { audioId: result.audio.id, audioFile: result.audio.file });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(VOICES_AT_ONCE, todo.length) }, worker));
+  const scenes = video.scenes.map((scene, index) => ({ ...scene, lines: scene.lines.map((line, at) => ({ ...line, ...spoken.get(`${index}:${at}`) })) }));
   if (failure && made === 0) return { ok: false, error: failure };
   return { ok: true, video: { ...video, scenes, updatedAt: new Date().toISOString() }, made, skipped: [...skipped, ...(failure ? [`stopped early: ${failure}`] : [])] };
 }

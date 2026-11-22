@@ -8,7 +8,7 @@ import type { GroupingResult, ResearchEdit, ResearchItem, ResearchResult } from 
 import type { UsageReport } from "@shared/usage";
 import type { MediaChoice, MediaSettings, UploadedFile } from "@shared/media";
 import type { TakeResult } from "@shared/studio";
-import type { Character, NewSeries, NewVideo, Series, SeriesStart, StudioResult, Video, VideoResults, VideoVoicesResult } from "@shared/studio";
+import type { Character, NewVideo, Series, SeriesStart, StudioResult, Video, VideoResults, VideoVoicesResult } from "@shared/studio";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
 
@@ -62,7 +62,6 @@ const api = {
   saveSeries: (series: Series): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:save", series),
   deleteSeries: (id: string): Promise<void> => ipcRenderer.invoke("series:delete", id),
   /** Has Claude plan a season. Costs a few cents. */
-  planSeries: (title: string, about: string, options?: NewSeries): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:plan", title, about, options),
   /** Starts a series from an idea, without a season plan yet. Free. */
   createSeries: (from: SeriesStart): Promise<StudioResult<Series>> => ipcRenderer.invoke("series:create", from),
   /** Has Claude plan the season of a series. Costs a few cents. */
@@ -95,8 +94,8 @@ const api = {
   makeSceneClip: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:clip", videoId, sceneId, choice),
   makeSceneLipSync: (videoId: string, sceneId: string, choice?: MediaChoice): Promise<TakeResult> => ipcRenderer.invoke("scene:lipsync", videoId, sceneId, choice),
   /** Says whether a scene carries straight on from the one before it, starting on its last frame, or is a new shot. Free. */
-  /** Has Claude look at a video's storyboards, or one scene's, and say what is wrong with each. Uses Claude credits. */
-  reviewStoryboard: (videoId: string, sceneId?: string): Promise<TakeResult> => ipcRenderer.invoke("storyboard:review", videoId, sceneId),
+  /** Has Claude look at a video's storyboards and say what is wrong with each: one scene's, only those not checked yet ("new"), or all. Uses Claude credits. */
+  reviewStoryboard: (videoId: string, sceneId?: string | "new"): Promise<TakeResult> => ipcRenderer.invoke("storyboard:review", videoId, sceneId),
   /** Approves the storyboard a scene has in use, or takes the approval back. */
   approveStoryboard: (videoId: string, sceneId: string, approved: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:approve", videoId, sceneId, approved),
   setSceneFlow: (videoId: string, sceneId: string, continues: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:flow", videoId, sceneId, continues),

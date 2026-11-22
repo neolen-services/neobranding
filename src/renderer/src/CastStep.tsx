@@ -5,8 +5,9 @@ import type { BrandKit } from "@shared/brand";
 import type { MediaChoice } from "@shared/media";
 import type { Character, StudioResult, Video } from "@shared/studio";
 import { api } from "./api";
-import { readUpload, ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, fieldClass, Icon, ICONS, label, primaryButton, quietButton, smallButton, videoCast, type CastMember } from "./studioUi";
+import { CharacterLooks } from "./CharacterLooks";
+import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
+import { card, Chip, fieldClass, Icon, ICONS, primaryButton, quietButton, videoCast, type CastMember } from "./studioUi";
 import { VoiceChooser } from "./VoicePicker";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -39,60 +40,72 @@ export function CastStep({
 
   return (
     <div className="space-y-5">
-      <section className={`${card} flex flex-wrap items-center justify-between gap-4`}>
-        <div className="min-w-0">
-          <h3 className="font-display text-lg font-semibold">The cast of this video</h3>
-          <p className="mt-0.5 text-sm opacity-60">
-            {nobody
-              ? "No characters and no narrator: you say every line yourself, so there is nothing to set up."
-              : info.unready === 0
-                ? "Everyone in this script has what they need."
-                : `${plural(info.unready, "cast member")} still ${info.unready === 1 ? "needs" : "need"} setting up. Without a voice a line cannot be spoken, and without a reference picture a character can look different in every scene.`}
-          </p>
+      <section className={`${card} space-y-4`}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="font-display text-lg font-semibold">The cast of this video</h3>
+            <p className="mt-0.5 max-w-2xl text-sm opacity-60">
+              {nobody
+                ? "No characters and no narrator: you say every line yourself, so there is nothing to set up."
+                : info.unready === 0
+                  ? "Everyone in this script has what they need."
+                  : "Each role needs a voice to speak and pictures to look the same in every scene. Give a role to a character you already have and theirs are reused."}
+            </p>
+          </div>
+          <div className="text-right">
+            <button type="button" className={`${info.unready === 0 ? primaryButton : quietButton} inline-flex items-center gap-2`} onClick={onNext}>
+              On to the storyboard
+              <Icon d={ICONS.arrow} />
+            </button>
+            {info.unready > 0 && <p className="mt-1.5 text-xs opacity-55">{plural(info.unready, "cast member")} still to set up</p>}
+          </div>
         </div>
-        <button type="button" className={`${info.unready === 0 ? primaryButton : quietButton} flex items-center gap-2`} onClick={onNext}>
-          On to the storyboard
-          <Icon d={ICONS.arrow} />
-        </button>
-      </section>
 
-      {(info.myLines > 0 || info.narratorLines > 0) && (
-        <section className={`${card} grid gap-4 text-sm sm:grid-cols-2`}>
-          {info.myLines > 0 && (
-            <div>
-              <p className={label}>You</p>
-              <p className="mt-1.5">
-                <span className="font-medium">{plural(info.myLines, "line")} on camera.</span> <span className="opacity-70">You film and say these yourself.</span>
-              </p>
-            </div>
-          )}
-          {info.narratorLines > 0 && (
-            <div>
-              <p className={`${label} flex items-center gap-2`}>
-                Narrator
-                {!info.narratorReady && <Chip tone="warn">Needs a voice</Chip>}
-              </p>
-              <p className="mt-1.5">
-                <span className="font-medium">{plural(info.narratorLines, "line")} over the scenes,</span>{" "}
-                <span className="opacity-70">in your brand's speaking voice{brand.speakingVoice ? ` (${brand.speakingVoice.name}).` : ". None is chosen yet."}</span>{" "}
-                <button type="button" className="underline opacity-70 hover:opacity-100" onClick={onOpenBrand}>
-                  {brand.speakingVoice ? "Change it in the brand kit" : "Choose one in the brand kit"}
+        {!nobody && (
+          <ul className="flex flex-wrap gap-2" aria-label="Who is in this video">
+            {info.members.map((m) => (
+              <li key={m.character.id}>
+                <a href={`#role-${m.character.id}`} className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm hover:border-[var(--ink)] ${m.needs.length ? "border-[var(--accent)]/60" : "border-[var(--line)]"}`}>
+                  <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[0.6rem] ${m.needs.length ? "border border-[var(--accent)] text-[var(--accent)]" : "bg-[var(--primary)] text-white"}`}>
+                    {m.needs.length ? "!" : <Icon d={ICONS.check} className="h-2.5 w-2.5" />}
+                  </span>
+                  <span className="font-medium">{m.character.name}</span>
+                  <span className="text-xs opacity-60">{m.needs.length ? `needs ${m.needs.join(" and ")}` : "ready"}</span>
+                </a>
+              </li>
+            ))}
+            {info.narratorLines > 0 && (
+              <li>
+                <button type="button" className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm hover:border-[var(--ink)] ${info.narratorReady ? "border-[var(--line)]" : "border-[var(--accent)]/60"}`} title={brand.speakingVoice ? "Change the narrator's voice in the brand kit" : "Choose the narrator's voice in the brand kit"} onClick={onOpenBrand}>
+                  <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[0.6rem] ${info.narratorReady ? "bg-[var(--primary)] text-white" : "border border-[var(--accent)] text-[var(--accent)]"}`}>
+                    {info.narratorReady ? <Icon d={ICONS.check} className="h-2.5 w-2.5" /> : "!"}
+                  </span>
+                  <span className="font-medium">Narrator</span>
+                  <span className="text-xs opacity-60">
+                    {plural(info.narratorLines, "line")} · {brand.speakingVoice ? brand.speakingVoice.name : "needs a voice in the brand kit"}
+                  </span>
                 </button>
-              </p>
-            </div>
-          )}
-        </section>
-      )}
+              </li>
+            )}
+            {info.myLines > 0 && (
+              <li className="flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-1.5 text-sm">
+                <Icon d={ICONS.camera} className="h-3.5 w-3.5 opacity-70" />
+                <span className="font-medium">You</span>
+                <span className="text-xs opacity-60">{plural(info.myLines, "line")} on camera</span>
+              </li>
+            )}
+          </ul>
+        )}
 
-      {info.members.length > 0 && choices && (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-          <p className="opacity-70">
-            {plural(info.members.length, "role")} in this script. Give each one to a character you already have, so its voice and pictures are reused, or keep the new one the script made. What
-            you change on a character carries to every video that uses them.
-          </p>
-          <ServicePicker task="picture" label="Reference pictures made with" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} />
-        </div>
-      )}
+        {info.members.length > 0 && choices && (
+          <details className="border-t border-[var(--line)] pt-3 text-sm">
+            <summary className="cursor-pointer text-xs opacity-60 hover:opacity-100">Picture service</summary>
+            <div className="mt-3 max-w-sm">
+              <ServicePicker task="picture" label="Character pictures made with" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />
+            </div>
+          </details>
+        )}
+      </section>
 
       {info.members.map((member) => (
         <MemberCard
@@ -103,7 +116,6 @@ export function CastStep({
           onVideo={onVideo}
           onCast={onCast}
           onOpenSettings={onOpenSettings}
-          makePicture={choices ? () => api.makeCharacterPicture(member.character.id, choices.picture) : undefined}
           pictureChoice={choices?.picture}
         />
       ))}
@@ -121,7 +133,6 @@ function MemberCard({
   onVideo,
   onCast,
   onOpenSettings,
-  makePicture,
   pictureChoice,
 }: {
   member: CastMember;
@@ -132,7 +143,6 @@ function MemberCard({
   onCast: (character: Character) => void;
   onOpenSettings: () => void;
   /** Makes a reference picture with the service chosen above; missing until the choices have loaded. */
-  makePicture?: () => Promise<StudioResult<Character>>;
   /** The service that makes pictures on this page. */
   pictureChoice?: MediaChoice;
 }) {
@@ -141,7 +151,6 @@ function MemberCard({
   const [saved, setSaved] = useState<TextField | "">("");
   const [working, setWorking] = useState("");
   const [error, setError] = useState("");
-  const main = character.pictures[0];
   const busy = working !== "";
 
   async function run(what: string, work: () => Promise<StudioResult<Character>>) {
@@ -201,64 +210,8 @@ function MemberCard({
   );
 
   return (
-    <section className={`${card} grid gap-5 md:grid-cols-[11rem_minmax(0,1fr)]`}>
-      <div>
-        {main ? (
-          <img src={api.studioFileUrl(main.file)} alt={`${character.name}'s reference picture`} className="aspect-[9/16] w-full rounded-xl bg-black object-cover object-top" />
-        ) : (
-          <span aria-hidden className="flex aspect-[9/16] w-full items-center justify-center rounded-xl bg-[var(--tint)] font-display text-5xl font-semibold opacity-60">
-            {character.name.trim().charAt(0).toUpperCase() || "?"}
-          </span>
-        )}
-        <div className="mt-3 space-y-2">
-          <div className="rounded-xl border border-[var(--line)] p-2">
-            <p className="text-xs font-medium uppercase tracking-wide opacity-55">Character sheet</p>
-            {character.sheet ? (
-              <img src={api.studioFileUrl(character.sheet.file)} alt={`${character.name} from the front, from the back, and their face`} className="mt-1.5 aspect-video w-full rounded-lg bg-black object-cover" />
-            ) : (
-              <p className="mt-1 text-xs leading-snug opacity-60">Front, back and face in one picture. Storyboards and clips use it to keep {character.name} looking the same.</p>
-            )}
-            <div className="mt-2 flex gap-2">
-              <button
-                type="button"
-                className={`${smallButton} flex-1`}
-                disabled={busy || !pictureChoice}
-                title={character.pictures.length || character.look.trim() ? "Drawn from their main picture, so it is the same person." : "Add a picture or write their look first."}
-                onClick={() => void run("Sheet", () => api.makeCharacterSheet(character.id, pictureChoice))}
-              >
-                {working === "Sheet" ? "Making the sheet…" : character.sheet ? "Make it again" : "Make character sheet"}
-              </button>
-              {character.sheet && (
-                <button type="button" className={smallButton} disabled={busy} onClick={() => void run("Removing", () => api.removeCharacterSheet(character.id))}>
-                  Remove
-                </button>
-              )}
-            </div>
-          </div>
-          <button
-            type="button"
-            className={`${main ? smallButton : `${primaryButton} !px-3 !py-1.5 !text-xs`} w-full`}
-            disabled={busy || !makePicture}
-            title={character.look.trim() ? undefined : "Write their look first: the picture is made from it."}
-            onClick={() => makePicture && void run("Making", makePicture)}
-          >
-            {working === "Making" ? "Making the picture…" : main ? "Make another picture" : "Make a reference picture"}
-          </button>
-          <label className={`${smallButton} block cursor-pointer text-center ${busy ? "pointer-events-none opacity-40" : ""}`}>
-            {working === "Adding" ? "Adding…" : "Add your own picture"}
-            <input
-              type="file"
-              hidden
-              accept="image/png,image/jpeg,image/webp"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) await run("Adding", async () => api.addCharacterPicture(character.id, await readUpload(file)));
-              }}
-            />
-          </label>
-        </div>
-      </div>
+    <section id={`role-${character.id}`} className={`${card} grid scroll-mt-40 gap-5 md:grid-cols-[17rem_minmax(0,1fr)]`}>
+      <CharacterLooks character={character} choice={pictureChoice} onChange={onCast} onError={setError} />
 
       <div className="min-w-0 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">

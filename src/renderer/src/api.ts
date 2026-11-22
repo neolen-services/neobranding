@@ -1,6 +1,3 @@
-import type { BrandKit } from "@shared/brand";
-import type { Idea } from "@shared/ideas";
-import { API_PROVIDERS } from "@shared/settings";
 
 type Api = Window["api"];
 import type { UploadedFile } from "@shared/media";
@@ -28,40 +25,7 @@ async function rpc<T>(channel: string, ...args: unknown[]): Promise<T> {
   return body.result as T;
 }
 
-/**
- * Earlier versions of the browser stand-in kept the brand, ideas and keys in
- * this browser's localStorage. Move them into the data folder once.
- */
-const MIGRATED_FLAG = "personal-brand:moved-to-data-folder";
-async function moveBrowserData(): Promise<void> {
-  if (localStorage.getItem(MIGRATED_FLAG)) return;
-  try {
-    const brand = localStorage.getItem("personal-brand:brand");
-    if (brand && !(await rpc<BrandKit | null>("brand:get"))) await rpc("brand:save", JSON.parse(brand));
-
-    const ideas: Idea[] = JSON.parse(localStorage.getItem("personal-brand:ideas") ?? "[]");
-    const saved = new Set((await rpc<Idea[]>("ideas:list")).map((i) => i.id));
-    for (const idea of ideas) if (!saved.has(idea.id)) await rpc("ideas:save", idea);
-
-    for (const provider of API_PROVIDERS) {
-      const name = `personal-brand:${provider}-api-key`;
-      const key = localStorage.getItem(name);
-      if (key && !(await rpc<boolean>("settings:hasApiKey", provider))) {
-        const result = await rpc<{ ok: boolean }>("settings:setApiKey", provider, key);
-        if (!result.ok) throw new Error("A key could not be moved."); // Keep it here and retry next time.
-      }
-      localStorage.removeItem(name);
-    }
-    localStorage.setItem(MIGRATED_FLAG, new Date().toISOString());
-  } catch {
-    // Try again next time the app is opened.
-  }
-}
-
-/** Calls are held until the one-time move has finished, so nothing reads half-moved data. */
-let ready: Promise<void> | undefined;
-const call = <T>(channel: string, ...args: unknown[]): Promise<T> =>
-  (ready ??= moveBrowserData()).then(() => rpc<T>(channel, ...args));
+const call = rpc;
 
 const browserApi: Api = {
   getBrand: () => call("brand:get"),
@@ -94,7 +58,6 @@ const browserApi: Api = {
   listSeries: () => call("series:list"),
   saveSeries: (series) => call("series:save", series),
   deleteSeries: (id) => call("series:delete", id),
-  planSeries: (title, about, options) => call("series:plan", title, about, options),
   createSeries: (from) => call("series:create", from),
   planSeason: (id) => call("series:planSeason", id),
   listVideos: () => call("videos:list"),

@@ -64,22 +64,12 @@ export function parseChoice(input: unknown): MediaChoice | null {
   return { provider: c.provider, model };
 }
 
-/**
- * Clips follow a storyboard given as a reference picture, so fal.ai's first-frame models
- * chosen in an earlier version are read as the reference form of the same model.
- */
-export function referenceModel(choice: MediaChoice | null): MediaChoice | null {
-  if (!choice || choice.provider !== "fal") return choice;
-  if (/kling/i.test(choice.model)) return /reference-to-video$/.test(choice.model) ? choice : { provider: "fal", model: "fal-ai/kling-video/o3/pro/reference-to-video" };
-  return { provider: "fal", model: choice.model.replace(/\/image-to-video$/, "/reference-to-video") };
-}
-
 /** Saved settings, with the default for any job that has none. */
 export function parseMediaSettings(input: unknown): MediaSettings {
   const saved = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
     picture: parseChoice(saved.picture) ?? DEFAULT_MEDIA.picture,
-    clip: referenceModel(parseChoice(saved.clip)) ?? DEFAULT_MEDIA.clip,
+    clip: parseChoice(saved.clip) ?? DEFAULT_MEDIA.clip,
     lipsync: parseChoice(saved.lipsync) ?? DEFAULT_MEDIA.lipsync,
   };
 }

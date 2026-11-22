@@ -15,7 +15,6 @@ import {
   SPEAKER_ME,
   speakerName,
   type Character,
-  type Production,
   type Scene,
   type SceneLine,
   type Series,
@@ -25,10 +24,11 @@ import {
 import { api } from "./api";
 import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
+import { inOrder } from "./inOrder";
 import { SceneMedia } from "./SceneMedia";
 import { StoryboardTab } from "./Storyboard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, ProductionPicker, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
+import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
 
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
 /** How many frames a scene's storyboard sheet holds: two across, two down. */
@@ -58,8 +58,6 @@ export function VideoPage({
   onBack: () => void;
   onChange: (video: Video) => void;
   onDelete: () => Promise<void>;
-  /** Not used here any more: the cast is set up on this page's own Cast tab. */
-  onOpenCast?: () => void;
   onOpenSettings: () => void;
   onOpenBrand: () => void;
   /** A character was changed on the Cast tab. */
@@ -189,7 +187,7 @@ export function VideoPage({
         {tab === 2 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(3)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
         {tab === 3 && approved && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
         {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onStoryboard={() => setTab(3)} onNext={() => setTab(5)} />}
-        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(3)} />}
+        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(3)} onNext={() => setTab(6)} />}
         {tab === 6 && approved && <FinishTab {...shared} />}
       </div>
     </div>
@@ -839,7 +837,7 @@ function PreviewTab({
                 {voicing ? "Making the voices…" : `Make ${plural(progress.unvoiced, "voice line")}`}
               </button>
             ) : (
-              <button type="button" className={`${quietButton} flex items-center gap-2`} onClick={onNext}>
+              <button type="button" className={`${primaryButton} flex items-center gap-2`} onClick={onNext}>
                 On to the clips
                 <Icon d={ICONS.arrow} />
               </button>
@@ -901,7 +899,7 @@ function PreviewTab({
 // ---------- Make ----------
 
 /** The clips: one for each scene, made to follow its storyboard or filmed by the creator. */
-function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStoryboard }: Shared & { progress: Progress; onStoryboard: () => void }) {
+function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStoryboard, onNext }: Shared & { progress: Progress; onStoryboard: () => void; onNext: () => void }) {
   const [making, setMaking] = useState("");
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
@@ -912,62 +910,119 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
   const waiting = video.scenes.filter((_, i) => toMake(video.scenes, i)).length;
   const stale = video.scenes.filter((_, i) => joinState(video.scenes, i) === "stale").length;
 
-  /** Makes every clip that is still to make, from the first scene down, because a scene that carries on starts on the clip before it. Stops at the first that fails. */
+  /**
+   * Makes every clip that is still to make. A scene that carries on opens on the last frame of the clip before it,
+   * so it waits for that clip; scenes that start a new shot are made side by side. Stops at the first that fails.
+   */
   async function makeClips() {
     if (!choices) return;
     setError("");
     setNotice("");
-    let current = video;
-    let made = 0;
-    for (let i = 0; i < current.scenes.length; i++) {
-      if (!toMake(current.scenes, i)) continue;
-      setMaking(`Making the clip for scene ${i + 1}`);
-      try {
-        const result = await api.makeSceneClip(current.id, current.scenes[i].id, choices.clip);
-        if (!result.ok) {
-          setError(`Scene ${i + 1}: ${result.error}`);
-          break;
-        }
-        current = result.video;
-        made++;
-        onChange(current);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "The clip could not be made.");
-        break;
-      }
+    const scenes = video.scenes;
+    // A clip that is remade leaves the clip of the scene carrying on from it out of date, so that one is made again too.
+    const which: number[] = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const follows = i > 0 && scenes[i].continues && scenes[i].madeBy === "ai" && Boolean(pickedPicture(scenes[i])) && which.includes(i - 1);
+      if (toMake(scenes, i) || follows) which.push(i);
     }
+    let running = 0;
+    const show = () => setMaking(running > 0 ? `Making ${plural(running, "clip")}` : "Making clips");
+    show();
+    const made = await inOrder(
+      which,
+      (i) => (scenes[i].continues ? i - 1 : undefined),
+      async (i) => {
+        running++;
+        show();
+        try {
+          const result = await api.makeSceneClip(video.id, scenes[i].id, choices.clip);
+          if (!result.ok) setError(`Scene ${i + 1}: ${result.error}`);
+          else onChange(result.video);
+          return result.ok;
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "The clip could not be made.");
+          return false;
+        } finally {
+          running--;
+          show();
+        }
+      },
+    );
     if (made > 0) setNotice(`${plural(made, "clip")} made.`);
     setMaking("");
   }
 
   if (!choices) return null;
   const off = busy !== "" || making !== "";
-  const counts = [
-    ai.length > 0 && `${ai.filter((s) => pickedClip(s)).length} of ${plural(ai.length, "AI clip")} made`,
-    stale > 0 && `${plural(stale, "clip")} to remake so the scenes join`,
-    video.scenes.length > ai.length && `${video.scenes.length - ai.length - progress.needFilming} of ${plural(video.scenes.length - ai.length, "filmed scene")} added`,
-  ].filter(Boolean);
+  const filmedScenes = video.scenes.length - ai.length;
+  const clipsMade = ai.filter((s) => pickedClip(s)).length;
+  const filmedAdded = filmedScenes - progress.needFilming;
+  const total = video.scenes.length;
+  const ready = clipsMade - stale + filmedAdded;
+  const allDone = total > 0 && waiting === 0 && noPicture === 0 && progress.needFilming === 0;
+  // The three counts that say where the clips stand.
+  const tiles = [
+    ai.length > 0 && { name: "AI clips", count: `${clipsMade} of ${ai.length}`, done: clipsMade === ai.length },
+    stale > 0 && { name: "To remake", count: `${plural(stale, "clip")} no longer joined`, done: false },
+    filmedScenes > 0 && { name: "Filmed by you", count: `${filmedAdded} of ${filmedScenes} added`, done: progress.needFilming === 0 },
+  ].filter((t): t is { name: string; count: string; done: boolean } => Boolean(t));
 
   return (
     <div className="space-y-5">
       <section className={`${card} space-y-4`}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <h3 className="font-display text-lg font-semibold">Make the clips</h3>
-            <p className="mt-0.5 text-sm opacity-60">{counts.join(" · ")}</p>
-            {ai.length > 0 && (
-              <p className="mt-1.5 max-w-3xl text-sm opacity-60">
-                Each clip follows its scene's storyboard, frame by frame, as one continuous shot. A scene that carries on from the one before opens on the last frame of that scene's clip, so
-                the two play as one take. Clips are the costly step, and they are made from the first scene down.
-              </p>
-            )}
+            <p className="mt-0.5 max-w-2xl text-sm opacity-60">
+              Each clip follows its scene's storyboard as one continuous shot. A scene that carries on opens on the last frame of the clip before it, so the two play as one take.
+            </p>
           </div>
-          {waiting > 0 && (
-            <button type="button" className={primaryButton} disabled={off} onClick={makeClips}>
-              {making ? `${making}… this can take minutes` : `Make ${plural(waiting, "clip")}`}
-            </button>
-          )}
+          <div className="text-right">
+            {waiting > 0 ? (
+              <button type="button" className={primaryButton} disabled={off} onClick={makeClips}>
+                {making ? `${making}…` : `Make ${plural(waiting, "clip")}`}
+              </button>
+            ) : (
+              <button type="button" className={`${allDone ? primaryButton : quietButton} inline-flex items-center gap-2`} disabled={off} onClick={onNext}>
+                Next: finish
+                <Icon d={ICONS.arrow} />
+              </button>
+            )}
+            <p className="mt-1.5 max-w-xs text-xs opacity-55">
+              {waiting > 0
+                ? making
+                  ? "This can take minutes. New shots are made at the same time; a scene that carries on waits for the one before it."
+                  : "The costly step: each clip is charged by the service you chose."
+                : allDone
+                  ? "Every scene has its clip."
+                  : progress.needFilming > 0
+                    ? `${plural(progress.needFilming, "scene")} still to film and add below.`
+                    : ""}
+            </p>
+          </div>
         </div>
+
+        {total > 0 && (
+          <div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-[var(--tint)]" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={ready} aria-label="Scenes with a finished clip">
+              <div className="h-full rounded-full bg-[var(--primary)] transition-all" style={{ width: `${(Math.max(ready, 0) / total) * 100}%` }} />
+            </div>
+            <ul className="mt-3 grid gap-2 sm:grid-cols-3">
+              {tiles.map((tile) => (
+                <li key={tile.name} className="flex items-center gap-2.5 rounded-xl border border-[var(--line)] px-3 py-2">
+                  <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[0.7rem] font-semibold ${tile.done ? "bg-[var(--primary)] text-white" : "border border-[var(--line)]"}`}>
+                    {tile.done ? <Icon d={ICONS.check} className="h-3 w-3" /> : ""}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium leading-tight">{tile.name}</span>
+                    <span className="block truncate text-xs opacity-60">{tile.count}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {noPicture > 0 && (
           <p className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-4 py-3 text-sm">
             <span className="min-w-0 flex-1">
@@ -979,10 +1034,13 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
           </p>
         )}
         {ai.length > 0 && (
-          <div className="grid gap-4 border-t border-[var(--line)] pt-4 md:grid-cols-2">
-            <ServicePicker task="clip" value={choices.clip} keys={keys} onChange={(c) => setChoice("clip", c)} stacked />
-            <ServicePicker task="lipsync" value={choices.lipsync} keys={keys} onChange={(c) => setChoice("lipsync", c)} stacked />
-          </div>
+          <details className="border-t border-[var(--line)] pt-3 text-sm">
+            <summary className="cursor-pointer text-xs opacity-60 hover:opacity-100">Clip and lip-sync services</summary>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">
+              <ServicePicker task="clip" value={choices.clip} keys={keys} onChange={(c) => setChoice("clip", c)} stacked />
+              <ServicePicker task="lipsync" value={choices.lipsync} keys={keys} onChange={(c) => setChoice("lipsync", c)} stacked />
+            </div>
+          </details>
         )}
       </section>
 

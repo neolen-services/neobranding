@@ -22,7 +22,7 @@ import {
 } from "./agent";
 import { listAudio, listVoices, voicePreview } from "./audio";
 import { generateIdeas } from "./generate";
-import { adoptLegacyData, copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
+import { copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
 import {
   addResearch,
   analyzeResearch,
@@ -37,7 +37,7 @@ import {
 } from "./research";
 import { openStore, type Secrets, type Store } from "./store";
 import { studioOps } from "./studioOps";
-import type { NewSeries, NewVideo, SeriesStart } from "../shared/studio";
+import type { NewVideo, SeriesStart } from "../shared/studio";
 import type { UploadedFile } from "../shared/media";
 import { startTelegram, telegramStatus, unlinkTelegram } from "./telegram";
 import { readUsage, setUsageDir } from "./usage";
@@ -50,8 +50,6 @@ export type HandlerOptions = {
   /** Where downloaded tools (yt-dlp, FFmpeg) are kept. Not user data, so outside the data folder. */
   toolsDir: string;
   secrets: Secrets;
-  /** Places earlier versions kept data; their contents are moved into the data folder once. */
-  legacyDirs: string[];
   /** Shows a folder in the system's file manager. */
   openFolder: (path: string) => void;
   /**
@@ -71,7 +69,6 @@ export function createHandlers(options: HandlerOptions) {
   setToolsDir(options.toolsDir);
   // The folder can change while the app runs, so the log asks for it each time.
   setUsageDir(() => dataDir);
-  for (const legacy of options.legacyDirs) adoptLegacyData(legacy, dataDir);
 
   const db = () => (store ??= openStore(dataDir, options.secrets));
   const key = (provider: ApiProvider) => db().getApiKey(provider);
@@ -109,10 +106,7 @@ export function createHandlers(options: HandlerOptions) {
       return [];
     }
   };
-  const findIdea = (id: unknown) =>
-    db()
-      .listIdeas()
-      .find((i) => i.id === String(id));
+
 
   const dataInfo = (): DataFolderInfo => ({
     path: dataDir,
@@ -131,7 +125,6 @@ export function createHandlers(options: HandlerOptions) {
     "series:list": () => studio.series(),
     "series:save": (input: unknown) => studio.saveSeries(input),
     "series:delete": (id: unknown) => studio.deleteSeries(id),
-    "series:plan": (title: unknown, about: unknown, options?: NewSeries) => studio.plan(title, about, options),
 
     "series:create": (input: SeriesStart) => studio.createSeries(input),
     "series:planSeason": (id: unknown) => studio.planSeason(id),
@@ -245,7 +238,7 @@ export function createHandlers(options: HandlerOptions) {
 
     /** What the app has used since `since` (an ISO time, or "" for everything). */
     "usage:get": async (since: unknown) =>
-      readUsage(dataDir, typeof since === "string" ? since : "", { posts: await listResearch(dataDir), ideas: db().listIdeas() }),
+      readUsage(dataDir, typeof since === "string" ? since : ""),
 
     "telegram:status": () => telegramStatus(),
     "telegram:sync": () => connectTelegram(),

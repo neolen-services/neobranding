@@ -521,8 +521,8 @@ export function videoCast(video: Video, cast: Character[], brand: BrandKit | nul
       const lines = video.scenes.reduce((n, s) => n + s.lines.filter((l) => l.speaker === character.id).length, 0);
       const needs = [
         lines > 0 && !character.voice && "a voice",
-        // Only a generated scene needs their picture; a filmed one has the real thing.
-        video.scenes.some((s) => s.madeBy === "ai" && inScene(s)) && character.pictures.length === 0 && "a reference picture",
+        // Only a generated scene needs their pictures; a filmed one has the real thing.
+        video.scenes.some((s) => s.madeBy === "ai" && inScene(s)) && (character.pictures.length === 0 ? "a portrait" : !character.sheet && "a character sheet"),
       ].filter((x): x is string => Boolean(x));
       return { character, lines, scenes: video.scenes.filter(inScene).length, needs };
     })

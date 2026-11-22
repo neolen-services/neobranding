@@ -26,9 +26,7 @@ const osSecrets: Secrets = {
     try {
       // "plain:" values were saved by the browser version of the app.
       if (stored.startsWith("plain:")) return Buffer.from(stored.slice(6), "base64").toString("utf8");
-      // Values without a prefix were saved before prefixes existed.
-      const encrypted = stored.startsWith("os:") ? stored.slice(3) : stored;
-      return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+      return stored.startsWith("os:") ? safeStorage.decryptString(Buffer.from(stored.slice(3), "base64")) : "";
     } catch {
       return "";
     }
@@ -71,8 +69,6 @@ app.whenReady().then(() => {
     toolsDir: join(userData, "bin"),
     secrets: osSecrets,
     listenToTelegram: true,
-    // Earlier versions kept the database and saved posts in the app's own folder.
-    legacyDirs: [userData],
     openFolder: (path) => void shell.openPath(path),
   });
 

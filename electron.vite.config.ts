@@ -99,7 +99,6 @@ function browserDevApi(listenToTelegram: boolean): Plugin {
           toolsDir: resolve(DEV_DIR, "bin"),
           // A plain Node process has no OS keychain, so keys saved from the browser are stored readable.
           secrets: plainSecrets,
-          legacyDirs: [DEV_DIR],
           openFolder,
           listenToTelegram,
         }));
