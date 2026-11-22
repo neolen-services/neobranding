@@ -513,7 +513,12 @@ export function studioOps(ctx: StudioContext) {
         const carriesOn = scene.continues && before !== undefined && pickedPicture(before) !== undefined;
         const sameSet = carriesOn ? before : here ? [...video.scenes.slice(0, index)].reverse().find((x) => x.place.trim().toLowerCase() === here && pickedPicture(x)) : undefined;
         const setPicture = sameSet ? pickedPicture(sameSet) : undefined;
-        const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, setPicture ? 3 : 4);
+        // A change asked of the storyboard in use is an edit of that sheet, not a new drawing: the sheet is sent
+        // as the first picture and everything not named in the change stays as it is.
+        const asked = typeof note === "string" ? note.trim() : "";
+        const current = asked ? pickedPicture(scene) : undefined;
+        const first = current ?? setPicture;
+        const withPictures = inScene.filter((c) => c.pictures[0]).slice(0, first ? 3 : 4);
         const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
         const said = scene.lines.map((l) => `${speakerName(l.speaker, cast())}: ${l.text}`).join(" / ");
         const media = await makePicture(ctx.key, choice, {
@@ -529,19 +534,21 @@ export function studioOps(ctx: StudioContext) {
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The ${setPicture ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture in every frame: same face, hair, clothes and colours.`
+              ? `The ${first ? "other " : ""}reference pictures show, in order: ${withPictures.map((c) => c.name).join(", ")}. Keep each exactly as in their picture in every frame: same face, hair, clothes and colours.`
               : "",
-            setPicture && carriesOn
+            current
+              ? `The FIRST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else exactly as it is in that picture: the same four frames in the same order, the same composition, place, people, faces, clothes, props, light and colours. Change only what the instruction names, in every frame it applies to.`
+              : setPicture && carriesOn
               ? `The FIRST reference picture is the storyboard of the shot just before this one (scene ${index}). This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
               : setPicture
                 ? `The FIRST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). Keep the same walls, furniture, props, light, time of day and what everyone wears.`
                 : "",
             "No captions, subtitles, speech bubbles, arrows, notes, logos or any other writing. A small frame number in a corner of each frame is the only text allowed.",
-            typeof note === "string" && note.trim() ? `Change from the last attempt: ${note.trim()}` : "",
+            asked && !current ? `Change from the last attempt: ${asked}` : "",
           ]
             .filter(Boolean)
             .join("\n"),
-          references: await Promise.all([...(setPicture ? [setPicture] : []), ...withPictures.map((c) => c.pictures[0])].map((take) => loadTake(ctx.dataDir(), take))),
+          references: await Promise.all([...(first ? [first] : []), ...withPictures.map((c) => c.pictures[0])].map((take) => loadTake(ctx.dataDir(), take))),
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
         const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("picture", choice));

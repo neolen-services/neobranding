@@ -1,7 +1,7 @@
 // The Storyboard tab of a video: one storyboard for every scene, a sheet of four frames showing
 // what happens in it, looked through in order before any clip is made. A storyboard costs little
 // and a clip costs a lot, so this is where the video is settled.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MediaChoice } from "@shared/media";
 import { pickedPicture, storyboardApproved, type Scene, type TakeResult, type Video } from "@shared/studio";
 import { api } from "./api";
@@ -85,6 +85,34 @@ export function StoryboardTab({
     setMaking("");
   }
 
+  /** Scenes whose storyboard in use has a suggested fix from the check and is not approved. */
+  const fixable = drawn.filter((s) => s.review?.picture === s.picture && !s.review.ok && s.review.fix !== "" && !storyboardApproved(s));
+
+  /** Makes every storyboard with a suggested fix again, using that fix, from the first scene down. Stops at the first that fails. */
+  async function applyFixes() {
+    if (!choices) return;
+    setError("");
+    setNotice("");
+    let done = 0;
+    for (const [i, scene] of fixable.entries()) {
+      setMaking(`Applying suggestion ${i + 1} of ${fixable.length}`);
+      try {
+        const result = await api.makeScenePicture(video.id, scene.id, choices.picture, scene.review?.fix ?? "");
+        if (!result.ok) {
+          setError(result.error);
+          break;
+        }
+        done++;
+        onChange(result.video);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "The storyboard could not be made.");
+        break;
+      }
+    }
+    if (done > 0) setNotice(`${plural(done, "storyboard")} made again with the suggested ${done === 1 ? "fix" : "fixes"}. Look at the new ${done === 1 ? "one" : "ones"}, then check or approve.`);
+    setMaking("");
+  }
+
   if (!choices) return null;
   const off = busy !== "" || making !== "" || checking;
   const counts = [
@@ -120,9 +148,14 @@ export function StoryboardTab({
                 {checking ? "Looking at the storyboards…" : unchecked === drawn.length ? "Check the storyboards" : "Check them again"}
               </button>
             )}
+            {fixable.length > 0 && (
+              <button type="button" className={primaryButton} disabled={off} title="Makes each storyboard that has notes again, using the fix the check suggested for it." onClick={applyFixes}>
+                {making.startsWith("Applying") ? `${making}…` : `Apply ${plural(fixable.length, "suggestion")}`}
+              </button>
+            )}
             {missing.length > 0 && (
               <button type="button" className={primaryButton} disabled={off} onClick={makeMissing}>
-                {making ? `${making}…` : `Make ${plural(missing.length, "missing storyboard")}`}
+                {making.startsWith("Making") ? `${making}…` : `Make ${plural(missing.length, "missing storyboard")}`}
               </button>
             )}
           </div>
@@ -189,7 +222,15 @@ function Panel({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [zoomed, setZoomed] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // The full-size view closes with Esc.
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setZoomed(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoomed]);
 
   async function run(what: string, work: () => Promise<TakeResult>) {
     setBusy(what);
@@ -210,7 +251,7 @@ function Panel({
   const picture = pickedPicture(scene);
   const filmed = scene.madeBy === "me";
   const off = disabled || busy !== "";
-  const makePicture = async () => (await run("Making", () => api.makeScenePicture(video.id, scene.id, choice, note))) && setNote("");
+  const makePicture = async (change = note) => (await run("Making", () => api.makeScenePicture(video.id, scene.id, choice, change))) && setNote("");
   const beforeHasPicture = index > 0 && Boolean(pickedPicture(video.scenes[index - 1]));
   const isApproved = !filmed && storyboardApproved(scene);
   // What the check said about the storyboard now in use; notes about an earlier one no longer apply.
@@ -254,9 +295,9 @@ function Panel({
 
       <div className="relative flex aspect-[9/16] w-full items-center justify-center overflow-hidden rounded-xl border border-[var(--line)] bg-black text-center text-xs text-white/60">
         {picture ? (
-          <a href={api.studioFileUrl(picture.file)} target="_blank" rel="noreferrer" title="Open full size" className="block h-full w-full">
+          <button type="button" title="Look at it full size" className="block h-full w-full cursor-zoom-in" onClick={() => setZoomed(true)}>
             <img src={api.studioFileUrl(picture.file)} alt={`Storyboard for scene ${index + 1}: ${scene.action}`} className="h-full w-full object-cover" />
-          </a>
+          </button>
         ) : (
           <span className="flex flex-col items-center gap-2 px-4">
             <Icon d={filmed ? ICONS.camera : ICONS.ai} className="h-6 w-6 opacity-60" />
@@ -284,9 +325,19 @@ function Panel({
             </ul>
           )}
           {review.fix && (
-            <button type="button" className="mt-2 text-left text-xs underline" disabled={off} title={review.fix} onClick={() => setNote(review.fix)}>
-              Use its suggested change
-            </button>
+            <>
+              <p className="mt-2 text-xs opacity-80">
+                <span className="font-medium">Suggested fix:</span> {review.fix}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" className={`${primaryButton} !px-3 !py-1 !text-xs`} disabled={off} onClick={() => void makePicture(review.fix)}>
+                  {busy === "Making" ? "Making…" : "Apply this suggestion"}
+                </button>
+                <button type="button" className={smallButton} disabled={off} title="Puts the suggested fix in the box below, so you can change the words before making it again." onClick={() => setNote(review.fix)}>
+                  Edit the fix first
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -306,7 +357,7 @@ function Panel({
           {picture && (
             <input
               className="w-full rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-sm placeholder:opacity-50 focus:border-[var(--primary)] focus:outline-none"
-              placeholder="What should change?"
+              placeholder="What should change? Then make it again."
               aria-label={`What should change in the storyboard for scene ${index + 1}`}
               value={note}
               disabled={off}
@@ -315,8 +366,8 @@ function Panel({
             />
           )}
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={picture ? smallButton : `${primaryButton} !px-4 !py-1.5`} disabled={off} onClick={() => void makePicture()}>
-              {busy === "Making" ? "Making…" : picture ? "Another storyboard" : "Make storyboard"}
+            <button type="button" className={picture && !note.trim() ? smallButton : `${primaryButton} !px-4 !py-1.5`} disabled={off} onClick={() => void makePicture()}>
+              {busy === "Making" ? "Making…" : !picture ? "Make storyboard" : note.trim() ? "Make it again with this change" : "Another storyboard"}
             </button>
             {picture && (
               <button type="button" className={smallButton} disabled={off} title="Claude looks at this storyboard and writes what is wrong with it. Uses your Claude credits." onClick={() => void run("Checking", () => api.reviewStoryboard(video.id, scene.id))}>
@@ -384,6 +435,16 @@ function Panel({
         <p role="alert" className="text-sm font-medium text-red-400">
           {error}
         </p>
+      )}
+
+      {zoomed && picture && (
+        <div role="dialog" aria-modal="true" aria-label={`Storyboard for scene ${index + 1}`} className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/85 p-6" onClick={() => setZoomed(false)}>
+          <img src={api.studioFileUrl(picture.file)} alt={`Storyboard for scene ${index + 1}: ${scene.action}`} className="max-h-full max-w-full rounded-xl object-contain" />
+          <button type="button" autoFocus className="absolute right-5 top-5 flex items-center gap-2 rounded-full border border-white/40 bg-black/60 px-4 py-2 text-sm font-medium text-white hover:border-white" onClick={() => setZoomed(false)}>
+            <Icon d={ICONS.close} className="h-4 w-4" />
+            Close
+          </button>
+        </div>
       )}
     </li>
   );
