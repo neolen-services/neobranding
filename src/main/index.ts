@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { audioFilePath } from "./audio";
 import { mediaFilePath } from "./media";
+import { renderAnimation } from "./render";
 import { createHandlers } from "./handlers";
 import { researchFilePath } from "./research";
 import type { Secrets } from "./store";
@@ -70,6 +71,7 @@ app.whenReady().then(() => {
     secrets: osSecrets,
     listenToTelegram: true,
     openFolder: (path) => void shell.openPath(path),
+    renderAnimation,
   });
 
   for (const [channel, handler] of Object.entries(core.handlers)) {

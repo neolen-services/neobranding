@@ -47,6 +47,8 @@ type Tool = Anthropic.Beta.BetaTool;
 
 /** What the agent needs from the rest of the app. */
 export type AgentContext = {
+  /** Renders an animation page to an MP4; only the desktop app can. */
+  render?: (page: string, seconds: number, ffmpeg: string) => Promise<Buffer>;
   dataDir: () => string;
   store: () => Store;
   key: (provider: ApiProvider) => string;
@@ -589,6 +591,7 @@ function postSummary(p: ResearchItem) {
     analysed: Boolean(p.analysis),
     ...(p.analysis && {
       format: p.analysis.format,
+      visual_style: p.analysis.style,
       hook_type: p.analysis.hookType,
       topic: p.analysis.topic,
       seconds: p.analysis.durationSeconds ? Math.round(p.analysis.durationSeconds) : undefined,

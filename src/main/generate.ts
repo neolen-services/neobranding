@@ -148,7 +148,7 @@ function describeTemplate(code: string, post: ResearchItem): string {
     `${code}: by ${post.author || post.authorHandle} on ${post.platform}`,
     `  Numbers: ${post.likeCount ?? "?"} likes, ${post.commentCount ?? "?"} comments${post.rating !== null ? `; the creator rated it ${post.rating}/5` : ""}`,
     post.note && `  The creator's note: ${post.note}`,
-    `  Format: ${a.format}. Topic: ${a.topic}. Emotion: ${a.emotion}.`,
+    `  Format: ${a.format}.${a.style ? ` Visual style: ${a.style}.` : ""} Topic: ${a.topic}. Emotion: ${a.emotion}.`,
     `  Hook (${a.hookType}): says "${a.spokenHook || "(nothing spoken)"}"; shows ${a.visualHook || "(not described)"}${a.openingText ? `; on-screen text "${a.openingText}"` : ""}`,
     `  Length: ${a.durationSeconds ? `${Math.round(a.durationSeconds)}s` : "?"}${a.cuts !== null ? `, ${a.cuts} cuts` : ""}${a.wordsPerMinute ? `, ${a.wordsPerMinute} words a minute` : ""}`,
     `  Skeleton: ${a.skeleton.map((s, i) => `${i + 1}) ${s}`).join(" ")}`,

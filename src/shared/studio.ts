@@ -1,6 +1,7 @@
 // Studio types: the cast, series and videos being made. Shared by the main process and the UI.
 import type { SpeakingVoice } from "./brand";
 import { parseTakes, type Take } from "./media";
+import type { Animation } from "./motion";
 
 /** A recurring character. Made once and reused in any video or series. */
 export type Character = {
@@ -13,6 +14,8 @@ export type Character = {
   speech: string;
   /** What they look like, including a fixed outfit or colour. */
   look: string;
+  /** The style they are drawn in: the id of one of VIDEO_STYLES, or the creator's own words. "" when it has not been said. */
+  style: string;
   /** The ElevenLabs voice their lines are spoken in, or null until one is chosen. */
   voice: SpeakingVoice | null;
   /** Pictures of the character. The first is the main one: their portrait, which is also what lip-sync makes speak. */
@@ -24,6 +27,41 @@ export type Character = {
   sheet: Take | null;
   createdAt: string;
 };
+
+/** The styles a video's AI scenes can be made in. `prompt` is what the picture and video models are told. */
+export const VIDEO_STYLES = [
+  { id: "real", label: "Realistic", note: "Looks filmed with a camera", prompt: "Photorealistic live-action film: real people and places, natural light, shallow depth of field. Not animated, not illustrated." },
+  { id: "motion", label: "Motion graphics", note: "Animated type and shapes, made by Claude", prompt: "Motion graphics: animated typography, shapes, icons and simple diagrams on designed backgrounds. No photographs and no drawn people." },
+  { id: "anime", label: "Anime", note: "Japanese animation", prompt: "Anime: hand-drawn Japanese animation with clean line art, flat cel shading and expressive faces. Not photorealistic." },
+  { id: "3d", label: "3D animation", note: "Like a modern animated film", prompt: "3D animated film: stylised characters with soft, rounded shapes, detailed materials and warm cinematic light. Not photorealistic." },
+  { id: "cartoon", label: "2D cartoon", note: "Flat, bold and simple", prompt: "2D cartoon: bold outlines, flat bright colours and simple shapes. Not photorealistic." },
+  { id: "comic", label: "Comic book", note: "Inked, with strong shadows", prompt: "Comic book art: inked outlines, strong shadows, halftone shading and saturated colours. Not photorealistic." },
+  { id: "clay", label: "Claymation", note: "Stop-motion clay figures", prompt: "Claymation: stop-motion figures and sets made of modelling clay, with visible fingerprints and soft studio light." },
+  { id: "watercolour", label: "Watercolour", note: "Soft painted illustration", prompt: "Watercolour illustration: soft washes of colour, visible paper texture and loose painted edges. Not photorealistic." },
+  { id: "pixel", label: "Pixel art", note: "Like an old video game", prompt: "Pixel art: low-resolution sprites and backgrounds with a limited colour palette, like a 16-bit video game." },
+] as const;
+
+/**
+ * The one style made without any picture or video service: Claude writes each scene as an animation
+ * and the app renders it. A video in this style has animations where others have storyboards.
+ */
+export const MOTION_STYLE = "motion";
+export const isMotion = (video: Pick<Video, "style" | "production">) => video.style === MOTION_STYLE && video.production !== "me";
+
+/** The styles a character can be drawn in: every video style that has people or creatures in it. */
+export const CHARACTER_STYLES = VIDEO_STYLES.filter((s) => s.id !== "motion");
+/**
+ * Whether a character suits a video: drawn in its style, or with no style of their own yet.
+ * A character in another style can still be used; storyboards redraw them in the video's style.
+ */
+export const suitsStyle = (character: Pick<Character, "style">, style: string) => !character.style || !style || character.style === style;
+
+/** The style every new video starts with. */
+export const DEFAULT_STYLE = "real";
+/** What a style is called: a preset's name, or the creator's own words. */
+export const styleLabel = (style: string) => VIDEO_STYLES.find((s) => s.id === style)?.label ?? (style || "No style chosen");
+/** What the picture and video models are told about a style: a preset's wording, or the creator's own words. "" for none. */
+export const stylePrompt = (style: string) => VIDEO_STYLES.find((s) => s.id === style)?.prompt ?? style;
 
 /** The picture that shows what a character looks like to a picture or video model: their sheet, or their portrait until they have one. */
 export const characterReference = (character: Character): Take | undefined => character.sheet ?? character.pictures[0];
@@ -67,7 +105,9 @@ export type Scene = {
   /** Every storyboard made for the scene (one sheet of frames showing what happens in it), and the id of the one in use ("" for none). */
   pictures: Take[];
   picture: string;
-  /** The id of the storyboard the creator approved, or "". A storyboard made or chosen afterwards needs approving again. */
+  /** A motion graphics scene's animation, in place of a storyboard; null for every other scene. */
+  animation: Animation | null;
+  /** The id of the storyboard (or animation) the creator approved, or "". A storyboard made or chosen afterwards needs approving again. */
   approved: string;
   /** What the storyboard check said about one of this scene's storyboards, or null when none has been checked. */
   review: StoryboardReview | null;
@@ -92,7 +132,9 @@ export type StoryboardReview = {
 };
 
 /** Whether a scene's storyboard is settled: the creator approved the one in use. A scene the creator films has none to approve. */
-export const storyboardApproved = (scene: Scene) => scene.madeBy === "me" || (scene.picture !== "" && scene.approved === scene.picture);
+/** The id of what a scene's clip is made from: its animation when it has one, else the storyboard in use. "" for none. */
+export const boardId = (scene: Scene) => scene.animation?.id ?? scene.picture;
+export const storyboardApproved = (scene: Scene) => scene.madeBy === "me" || (boardId(scene) !== "" && scene.approved === boardId(scene));
 
 export const pickedPicture = (scene: Scene) => scene.pictures.find((t) => t.id === scene.picture);
 export const pickedClip = (scene: Scene) => scene.clips.find((t) => t.id === scene.clip);
@@ -156,8 +198,12 @@ export type Video = {
   source: "new" | "remake";
   /** What the video is about, in the creator's or the idea's words. The script is written from this. */
   brief: string;
-  /** The visual style of its AI scenes, e.g. "realistic film, warm light". "" uses its series' look. */
+  /** The style its AI scenes are made in: the id of one of VIDEO_STYLES, or the creator's own words. "" uses its series' style. */
+  style: string;
+  /** The finer look within that style, e.g. "warm evening light, shallow focus". "" uses its series' look. */
   look: string;
+  /** For a motion graphics video: the stylesheet Claude designed, which every scene's animation is built on. "" until it is made. */
+  design: string;
   /** Whether its scenes are generated, filmed by the creator, or both. The script is written to fit. */
   production: Production;
   /** The saved ideas it was started from; [] for none. */
@@ -229,7 +275,9 @@ export type Series = {
   /** How the season ends, or what will be measured and when if the ending is not known. */
   ending: string;
   characterIds: string[];
-  /** The visual style every episode's AI scenes share. */
+  /** The style every episode's AI scenes are made in: the id of one of VIDEO_STYLES, or the creator's own words. */
+  style: string;
+  /** The finer look within that style that every episode shares. */
   look: string;
   /** How every episode is made, unless one is changed. */
   production: Production;
@@ -289,10 +337,12 @@ export type NewVideo = {
   brief?: string;
   /** Left out, an episode follows its series and anything else is a mix. */
   production?: Production;
+  /** The style its AI scenes are made in: the id of one of VIDEO_STYLES, or the creator's own words. */
+  style?: string;
 };
 
 /** What a new series is planned from, besides its title and what it is about. */
-export type NewSeries = { ideaIds?: string[]; postIds?: string[]; production?: Production };
+export type NewSeries = { ideaIds?: string[]; postIds?: string[]; production?: Production; /** The style every episode's AI scenes are made in. */ style?: string };
 /** A series started from an idea, before its season is planned. */
 export type SeriesStart = NewSeries & { title?: string; brief?: string };
 
@@ -324,11 +374,19 @@ export function parseCharacter(input: unknown): Character {
     personality: str(i.personality),
     speech: str(i.speech),
     look: str(i.look),
+    style: str(i.style),
     voice: parseVoice(i.voice),
     pictures: parseTakes(i.pictures),
     sheet: parseTakes([i.sheet])[0] ?? null,
     createdAt: str(i.createdAt) || now(),
   };
+}
+
+function parseAnimation(input: unknown): Animation | null {
+  if (!input || typeof input !== "object") return null;
+  const a = input as Record<string, unknown>;
+  if (!str(a.id) || typeof a.html !== "string") return null;
+  return { id: str(a.id), html: a.html, css: typeof a.css === "string" ? a.css : "", madeAt: str(a.madeAt) };
 }
 
 function parseReview(input: unknown): StoryboardReview | null {
@@ -353,6 +411,7 @@ function parseScene(input: Record<string, unknown>, index: number): Scene {
     sound: str(input.sound),
     pictures: parseTakes(input.pictures),
     picture: str(input.picture),
+    animation: parseAnimation(input.animation),
     approved: str(input.approved),
     review: parseReview(input.review),
     clips: parseTakes(input.clips),
@@ -414,6 +473,7 @@ export function parseVideo(input: unknown): Video {
     format: i.format === "episode" ? "episode" : "single",
     source: i.source === "remake" ? "remake" : "new",
     brief: str(i.brief),
+    style: str(i.style),
     look: str(i.look),
     production: parseProduction(i.production),
     ideaIds: ideaList(i.ideaIds),
@@ -424,6 +484,7 @@ export function parseVideo(input: unknown): Video {
     claim: parseClaim(i.claim),
     hooks: strs(i.hooks).slice(0, 3),
     overlay: str(i.overlay),
+    design: typeof i.design === "string" ? i.design : "",
     scenes: objs(i.scenes).map(parseScene),
     checks: objs(i.checks)
       .map((c) => ({ rule: str(c.rule), ok: c.ok === true, note: str(c.note) }))
@@ -454,6 +515,7 @@ export function parseSeries(input: unknown): Series {
     question: str(i.question),
     ending: str(i.ending),
     characterIds: strs(i.characterIds),
+    style: str(i.style),
     look: str(i.look),
     production: parseProduction(i.production),
     ideaIds: ideaList(i.ideaIds),

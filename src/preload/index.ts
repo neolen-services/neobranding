@@ -96,6 +96,8 @@ const api = {
   /** Says whether a scene carries straight on from the one before it, starting on its last frame, or is a new shot. Free. */
   /** Has Claude look at a video's storyboards and say what is wrong with each: one scene's, only those not checked yet ("new"), or all. Uses Claude credits. */
   reviewStoryboard: (videoId: string, sceneId?: string | "new"): Promise<TakeResult> => ipcRenderer.invoke("storyboard:review", videoId, sceneId),
+  /** Has Claude animate one scene of a motion graphics video; with a note, its current animation is changed. Uses Claude credits. */
+  animateScene: (videoId: string, sceneId: string, note?: string): Promise<TakeResult> => ipcRenderer.invoke("scene:animate", videoId, sceneId, note),
   /** Approves the storyboard a scene has in use, or takes the approval back. */
   approveStoryboard: (videoId: string, sceneId: string, approved: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:approve", videoId, sceneId, approved),
   setSceneFlow: (videoId: string, sceneId: string, continues: boolean): Promise<TakeResult> => ipcRenderer.invoke("scene:flow", videoId, sceneId, continues),
@@ -124,6 +126,8 @@ const api = {
   /** Turns automatic analysis of new posts on or off. */
   setResearchAuto: (on: boolean): Promise<boolean> => ipcRenderer.invoke("research:setAuto", on),
   /** Has Claude sort analysed posts into groups of similar videos: those without a group, or (with all) every one afresh. Costs a few cents. */
+  /** Adds the visual style to a post analysed before styles were recorded. Uses a little Claude credit. */
+  styleResearch: (id: string): Promise<ResearchResult> => ipcRenderer.invoke("research:style", id),
   groupResearch: (all?: boolean): Promise<GroupingResult> => ipcRenderer.invoke("research:group", all === true),
   /** Looks up which sound a saved post uses. */
   refreshResearchAudio: (id: string): Promise<ResearchResult> => ipcRenderer.invoke("research:audio", id),

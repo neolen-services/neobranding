@@ -14,7 +14,9 @@ import {
   parseVideo,
   SPEAKER_ME,
   SPEAKER_NARRATOR,
+  isMotion,
   speakerName,
+  stylePrompt,
   type Character,
   type Production,
   type Series,
@@ -92,7 +94,7 @@ Write:
 - claim: the one true thing the video is built on.
   - fact: one sentence. If the video makes no factual claim (pure story, behind the scenes), give "" and evidence "none".
   - evidence: "strong" (well-replicated research or official guidelines), "early" (small or new studies), "personal" (the creator's own experience), or "none".
-  - source: say what kind of source supports it and what the creator should look up to confirm it, for example "Reviews of trials on light walking after meals; confirm on PubMed". You cannot browse, so NEVER invent a study title, author, journal, year or link, and never state numbers you are not sure of. The creator confirms the source themselves.
+  - source: say what kind of source supports it and what the creator should look up to confirm it, for example "Published tests of how long the product lasts; confirm on the testing body's own page". You cannot browse, so NEVER invent a study title, author, journal, year or link, and never state numbers you are not sure of. The creator confirms the source themselves.
   - action: the one thing the viewer should do or check.
 - hooks: exactly three opening lines for the first three seconds, strongest first, each naming the viewer or their problem. The first is the one the scenes use.
 - overlay: the on-screen text of the opening, eight words or fewer.
@@ -106,7 +108,7 @@ Write:
 - caption: a ready-to-post caption of one to three sentences in the creator's voice.
 - kept and changed: only for a remake, otherwise []. kept = what you borrowed from the original (format, kind of hook, order of beats). changed = what is new (characters, place, every word, the topic).
 - story_update: only for a series episode, otherwise []. Two to four short facts this episode adds to the story so far.
-- look: one sentence on the visual style all the AI scenes share (kind of image, colour, light), for example "Realistic film, warm evening light, shallow focus". Keep the series' look when one is given.
+- look: one sentence on the finer look all the AI scenes share within the video's style (colour, light, lens, mood), for example "Warm evening light, shallow focus, muted colours". The style itself (realistic, anime and so on) is given to you; do not contradict it. Keep the series' look when one is given.
 - new_characters: characters the script needs that are not in the cast, each with name, role, personality, speech (how they talk) and look (including one fixed colour or item of clothing). [] when the cast is enough. Keep casts small.
 
 Rules for the writing:
@@ -140,7 +142,7 @@ const describeCast = (characters: Character[]) =>
 function describePost(post: ResearchItem): string {
   const a = post.analysis!;
   return [
-    `Format: ${a.format}. Topic: ${a.topic}. Kind of hook: ${a.hookType}.`,
+    `Format: ${a.format}.${a.style ? ` Visual style: ${a.style}${a.styleNotes ? ` (${a.styleNotes})` : ""}.` : ""} Topic: ${a.topic}. Kind of hook: ${a.hookType}.`,
     `Length: ${a.durationSeconds ? `${Math.round(a.durationSeconds)}s` : "unknown"}.`,
     `What happens: ${a.beats.map((b, i) => `${i + 1}) ${b}`).join(" ")}`,
     `Structure: ${a.skeleton.map((s, i) => `${i + 1}) ${s}`).join(" ")}`,
@@ -239,6 +241,13 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
     series
       ? `THE SERIES\nTitle: ${series.title}${series.look ? `\nLook: ${series.look}` : ""}\nPremise: ${series.premise}\nRunning question: ${series.question}\nEnding: ${series.ending}\nThis is episode ${video.episode ?? "?"} of ${series.episodes.length}.${episodeLine ? ` It teaches: ${episodeLine.teaches}. It ends on: ${episodeLine.endsOn}.` : ""}\nStory so far:\n${series.storySoFar.length ? series.storySoFar.map((s) => `- ${s}`).join("\n") : "(nothing yet: this is the start)"}`
       : "",
+    how !== "me" && stylePrompt(video.style || series?.style || "")
+      ? `THE STYLE OF THE AI SCENES\n${stylePrompt(video.style || series?.style || "")}\n${
+          isMotion(video)
+            ? 'Every AI scene is an animation of type, shapes, icons and diagrams, not a filmed or drawn shot. So: there are no characters at all (characters is [] in every scene and new_characters is []); lines in AI scenes are spoken by NARRATOR; "action" says what appears on screen and how it moves (what is drawn, what it turns into, what number or word lands); "camera" says how the layout moves (a push in, a slide, a wipe) or is ""; "place" is ""; "text" carries the few words that must be on screen; and every scene has flow "cut".'
+            : "Write scenes that suit this style and can be drawn in it."
+        }`
+      : "",
     how === "me"
       ? `THE CAST\nNone. The creator (speaker "ME") films this alone.`
       : `THE CAST AVAILABLE\n${describeCast(cast)}\n${how === "ai" ? "The creator does not appear in this video." : 'The creator (speaker "ME") is always available and is filmed, never generated.'}`,
@@ -297,7 +306,9 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
         clips: video.scenes[index]?.clips ?? [],
         clip: video.scenes[index]?.clip ?? "",
         madeBy: how === "mix" ? s.made_by : how,
-        continues: index > 0 && s.flow === "continues",
+        // Animations are cut together; only filmed or drawn shots can carry on from one another.
+        continues: index > 0 && s.flow === "continues" && !isMotion(video),
+        animation: null,
         seconds: s.seconds,
         place: s.place,
         characters: how === "me" ? [] : s.characters.map(idOf).filter(Boolean),

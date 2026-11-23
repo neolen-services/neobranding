@@ -24,15 +24,20 @@ import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
 import { planSeries, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
+import { animateScene, designMotion } from "./motion";
+import { animationPage } from "../shared/motion";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaSettings, type MediaTask, type UploadedFile } from "../shared/media";
-import { characterReference, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
+import { boardId, characterReference, DEFAULT_STYLE, isMotion, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
 import { audioFilePath } from "./audio";
 import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
 
 const MEDIA_SETTING = "media_settings";
 
 export type StudioContext = {
+  /** Renders an animation page to an MP4 on this computer. Only the desktop app can; undefined elsewhere. */
+  render?: (page: string, seconds: number, ffmpeg: string) => Promise<Buffer>;
   dataDir: () => string;
   store: () => Store;
   key: (provider: ApiProvider) => string;
@@ -101,6 +106,37 @@ export function studioOps(ctx: StudioContext) {
     db().saveDoc("videos", saved);
     return { ok: true, video: saved };
   }
+
+  /**
+   * The shared design of a motion graphics video, made once. Scenes animated at the same time all wait
+   * for the one request instead of each asking for a design of its own.
+   */
+  const designing = new Map<string, Promise<{ ok: true; css: string } | { ok: false; error: string }>>();
+  function designFor(videoId: string) {
+    const video = findVideo(videoId);
+    if (!video) return Promise.resolve({ ok: false as const, error: "That video no longer exists." });
+    if (video.design) return Promise.resolve({ ok: true as const, css: video.design });
+    let running = designing.get(videoId);
+    if (!running) {
+      running = (async () => {
+        const brand = db().getBrand();
+        if (!brand) return { ok: false as const, error: "Create your brand first." };
+        const result = await designMotion(ctx.key("anthropic"), { video, brand, look: video.look });
+        if (!result.ok) return result;
+        const now = findVideo(videoId);
+        if (now) db().saveDoc("videos", { ...now, design: result.value.css, costUsd: now.costUsd + result.value.costUsd });
+        return { ok: true as const, css: result.value.css };
+      })().finally(() => designing.delete(videoId));
+      designing.set(videoId, running);
+    }
+    return running;
+  }
+
+  /** How a video's AI scenes look: its style (its series' when it has none of its own), then the finer look within it. */
+  const lookOf = (video: Video) => {
+    const parent = series().find((s) => s.id === video.seriesId);
+    return [stylePrompt(video.style || parent?.style || ""), video.look || parent?.look || ""].filter(Boolean).join(" ");
+  };
 
   /** The characters seen or heard in a scene. */
   // A script sometimes names someone in what happens without listing them among those seen, so the name counts too.
@@ -206,7 +242,7 @@ export function studioOps(ctx: StudioContext) {
         const brief = words(from.brief);
         const title = words(from.title) || ideas[0]?.title || brief.slice(0, 60) || (inspired.posts[0] ? `Inspired by ${inspired.posts[0].analysis?.topic || inspired.posts[0].author || "a saved post"}` : "");
         if (!title) return { ok: false, error: "Give the series a title, pick an idea or a post, or say what it is about." };
-        const made = parseSeries({ id: randomUUID(), title, brief, production: from.production === undefined ? (ideas[0]?.production ?? "mix") : parseProduction(from.production), ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
+        const made = parseSeries({ id: randomUUID(), title, brief, production: from.production === undefined ? (ideas[0]?.production ?? "mix") : parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE, ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
         db().saveDoc("series", made);
         return { ok: true, value: made };
       } catch (e) {
@@ -230,7 +266,8 @@ export function studioOps(ctx: StudioContext) {
         posts: await postsOf(existing.postIds),
       });
       if (!result.ok) return result;
-      for (const character of result.value.newCharacters) db().saveDoc("characters", character);
+      // The characters a season plan makes are drawn in the style of the series.
+      for (const character of result.value.newCharacters) db().saveDoc("characters", { ...character, style: existing.style === "motion" ? "" : existing.style });
       const planned = result.value.series;
       const saved = parseSeries({
         ...existing,
@@ -250,7 +287,7 @@ export function studioOps(ctx: StudioContext) {
       try {
         const from = input ?? {};
         const now = new Date().toISOString();
-        const base = { id: randomUUID(), createdAt: now, updatedAt: now, production: parseProduction(from.production) };
+        const base = { id: randomUUID(), createdAt: now, updatedAt: now, production: parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE };
         const picked = ideaList([from.ideaId, ...(Array.isArray(from.ideaIds) ? from.ideaIds : [])]);
         let video: Video;
         if (!from.postId && !from.seriesId) {
@@ -295,6 +332,7 @@ export function studioOps(ctx: StudioContext) {
             title: `${parent.title} · Episode ${number}`,
             brief: `${episode.teaches} Ends on: ${episode.endsOn}`,
             format: "episode",
+            style: parent.style || base.style,
             seriesId: parent.id,
             episode: number,
             // An episode is made the way its series is.
@@ -329,7 +367,7 @@ export function studioOps(ctx: StudioContext) {
         const taken = new Set(everyone.map((c) => c.name.toLowerCase()));
         let name = from.name;
         for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${from.name} ${n}`;
-        to = parseCharacter({ id: randomUUID(), name, role: from.role, personality: from.personality, speech: from.speech, look: from.look, voice: null, pictures: [] });
+        to = parseCharacter({ id: randomUUID(), name, role: from.role, personality: from.personality, speech: from.speech, look: from.look, style: from.style, voice: null, pictures: [] });
         db().saveDoc("characters", to);
       }
       if (!to) return { ok: false, error: "The character to use is no longer there." };
@@ -397,7 +435,8 @@ export function studioOps(ctx: StudioContext) {
         learned: learned(),
       });
       if (!result.ok) return result;
-      for (const character of result.value.newCharacters) db().saveDoc("characters", character);
+      // A character the script made is drawn in the style of the video it was made for.
+      for (const character of result.value.newCharacters) db().saveDoc("characters", { ...character, style: isMotion(video) ? "" : video.style || parent?.style || "" });
       // Every character an episode uses joins that series' cast, whether the script made them or they already existed.
       if (parent) {
         const known = new Set(cast().map((c) => c.id));
@@ -455,6 +494,7 @@ export function studioOps(ctx: StudioContext) {
         const media = await makePicture(ctx.key, choice, {
           prompt: [
             "A reference picture of one character for a short video series, so they can be drawn the same way every time.",
+            stylePrompt(character.style) && `Style: ${stylePrompt(character.style)}`,
             "Full body, facing the camera, plain neutral background, even light. No text, captions or logos.",
             `Character: ${character.name}${character.role ? `, ${character.role}` : ""}.`,
             `Look: ${character.look || character.personality}`,
@@ -497,6 +537,7 @@ export function studioOps(ctx: StudioContext) {
             portrait ? "The reference picture shows this character. Keep them exactly as they are in it: do not change their face, age, hair, build or outfit." : "",
             `Character: ${character.name}${character.role ? `, ${character.role}` : ""}.`,
             character.look && `Look: ${character.look}`,
+            stylePrompt(character.style) && `Style: ${stylePrompt(character.style)}${portrait ? " If the reference picture is in another style, keep the picture's." : ""}`,
             "No text, labels, captions, arrows or logos.",
           ]
             .filter(Boolean)
@@ -566,13 +607,13 @@ export function studioOps(ctx: StudioContext) {
         const current = asked ? pickedPicture(scene) : undefined;
         const first = current ?? setPicture;
         const withPictures = inScene.filter((c) => characterReference(c)).slice(0, first ? 3 : 4);
-        const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
+        const look = lookOf(video);
         const said = scene.lines.map((l) => `${speakerName(l.speaker, cast())}: ${l.text}`).join(" / ");
         const media = await makePicture(ctx.key, choice, {
           prompt: [
             `A storyboard sheet for ONE shot of a vertical short video, ${scene.seconds} seconds long. Draw exactly four frames in a 2 by 2 grid, read left to right and top to bottom, with a thin dark border between them. Each frame is a tall 9:16 picture. Together they show this one continuous shot from its first moment to its last: frame 1 is how it opens, frames 2 and 3 are the action in between, frame 4 is how it ends.`,
             "It is one take, not four shots: the same place, people, clothes, props and light in every frame. Only the action moves on, and the camera only as the camera note says.",
-            look ? `Draw every frame in the finished look of the video: ${look}` : "Draw every frame as the finished video will look.",
+            look ? `Draw every frame in the style and look of the finished video: ${look}` : "Draw every frame as the finished video will look.",
             scene.place && `Place: ${scene.place}.`,
             `What happens across the four frames: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
@@ -581,7 +622,7 @@ export function studioOps(ctx: StudioContext) {
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide what each character looks like: draw each one exactly as in their picture in every frame, with the same face, age, hair, build, clothes and colours, from whatever side the frame shows them. Do not copy the layout or the plain background of a character sheet.`
+              ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide who each character is: keep the same face, age, hair, build, clothes and colours in every frame, from whatever side the frame shows them. Draw them in the style of this video even where their picture is in another style. Do not copy the layout or the plain background of a character sheet.`
               : "",
             current
               ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else exactly as it is in that picture: the same four frames in the same order, the same composition, place, people, faces, clothes, props, light and colours. Change only what the instruction names, in every frame it applies to.`
@@ -631,7 +672,7 @@ export function studioOps(ctx: StudioContext) {
         const result = await reviewStoryboards(ctx.key("anthropic"), {
           video,
           characters: cast().filter((c) => video.scenes.some((s) => s.characters.includes(c.id) || s.lines.some((l) => l.speaker === c.id))),
-          look: video.look || series().find((s) => s.id === video.seriesId)?.look || "",
+          look: lookOf(video),
           sheets,
           faces: await Promise.all(
             cast()
@@ -668,12 +709,47 @@ export function studioOps(ctx: StudioContext) {
       }
     },
 
+    /**
+     * Has Claude animate one scene of a motion graphics video. The video's shared design is made first if it
+     * has none. With a note, the scene's current animation is changed as the note says.
+     */
+    async sceneAnimation(videoId: unknown, sceneId: unknown, note: unknown): Promise<TakeResult> {
+      try {
+        const { video, scene } = find(videoId, sceneId);
+        if (!video.approvedAt) return { ok: false, error: "Approve the script first, so nothing is animated for words that will change." };
+        if (!isMotion(video) || scene.madeBy !== "ai") return { ok: false, error: "Only the AI scenes of a motion graphics video are animated." };
+        const brand = db().getBrand();
+        if (!brand) return { ok: false, error: "Create your brand first." };
+        const designed = await designFor(video.id);
+        if (!designed.ok) return designed;
+        const asked = typeof note === "string" ? note.trim() : "";
+        const result = await animateScene(ctx.key("anthropic"), {
+          video,
+          brand,
+          look: video.look,
+          design: designed.css,
+          index: video.scenes.indexOf(scene),
+          ...(asked && { note: asked }),
+          ...(asked && scene.animation && { current: scene.animation }),
+        });
+        if (!result.ok) return result;
+        const animation = { id: randomUUID(), html: result.value.html, css: result.value.css, madeAt: new Date().toISOString() };
+        const now = findVideo(video.id);
+        if (!now) return { ok: false, error: "That video no longer exists." };
+        const saved = { ...now, costUsd: now.costUsd + result.value.costUsd, scenes: now.scenes.map((s) => (s.id === scene.id ? { ...s, animation } : s)), updatedAt: animation.madeAt };
+        db().saveDoc("videos", saved);
+        return { ok: true, video: saved };
+      } catch (e) {
+        return fail(e, "The scene could not be animated.");
+      }
+    },
+
     /** The creator approves the storyboard a scene has in use, or takes the approval back. */
     sceneApprove(videoId: unknown, sceneId: unknown, approved: unknown): TakeResult {
       try {
         const { video, scene } = find(videoId, sceneId);
-        if (approved === true && !pickedPicture(scene)) return { ok: false, error: "This scene has no storyboard to approve yet." };
-        return change(video.id, scene.id, (s) => ({ ...s, approved: approved === true ? s.picture : "" }));
+        if (approved === true && !boardId(scene)) return { ok: false, error: "This scene has nothing to approve yet." };
+        return change(video.id, scene.id, (s) => ({ ...s, approved: approved === true ? boardId(s) : "" }));
       } catch (e) {
         return fail(e, "That did not work.");
       }
@@ -694,6 +770,20 @@ export function studioOps(ctx: StudioContext) {
     /** Turns the scene's chosen picture into a moving clip. */
     async sceneClip(videoId: unknown, sceneId: unknown, override: unknown): Promise<TakeResult> {
       try {
+        const asked = find(videoId, sceneId);
+        // A motion graphics scene is not sent anywhere: its animation is rendered on this computer.
+        if (asked.scene.animation) {
+          const { video, scene } = asked;
+          const animation = scene.animation!;
+          if (!storyboardApproved(scene)) return { ok: false, error: `Scene ${video.scenes.indexOf(scene) + 1}'s animation is not approved yet. Approve it first.` };
+          if (!ctx.render) return { ok: false, error: "Animations are rendered by the desktop app. Open this video there to make its clips." };
+          const toolsDir = await ensureFfmpeg(ctx.dataDir());
+          if (!toolsDir) return { ok: false, error: "FFmpeg is needed to render an animation, and it could not be set up on this computer." };
+          const bytes = await ctx.render(animationPage(video.design, animation, scene.seconds, "render"), scene.seconds, join(toolsDir, `ffmpeg${process.platform === "win32" ? ".exe" : ""}`));
+          const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, { bytes, mime: "video/mp4" }, "ai", "Rendered on this computer")), from: animation.id };
+          return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
+        }
+        if (isMotion(asked.video) && asked.scene.madeBy === "ai") return { ok: false, error: `Scene ${asked.video.scenes.indexOf(asked.scene) + 1} is not animated yet. Animate it on the Storyboard tab first.` };
         const source = await clipSource(videoId, sceneId);
         if (!source.ok) return source;
         const { video, scene, index } = source;
@@ -704,9 +794,9 @@ export function studioOps(ctx: StudioContext) {
             media: source.storyboard,
             role: "the storyboard of this shot: a sheet of numbered frames in reading order, showing what happens from its first moment to its last. Follow those frames in order as ONE continuous shot. It is a plan, not a picture to show: never show the sheet, the grid, the borders or the numbers",
           },
-          ...(await Promise.all(inScene.map(async (c) => ({ media: await loadTake(ctx.dataDir(), characterReference(c)!), role: `${c.name}${c.sheet ? ", on a character sheet (front, back and face)" : ""}: this decides what they look like. Keep the same face, hair, build, clothes and colours; never show the sheet itself` })))),
+          ...(await Promise.all(inScene.map(async (c) => ({ media: await loadTake(ctx.dataDir(), characterReference(c)!), role: `${c.name}${c.sheet ? ", on a character sheet (front, back and face)" : ""}: this decides who they are. Keep the same face, hair, build, clothes and colours, in the style of this video; never show the sheet itself` })))),
         ];
-        const look = video.look || series().find((s) => s.id === video.seriesId)?.look || "";
+        const look = lookOf(video);
         const media = await makeClip(ctx.key, choice, {
           references,
           opening: source.opening,
@@ -716,7 +806,7 @@ export function studioOps(ctx: StudioContext) {
             `What happens: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
             scene.place && `Place: ${scene.place}.`,
-            look && `Look: ${look}`,
+            look && `Style and look: ${look}`,
             "No captions, subtitles or any text on screen. No split screen.",
           ]
             .filter(Boolean)

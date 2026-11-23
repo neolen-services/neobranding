@@ -11,7 +11,7 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { estimateCostUsd, HOOK_TYPES, VIDEO_FORMATS, type PostAnalysis } from "../shared/analysis";
+import { estimateCostUsd, HOOK_TYPES, VIDEO_FORMATS, VISUAL_STYLES, type PostAnalysis } from "../shared/analysis";
 import type { ResearchItem } from "../shared/research";
 import { recordClaude } from "./usage";
 
@@ -100,6 +100,8 @@ export async function groupPosts(apiKey: string, posts: ResearchItem[], existing
 const AnalysisSchema = z.object({
   summary: z.string(),
   format: z.enum(VIDEO_FORMATS),
+  style: z.enum(VISUAL_STYLES),
+  styleNotes: z.string(),
   topic: z.string(),
   emotion: z.string(),
   hookType: z.enum(HOOK_TYPES),
@@ -120,6 +122,8 @@ You are given frames from one post (each labelled with its time in the video), p
 Fill in:
 - summary: one or two sentences on what the post is and does.
 - format: the closest option.
+- style: how the post was made to look, judged from the frames. "Filmed" when it was shot with a real camera (a person talking, hands, places), even with captions or small graphics on top. "Realistic AI" when it looks like live action but was generated. The animation styles when it is drawn or animated in that way. "Motion graphics" when it is animated text, shapes, icons and charts with no people. "Screen recording" for a captured screen. "Mixed" only when two styles each carry a large part of it. "Other" when none fits.
+- styleNotes: one sentence on the look within that style that someone would need to copy it: colour and light, how the drawing or footage is treated, how text is set on screen.
 - topic: the subject, in a few words.
 - emotion: the main feeling it plays on.
 - hookType: the closest option for how the opening grabs attention.
@@ -170,6 +174,68 @@ async function grab(ffmpeg: string, args: string[], out: string): Promise<string
     return (await readFile(out)).toString("base64");
   } catch {
     return null; // A frame that cannot be read is skipped.
+  }
+}
+
+const StyleSchema = z.object({ style: z.enum(VISUAL_STYLES), styleNotes: z.string() });
+
+/**
+ * Looks only at how a post was made to look, for a post whose analysis was made before styles were
+ * recorded. A few small frames and one short answer, so it costs a fraction of a full analysis.
+ */
+export async function stylePost(apiKey: string, item: ResearchItem, itemDir: string, toolsDir: string | null): Promise<{ ok: true; style: (typeof VISUAL_STYLES)[number]; styleNotes: string } | { ok: false; error: string }> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  if (!toolsDir) return { ok: false, error: "FFmpeg is needed to look at a post's frames, and it is not available on this computer." };
+  const ffmpeg = join(toolsDir, `ffmpeg${EXE}`);
+  const ffprobe = join(toolsDir, `ffprobe${EXE}`);
+  const video = item.media.find((m) => m.kind === "video");
+  const sources: string[][] = [];
+  if (video) {
+    const file = join(itemDir, video.file);
+    const end = (await duration(ffprobe, file)) ?? item.durationSeconds ?? 0;
+    // Four moments spread through the video; the very start is often a title card.
+    for (const part of [0.1, 0.35, 0.6, 0.85]) sources.push(["-ss", (end * part).toFixed(2), "-i", file]);
+  } else {
+    for (const picture of item.media.filter((m) => m.kind === "image").slice(0, 3)) sources.push(["-i", join(itemDir, picture.file)]);
+  }
+  const work = join(itemDir, "style-frames");
+  const frames: string[] = [];
+  try {
+    await mkdir(work, { recursive: true });
+    for (const [i, source] of sources.entries()) {
+      const out = join(work, `s${i}.jpg`);
+      try {
+        await exec(ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", ...source, "-frames:v", "1", "-vf", "scale=-2:448", "-q:v", "6", out], { windowsHide: true });
+        frames.push((await readFile(out)).toString("base64"));
+      } catch {
+        // A frame that cannot be read is skipped.
+      }
+    }
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+  if (frames.length === 0) return { ok: false, error: "No frame of this post could be read." };
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages
+      .stream({
+        model: "claude-opus-5-5",
+        max_tokens: 4000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default" as const,
+        system: `You are shown a few frames from one short social video or post. Say how it was made to look.
+- style: "Filmed" when it was shot with a real camera (a person talking, hands, places), even with captions or small graphics on top. "Realistic AI" when it looks like live action but was generated. The animation styles when it is drawn or animated in that way. "Motion graphics" when it is animated text, shapes, icons and charts with no people. "Screen recording" for a captured screen. "Mixed" only when two styles each carry a large part of it. "Other" when none fits.
+- styleNotes: one sentence on the look within that style that someone would need to copy it: colour and light, how the drawing or footage is treated, how text is set on screen.`,
+        messages: [{ role: "user", content: [...frames.map((data) => ({ type: "image" as const, source: { type: "base64" as const, media_type: "image/jpeg" as const, data } })), { type: "text" as const, text: "How was this made to look?" }] }],
+        output_config: { effort: "low" as const, format: betaZodOutputFormat(StyleSchema) },
+      })
+      .finalMessage();
+    recordClaude("analysis", response.usage, `${item.author || item.authorHandle} · style`);
+    const out = response.parsed_output;
+    if (response.stop_reason === "refusal" || response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The style could not be read. Try again." };
+    return { ok: true, style: out.style, styleNotes: out.styleNotes.trim() };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
   }
 }
 

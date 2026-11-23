@@ -16,6 +16,23 @@ export const VIDEO_FORMATS = [
   "Other",
 ] as const;
 
+/** How a post was made to look. "Filmed" is a real camera; the rest are drawn, generated or animated. */
+export const VISUAL_STYLES = [
+  "Filmed",
+  "Realistic AI",
+  "Anime",
+  "3D animation",
+  "2D cartoon",
+  "Comic book",
+  "Claymation",
+  "Watercolour",
+  "Pixel art",
+  "Motion graphics",
+  "Screen recording",
+  "Mixed",
+  "Other",
+] as const;
+
 export const HOOK_TYPES = [
   "Question",
   "Bold claim",
@@ -34,6 +51,10 @@ export type PostAnalysis = {
   /** One or two sentences on what the post is and does. */
   summary: string;
   format: (typeof VIDEO_FORMATS)[number];
+  /** How it was made to look. Missing on a post analysed before styles were looked at: analyse it again to fill it in. */
+  style?: (typeof VISUAL_STYLES)[number];
+  /** One sentence on the look within that style: colour, light, kind of drawing, how text is set. */
+  styleNotes?: string;
   topic: string;
   /** The feeling the post plays on, e.g. curiosity, fear of missing out. */
   emotion: string;

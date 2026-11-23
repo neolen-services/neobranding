@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { BrandKit } from "@shared/brand";
 import type { MediaChoice } from "@shared/media";
-import type { Character, StudioResult, Video } from "@shared/studio";
+import { isMotion, styleLabel, suitsStyle, type Character, type StudioResult, type Video } from "@shared/studio";
 import { api } from "./api";
 import { CharacterLooks } from "./CharacterLooks";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
@@ -112,7 +112,7 @@ export function CastStep({
           key={member.character.id}
           member={member}
           video={video}
-          others={cast.filter((c) => !info.members.some((m) => m.character.id === c.id))}
+          others={cast.filter((c) => !info.members.some((m) => m.character.id === c.id)).sort((a, b) => Number(suitsStyle(b, video.style)) - Number(suitsStyle(a, video.style)))}
           onVideo={onVideo}
           onCast={onCast}
           onOpenSettings={onOpenSettings}
@@ -237,6 +237,7 @@ function MemberCard({
                   <option key={c.id} value={c.id}>
                     {c.name}
                     {c.role ? `, ${c.role}` : ""}
+                    {c.style ? ` · ${styleLabel(c.style)}` : ""}
                     {ready(c) ? ` (has a ${ready(c)})` : ""}
                   </option>
                 ))}
@@ -258,6 +259,23 @@ function MemberCard({
         )}
 
         {box("look", "Look", "Age, build, hair, and one fixed colour or item of clothing", 2)}
+
+        {!isMotion(video) && video.style !== "" && !suitsStyle(character, video.style) && (
+          <p className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-3 py-2 text-sm">
+            <span className="min-w-0 flex-1">
+              {character.name} is drawn as {styleLabel(character.style).toLowerCase()}, and this video is {styleLabel(video.style).toLowerCase()}. Storyboards will redraw them in the video's style, which can change how they look.
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-medium hover:border-[var(--ink)] disabled:opacity-40"
+              disabled={busy}
+              title="Changes this character's style for every video. Draw their portrait and sheet again afterwards so the pictures match."
+              onClick={() => void run("", () => api.saveCharacter({ ...character, style: video.style }))}
+            >
+              Make them {styleLabel(video.style).toLowerCase()}
+            </button>
+          </p>
+        )}
 
         <div>
           <p className="mb-1.5 text-sm font-medium">Voice</p>

@@ -2,11 +2,11 @@
 // The page is a wall of portraits; each character opens to its own page, where everything about it is changed.
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
-import type { Character, Series, Video } from "@shared/studio";
+import { CHARACTER_STYLES, DEFAULT_STYLE, styleLabel, type Character, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { CharacterLooks, picturesMissing } from "./CharacterLooks";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, primaryButton, quietButton } from "./studioUi";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, primaryButton, quietButton, CharacterStyleSelect } from "./studioUi";
 import { VoiceChooser } from "./VoicePicker";
 
 type TextField = "name" | "role" | "personality" | "speech" | "look";
@@ -33,6 +33,8 @@ export function CastView({ brand, onOpenSettings, onOpenBrand }: { brand: BrandK
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
   const [needsWork, setNeedsWork] = useState(false);
+  /** Only characters drawn in this style, or "" for all. */
+  const [style, setStyle] = useState("");
 
   useEffect(() => {
     api.listCast().then(setCast);
@@ -64,7 +66,7 @@ export function CastView({ brand, onOpenSettings, onOpenBrand }: { brand: BrandK
   }
 
   const q = query.trim().toLowerCase();
-  const shown = cast.filter((c) => (!q || [c.name, c.role, c.personality].some((t) => t.toLowerCase().includes(q))) && (!needsWork || missing(c).length > 0));
+  const shown = cast.filter((c) => (!q || [c.name, c.role, c.personality].some((t) => t.toLowerCase().includes(q))) && (!needsWork || missing(c).length > 0) && (!style || c.style === style));
   const unfinished = cast.filter((c) => missing(c).length > 0).length;
 
   return (
@@ -81,6 +83,16 @@ export function CastView({ brand, onOpenSettings, onOpenBrand }: { brand: BrandK
             {cast.length} {cast.length === 1 ? "character" : "characters"}
             {unfinished > 0 && ` · ${unfinished} not ready for scenes yet`}
           </p>
+          {new Set(cast.map((c) => c.style).filter(Boolean)).size > 1 && (
+            <select className="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-sm" aria-label="Style" value={style} onChange={(e) => setStyle(e.target.value)}>
+              <option value="">All styles</option>
+              {[...new Set(cast.map((c) => c.style).filter(Boolean))].map((s) => (
+                <option key={s} value={s}>
+                  {styleLabel(s)}
+                </option>
+              ))}
+            </select>
+          )}
           {unfinished > 0 && (
             <button
               type="button"
@@ -133,6 +145,7 @@ export function CastView({ brand, onOpenSettings, onOpenBrand }: { brand: BrandK
                     <span className="mt-0.5 line-clamp-2 text-sm opacity-60">{character.role || "No role written yet"}</span>
                     <span className="mt-auto flex flex-wrap gap-1.5 pt-3">
                       {needs.length === 0 ? <Chip tone="good">Ready for scenes</Chip> : needs.map((n) => <Chip key={n} tone="warn">{`Needs ${n}`}</Chip>)}
+                      {character.style && <Chip>{styleLabel(character.style)}</Chip>}
                       {count > 0 && <Chip>{`In ${count} ${count === 1 ? "place" : "places"}`}</Chip>}
                     </span>
                   </span>
@@ -192,6 +205,7 @@ function Portrait({ character, className }: { character: Character; className: s
 function NewCharacter({ onClose, onMade }: { onClose: () => void; onMade: (character: Character) => void }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [style, setStyle] = useState<string>(DEFAULT_STYLE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -201,7 +215,7 @@ function NewCharacter({ onClose, onMade }: { onClose: () => void; onMade: (chara
     setBusy(true);
     setError("");
     try {
-      const result = await api.saveCharacter({ name: name.trim(), role: role.trim(), personality: "", speech: "", look: "" });
+      const result = await api.saveCharacter({ name: name.trim(), role: role.trim(), personality: "", speech: "", look: "", style });
       if (result.ok) onMade(result.value);
       else setError(result.error);
     } catch (err) {
@@ -239,6 +253,17 @@ function NewCharacter({ onClose, onMade }: { onClose: () => void; onMade: (chara
           <span className="font-medium">Role in the story</span> <span className="opacity-50">optional</span>
           <input className={`${fieldClass} mt-1.5`} placeholder="For example: the sceptical friend" value={role} disabled={busy} onChange={(e) => setRole(e.target.value)} />
         </label>
+        <div className="text-sm">
+          <p className="font-medium">Style</p>
+          <p className="mb-2 mt-0.5 text-xs opacity-60">How they are drawn. They fit videos made in the same style.</p>
+          <div role="radiogroup" aria-label="Style" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {CHARACTER_STYLES.map((s) => (
+              <button key={s.id} type="button" role="radio" aria-checked={style === s.id} disabled={busy} onClick={() => setStyle(s.id)} className={`rounded-xl border px-3 py-2 text-left text-sm font-medium ${style === s.id ? "border-[var(--primary)] bg-[var(--tint)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </Dialog>
     </form>
   );
@@ -355,6 +380,25 @@ function CharacterPage({
               </>,
             )}
 
+            {section(
+              "Style",
+              <div className="grid gap-3 sm:grid-cols-[14rem_minmax(0,1fr)] sm:items-center">
+                <CharacterStyleSelect
+                  value={character.style}
+                  onChange={async (next) => {
+                    setError("");
+                    const result = await api.saveCharacter({ ...character, style: next });
+                    if (result.ok) onChange(result.value);
+                    else setError(result.error);
+                  }}
+                />
+                <p className="text-xs leading-relaxed opacity-60">
+                  {character.pictures.length > 0
+                    ? "Their portrait and character sheet are drawn in this style. After changing it, draw them again so the pictures match."
+                    : "Their portrait and character sheet are drawn in this style, and it shows which videos they fit."}
+                </p>
+              </div>,
+            )}
             {section("How they look", field("look", "Look", "Age, build, hair, and one fixed colour or item of clothing", 3, "Their reference picture is made from this. One fixed colour or item of clothing helps them stay recognisable."))}
 
             {section(

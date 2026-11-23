@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { MAX_IDEAS, joinState, pickedClip, pickedPicture, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
+import { CHARACTER_STYLES, MAX_IDEAS, VIDEO_STYLES, boardId, isMotion, joinState, pickedClip, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
 import { api } from "./api";
 
 export const fieldClass =
@@ -417,12 +417,12 @@ export function PostPicker({
       items={posts.map((p) => ({
         id: p.id,
         title: postName(p),
-        sub: [p.group, p.analysis?.topic, p.analysis?.format, p.platform === "youtube" ? "YouTube" : "Instagram"].filter(Boolean).join(" · "),
+        sub: [p.group, p.analysis?.topic, p.analysis?.format, p.analysis?.style, p.platform === "youtube" ? "YouTube" : "Instagram"].filter(Boolean).join(" · "),
         badge: p.rating ? `${p.rating}★` : undefined,
         blocked: p.analysis ? "" : "Not analysed yet. Analyse it in Research to use it.",
         text: [postName(p), p.authorHandle, p.caption, p.note, p.group ?? "", p.analysis?.topic ?? "", p.analysis?.format ?? ""].join(" "),
         group: p.group ?? "",
-        facets: { Concept: p.group ?? "", Platform: p.platform === "youtube" ? "YouTube" : "Instagram", Format: p.analysis?.format ?? "" },
+        facets: { Concept: p.group ?? "", Platform: p.platform === "youtube" ? "YouTube" : "Instagram", Format: p.analysis?.format ?? "", Style: p.analysis?.style ?? "" },
         shows: { top: (p.rating ?? 0) >= 4, analysed: Boolean(p.analysis) },
       }))}
       picked={picked}
@@ -507,6 +507,80 @@ export function PlayLine({ file, label: name }: { file: string; label: string })
   );
 }
 
+/** Choosing the style a character is drawn in, as a compact list. A style written in the creator's own words stays as an extra choice. */
+export function CharacterStyleSelect({ value, onChange, disabled, id }: { value: string; onChange: (style: string) => void; disabled?: boolean; id?: string }) {
+  const own = value !== "" && !CHARACTER_STYLES.some((s) => s.id === value);
+  return (
+    <select id={id} className={fieldClass} value={value} disabled={disabled} aria-label="Style" onChange={(e) => onChange(e.target.value)}>
+      <option value="">Not said yet</option>
+      {CHARACTER_STYLES.map((style) => (
+        <option key={style.id} value={style.id}>
+          {style.label}
+        </option>
+      ))}
+      {own && <option value={value}>{value}</option>}
+    </select>
+  );
+}
+
+/** Choosing the style a video's AI scenes are made in: one of the presets, or the creator's own words. */
+export function StylePicker({ value, onChange, disabled }: { value: string; onChange: (style: string) => void; disabled?: boolean }) {
+  const own = !VIDEO_STYLES.some((s) => s.id === value);
+  const [custom, setCustom] = useState(own ? value : "");
+  const [writing, setWriting] = useState(own && value !== "");
+  return (
+    <div>
+      <div role="radiogroup" aria-label="Style" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {VIDEO_STYLES.map((style) => (
+          <button
+            key={style.id}
+            type="button"
+            role="radio"
+            aria-checked={!writing && value === style.id}
+            disabled={disabled}
+            onClick={() => {
+              setWriting(false);
+              onChange(style.id);
+            }}
+            className={`rounded-xl border px-3 py-2 text-left ${!writing && value === style.id ? "border-[var(--primary)] bg-[var(--tint)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}
+          >
+            <span className="block text-sm font-medium">{style.label}</span>
+            <span className="block text-xs opacity-60">{style.note}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={writing}
+          disabled={disabled}
+          onClick={() => {
+            setWriting(true);
+            if (custom.trim()) onChange(custom.trim());
+          }}
+          className={`rounded-xl border px-3 py-2 text-left ${writing ? "border-[var(--primary)] bg-[var(--tint)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}
+        >
+          <span className="block text-sm font-medium">Your own</span>
+          <span className="block text-xs opacity-60">Describe it yourself</span>
+        </button>
+      </div>
+      {writing && (
+        <input
+          className={`${fieldClass} mt-2`}
+          autoFocus
+          placeholder="For example: paper cut-out animation in pastel colours"
+          aria-label="Your own style"
+          value={custom}
+          disabled={disabled}
+          onChange={(e) => {
+            setCustom(e.target.value);
+            onChange(e.target.value.trim());
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 /** The tabs of a video's page, in the order the work is done. */
 export const STAGES = ["Idea", "Script", "Cast", "Storyboard", "Preview", "Make", "Finish"] as const;
 
@@ -522,7 +596,8 @@ export function videoCast(video: Video, cast: Character[], brand: BrandKit | nul
       const needs = [
         lines > 0 && !character.voice && "a voice",
         // Only a generated scene needs their pictures; a filmed one has the real thing.
-        video.scenes.some((s) => s.madeBy === "ai" && inScene(s)) && (character.pictures.length === 0 ? "a portrait" : !character.sheet && "a character sheet"),
+        // A motion graphics video draws no people, so it needs no pictures of them either.
+        !isMotion(video) && video.scenes.some((s) => s.madeBy === "ai" && inScene(s)) && (character.pictures.length === 0 ? "a portrait" : !character.sheet && "a character sheet"),
       ].filter((x): x is string => Boolean(x));
       return { character, lines, scenes: video.scenes.filter(inScene).length, needs };
     })
@@ -546,7 +621,7 @@ export type VideoProgress = {
   unvoiced: number;
   /** Speakers whose lines cannot be voiced until a voice is chosen. */
   voiceless: string[];
-  /** AI scenes with no storyboard yet. */
+  /** AI scenes with no storyboard (or, in a motion graphics video, no animation) yet. */
   needPicture: number;
   /** AI scenes with no clip, or with a clip that no longer joins the one before it. */
   needClip: number;
@@ -568,7 +643,10 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
     ),
   ];
   const ai = video.scenes.filter((s) => s.madeBy === "ai");
-  const needPicture = ai.filter((s) => !pickedPicture(s)).length;
+  // What a clip is made from: a storyboard, or for a motion graphics video an animation.
+  const motion = isMotion(video);
+  const board = motion ? "animation" : "storyboard";
+  const needPicture = ai.filter((s) => !boardId(s)).length;
   const needClip = video.scenes.filter((s, i) => s.madeBy === "ai" && (!pickedClip(s) || joinState(video.scenes, i) === "stale")).length;
   const needFilming = video.scenes.filter((s) => s.madeBy === "me" && !pickedClip(s)).length;
   const base = { aiLines: lines.length, unvoiced, voiceless, needPicture, needClip, needFilming };
@@ -581,11 +659,11 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   }
   const unready = videoCast(video, cast, brand).unready;
   if (unready > 0) return { ...base, done: 2, tab: 2, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
-  if (needPicture > 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(needPicture, "storyboard")}`, waiting: true };
+  if (needPicture > 0) return { ...base, done: 3, tab: 3, next: motion ? `Animate ${plural(needPicture, "scene")}` : `Make ${plural(needPicture, "storyboard")}`, waiting: true };
   const unapproved = ai.filter((s) => !storyboardApproved(s)).length;
-  if (unapproved > 0) return { ...base, done: 3, tab: 3, next: `Approve ${plural(unapproved, "storyboard")}`, waiting: true };
+  if (unapproved > 0) return { ...base, done: 3, tab: 3, next: `Approve ${plural(unapproved, board)}`, waiting: true };
   if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 4, tab: 4, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
-  if (needClip > 0) return { ...base, done: 5, tab: 5, next: `Make ${plural(needClip, "clip")} from the storyboard`, waiting: true };
+  if (needClip > 0) return { ...base, done: 5, tab: 5, next: motion ? `Render ${plural(needClip, "clip")}` : `Make ${plural(needClip, "clip")} from the storyboard`, waiting: true };
   if (needFilming > 0) return { ...base, done: 5, tab: 5, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
   return { ...base, done: 6, tab: 6, next: "Post it, then record how it did", waiting: true };
 }

@@ -65,6 +65,8 @@ export function ResearchView({
   const [byGroup, setByGroup] = useState(false);
   const viewChosen = useRef(false);
   const [concept, setConcept] = useState("");
+  /** Only posts made in this visual style, or "" for all. */
+  const [style, setStyle] = useState("");
   /** What the grouping is doing right now, or "". */
   const [grouping, setGrouping] = useState("");
   const [groupNote, setGroupNote] = useState("");
@@ -159,6 +161,25 @@ export function ResearchView({
     }
   }
 
+  // Posts analysed before visual styles were recorded can have just the style added, which costs far less than analysing again.
+  const unstyled = (items ?? []).filter((i) => i.analysis && !i.analysis.style);
+  const [styling, setStyling] = useState("");
+  async function addStyles() {
+    let done = 0;
+    for (const [n, item] of unstyled.entries()) {
+      setStyling(`Looking at post ${n + 1} of ${unstyled.length}`);
+      try {
+        const result = await api.styleResearch(item.id);
+        if (!result.ok) break;
+        done++;
+        setItems((list) => (list ?? []).map((i) => (i.id === result.item.id ? result.item : i)));
+      } catch {
+        break;
+      }
+    }
+    setStyling(done < unstyled.length ? "Stopped early. Try again for the rest." : "");
+  }
+
   const replace = (item: ResearchItem) => setItems((list) => (list ?? []).map((i) => (i.id === item.id ? item : i)));
 
   async function remove(item: ResearchItem) {
@@ -175,9 +196,10 @@ export function ResearchView({
     (items ?? []).filter(
       (i) =>
         (platform === "all" || i.platform === platform) &&
+        (!style || i.analysis?.style === style) &&
         (!concept || (concept === NO_GROUP ? !i.group : i.group === concept)) &&
         (rated === "" || (rated === "none" ? i.rating === null : (i.rating ?? 0) >= 4)) &&
-        (!q || [postTitle(i), i.author, i.authorHandle, i.caption, i.note, i.group ?? "", i.analysis?.topic ?? "", i.analysis?.format ?? ""].some((t) => t.toLowerCase().includes(q))),
+        (!q || [postTitle(i), i.author, i.authorHandle, i.caption, i.note, i.group ?? "", i.analysis?.topic ?? "", i.analysis?.format ?? "", i.analysis?.style ?? ""].some((t) => t.toLowerCase().includes(q))),
     ),
     sort,
   );
@@ -190,7 +212,9 @@ export function ResearchView({
   // Groups are always shown whole; the plain list is shown a screenful at a time.
   const shown = byGroup ? matching : matching.slice(0, limit);
   const sections = [...new Set(matching.map(section))];
-  const filtering = Boolean(q || concept || rated || platform !== "all");
+  const filtering = Boolean(q || concept || style || rated || platform !== "all");
+  // The visual styles among the saved posts, most common first, for the filter.
+  const stylesSaved = [...(items ?? []).reduce((n, i) => (i.analysis?.style ? n.set(i.analysis.style, (n.get(i.analysis.style) ?? 0) + 1) : n), new Map<string, number>())].sort((a, b) => b[1] - a[1]);
 
   // Once the posts have loaded, make sure the post we were sent to is on screen.
   useEffect(() => {
@@ -288,6 +312,14 @@ export function ResearchView({
                       <span className="mt-0.5 block text-xs opacity-60">Each new post is analysed and grouped as soon as it is saved. About $0.06 a post on your Claude account.</span>
                     </span>
                   </label>
+                  {(unstyled.length > 0 || styling) && (
+                    <div className="border-t border-[var(--line)] pt-3">
+                      <button type="button" className="font-medium underline disabled:opacity-40" disabled={styling.startsWith("Looking") || unstyled.length === 0} onClick={() => void addStyles()}>
+                        {styling.startsWith("Looking") ? `${styling}…` : `Add the visual style to ${unstyled.length} ${unstyled.length === 1 ? "post" : "posts"}`}
+                      </button>
+                      <span className="mt-0.5 block text-xs opacity-60">{styling && !styling.startsWith("Looking") ? styling : "These were analysed before styles were recorded. Only their look is checked: about a cent a post."}</span>
+                    </div>
+                  )}
                   {groupNames.length > 0 && (
                     <div className="border-t border-[var(--line)] pt-3">
                       <button type="button" className="font-medium underline disabled:opacity-40" disabled={grouping !== ""} onClick={() => void runGrouping(true, analysed)}>
@@ -316,6 +348,16 @@ export function ResearchView({
                   </option>
                 ))}
                 <option value={NO_GROUP}>No group yet</option>
+              </select>
+            )}
+            {stylesSaved.length > 1 && (
+              <select className={select} aria-label="Visual style" value={style} onChange={(e) => setStyle(e.target.value)}>
+                <option value="">All styles</option>
+                {stylesSaved.map(([name, count]) => (
+                  <option key={name} value={name}>
+                    {name} ({count})
+                  </option>
+                ))}
               </select>
             )}
             <select className={select} aria-label="Platform" value={platform} onChange={(e) => setPlatform(e.target.value as ResearchPlatform | "all")}>
@@ -380,6 +422,7 @@ export function ResearchView({
                   onClick={() => {
                     setQuery("");
                     setConcept("");
+                    setStyle("");
                     setRated("");
                     setPlatform("all");
                   }}

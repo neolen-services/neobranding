@@ -3,10 +3,10 @@ import { createContext, useContext, useEffect, useState, type FormEvent } from "
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { pickedClip, pickedPicture, productionLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
+import { DEFAULT_STYLE, pickedClip, pickedPicture, productionLabel, styleLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { SeriesPage } from "./SeriesPage";
-import { card, Chip, Dialog, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, videoProgress } from "./studioUi";
+import { card, Chip, Dialog, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, StylePicker, videoProgress } from "./studioUi";
 import { VideoPage } from "./VideoPage";
 
 /** Opens a video in Studio from anywhere in the app. Provided by the app shell. */
@@ -404,23 +404,27 @@ function NewDialog({
   onSeries: (series: Series) => void | Promise<void>;
 }) {
   const [picked, setPicked] = useState<string[]>([]);
+  const [style, setStyle] = useState<string>(DEFAULT_STYLE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const idea = ideas.find((i) => i.id === picked[0]);
+  // A video the creator films entirely themself has nothing drawn, so no style to choose.
+  const drawn = idea !== undefined && (idea.production ?? "mix") !== "me";
   const isSeries = idea !== undefined && ideaKind(idea) === "series";
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!idea) return setError("Pick an idea first.");
+    if (drawn && !style.trim()) return setError("Choose a style, or describe your own.");
     setBusy(true);
     setError("");
     try {
       if (isSeries) {
-        const result = await api.createSeries({ ideaIds: [idea.id] });
+        const result = await api.createSeries({ ideaIds: [idea.id], style });
         if (result.ok) await onSeries(result.value);
         else setError(result.error);
       } else {
-        const result = await api.createVideo({ ideaId: idea.id });
+        const result = await api.createVideo({ ideaId: idea.id, style });
         if (result.ok) onVideo(result.value);
         else setError(result.error);
       }
@@ -442,7 +446,7 @@ function NewDialog({
             <p role={error ? "alert" : undefined} className={`mr-auto min-w-0 flex-1 text-sm ${error ? "font-medium text-red-400" : "opacity-60"}`}>
               {error ||
                 (idea
-                  ? `${isSeries ? "A series" : "A single video"}, ${productionLabel(idea.production ?? "mix").toLowerCase()}. Next: ${isSeries ? "the season plan" : "the script"}.`
+                  ? `${isSeries ? "A series" : "A single video"}, ${productionLabel(idea.production ?? "mix").toLowerCase()}${drawn ? `, ${styleLabel(style).toLowerCase()}` : ""}. Next: ${isSeries ? "the season plan" : "the script"}.`
                   : "Pick one saved idea. It already says whether it is a single video or a series, and how it is made.")}
             </p>
             <button type="button" className={quietButton} disabled={busy} onClick={onClose}>
@@ -458,6 +462,13 @@ function NewDialog({
           <p className="text-sm leading-relaxed opacity-75">No saved ideas yet. Every video and series in Studio starts from one, so write and save ideas on the Ideas page first.</p>
         ) : (
           <IdeaPicker ideas={ideas} picked={picked} onChange={setPicked} used={used} single />
+        )}
+        {drawn && (
+          <div>
+            <p className="text-sm font-medium">Style</p>
+            <p className="mb-2 mt-0.5 text-xs opacity-60">How the AI scenes look. The script, the storyboards and the clips are all made in it{isSeries ? ", for every episode" : ""}.</p>
+            <StylePicker value={style} onChange={setStyle} disabled={busy} />
+          </div>
         )}
       </Dialog>
     </form>

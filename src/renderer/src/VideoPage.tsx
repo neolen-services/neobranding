@@ -9,8 +9,11 @@ import {
   EVIDENCE_LABELS,
   joinState, pickedClip,
   pickedPicture,
+  boardId,
+  isMotion,
   storyboardApproved,
   productionLabel,
+  styleLabel,
   RESULT_COUNTS,
   SPEAKER_ME,
   speakerName,
@@ -27,6 +30,7 @@ import { DeleteButton } from "./CastView";
 import { inOrder } from "./inOrder";
 import { SceneMedia } from "./SceneMedia";
 import { StoryboardTab } from "./Storyboard";
+import { MotionBoard, MotionPlayer } from "./MotionBoard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
 import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
 
@@ -74,7 +78,7 @@ export function VideoPage({
   /** Why a tab cannot be opened yet, or "" when it can. */
   const storyboardsApproved = video.scenes.every(storyboardApproved);
   const locked = (index: number) =>
-    index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : index >= 4 && index <= 5 && !storyboardsApproved ? "Approve every scene's storyboard first." : "";
+    index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : index >= 4 && index <= 5 && !storyboardsApproved ? isMotion(video) ? "Approve every scene's animation first." : "Approve every scene's storyboard first." : "";
 
   // A rewrite takes the approval back, which can close the tab being looked at.
   useEffect(() => {
@@ -108,6 +112,7 @@ export function VideoPage({
     video.format === "episode" ? `Episode ${video.episode ?? ""}${series ? ` of ${series.title}` : ""}` : "Single video",
     video.source === "remake" ? "Remake of a saved post" : "",
     productionLabel(video.production),
+    video.production !== "me" && (video.style || series?.style) ? styleLabel(video.style || series?.style || "") : "",
     written ? `${seconds} seconds · ${plural(video.scenes.length, "scene")}` : "",
   ].filter(Boolean);
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };
@@ -185,7 +190,8 @@ export function VideoPage({
         {tab === 1 && !written && <WriteScript {...shared} />}
         {tab === 1 && written && <ScriptTab {...shared} onApproved={() => setTab(2)} />}
         {tab === 2 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(3)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
-        {tab === 3 && approved && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
+        {tab === 3 && approved && !isMotion(video) && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
+        {tab === 3 && approved && isMotion(video) && <MotionBoard video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
         {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onStoryboard={() => setTab(3)} onNext={() => setTab(5)} />}
         {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(3)} onNext={() => setTab(6)} />}
         {tab === 6 && approved && <FinishTab {...shared} />}
@@ -228,6 +234,7 @@ function IdeaTab({ video, busy, save, ideas, posts, series, onNext }: Shared & {
             <p className={label}>The idea this video comes from</p>
             <span className="flex flex-wrap gap-1.5">
               <Chip>{productionLabel(video.production)}</Chip>
+              {video.production !== "me" && (video.style || series?.style) && <Chip>{styleLabel(video.style || series?.style || "")}</Chip>}
               {idea.pillar && <Chip>{idea.pillar}</Chip>}
             </span>
           </div>
@@ -775,7 +782,8 @@ function PreviewTab({
     <div className="grid gap-6 lg:grid-cols-[auto_minmax(0,1fr)]">
       <div className="mx-auto w-72">
         <div className="relative flex aspect-[9/16] w-full flex-col overflow-hidden rounded-[2rem] border border-[var(--line)] bg-black p-5 text-white shadow-xl">
-          {picture && (
+          {step.scene.animation && <MotionPlayer key={step.scene.animation.id} video={video} scene={step.scene} className="absolute inset-0 h-full w-full" />}
+          {picture && !step.scene.animation && (
             // The sheet is shown at twice the size and moved so that only the current frame fills the screen.
             <img
               src={api.studioFileUrl(picture.file)}
@@ -785,10 +793,10 @@ function PreviewTab({
             />
           )}
           <p className="relative w-fit rounded-full bg-black/55 px-2 py-0.5 text-xs">
-            Scene {step.sceneIndex + 1} of {video.scenes.length} · {step.scene.madeBy === "me" ? "you film this" : picture ? `frame ${frame + 1} of ${FRAMES}` : "no storyboard"}
+            Scene {step.sceneIndex + 1} of {video.scenes.length} · {step.scene.madeBy === "me" ? "you film this" : step.scene.animation ? "animation" : picture ? `frame ${frame + 1} of ${FRAMES}` : "no storyboard"}
           </p>
           {step.scene.text && <p className="relative mt-4 text-center text-xl font-bold leading-tight [text-shadow:0_1px_4px_#000]">{step.scene.text}</p>}
-          <p className="relative my-auto text-center text-sm italic leading-relaxed opacity-70">{picture ? "" : step.scene.action}</p>
+          <p className="relative my-auto text-center text-sm italic leading-relaxed opacity-70">{picture || step.scene.animation ? "" : step.scene.action}</p>
           {step.line && (
             <p className="relative rounded-xl bg-black/65 px-3 py-2 text-center text-sm font-medium leading-snug">
               <span className="block text-[0.7rem] font-normal uppercase tracking-wide opacity-70">{speakerName(step.line.speaker, cast)}</span>
@@ -904,9 +912,10 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
   const ai = video.scenes.filter((s) => s.madeBy === "ai");
-  const noPicture = ai.filter((s) => !pickedPicture(s)).length;
+  const motion = isMotion(video);
+  const noPicture = ai.filter((s) => !boardId(s)).length;
   /** Whether a scene's clip is still to make: it has its storyboard, and no clip or one that no longer joins the clip before it. */
-  const toMake = (scenes: Scene[], i: number) => scenes[i].madeBy === "ai" && Boolean(pickedPicture(scenes[i])) && (!pickedClip(scenes[i]) || joinState(scenes, i) === "stale");
+  const toMake = (scenes: Scene[], i: number) => scenes[i].madeBy === "ai" && boardId(scenes[i]) !== "" && storyboardApproved(scenes[i]) && (!pickedClip(scenes[i]) || joinState(scenes, i) === "stale" || (motion && pickedClip(scenes[i])?.from !== boardId(scenes[i])));
   const waiting = video.scenes.filter((_, i) => toMake(video.scenes, i)).length;
   const stale = video.scenes.filter((_, i) => joinState(video.scenes, i) === "stale").length;
 
@@ -922,7 +931,7 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
     // A clip that is remade leaves the clip of the scene carrying on from it out of date, so that one is made again too.
     const which: number[] = [];
     for (let i = 0; i < scenes.length; i++) {
-      const follows = i > 0 && scenes[i].continues && scenes[i].madeBy === "ai" && Boolean(pickedPicture(scenes[i])) && which.includes(i - 1);
+      const follows = i > 0 && scenes[i].continues && scenes[i].madeBy === "ai" && boardId(scenes[i]) !== "" && which.includes(i - 1);
       if (toMake(scenes, i) || follows) which.push(i);
     }
     let running = 0;
@@ -974,13 +983,15 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
           <div className="min-w-0">
             <h3 className="font-display text-lg font-semibold">Make the clips</h3>
             <p className="mt-0.5 max-w-2xl text-sm opacity-60">
-              Each clip follows its scene's storyboard as one continuous shot. A scene that carries on opens on the last frame of the clip before it, so the two play as one take.
+              {motion
+                ? "Each approved animation is rendered to a clip on this computer. It costs nothing and uses no video service."
+                : "Each clip follows its scene's storyboard as one continuous shot. A scene that carries on opens on the last frame of the clip before it, so the two play as one take."}
             </p>
           </div>
           <div className="text-right">
             {waiting > 0 ? (
               <button type="button" className={primaryButton} disabled={off} onClick={makeClips}>
-                {making ? `${making}…` : `Make ${plural(waiting, "clip")}`}
+                {making ? `${making}…` : `${motion ? "Render" : "Make"} ${plural(waiting, "clip")}`}
               </button>
             ) : (
               <button type="button" className={`${allDone ? primaryButton : quietButton} inline-flex items-center gap-2`} disabled={off} onClick={onNext}>
@@ -992,7 +1003,9 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
               {waiting > 0
                 ? making
                   ? "This can take minutes. New shots are made at the same time; a scene that carries on waits for the one before it."
-                  : "The costly step: each clip is charged by the service you chose."
+                  : motion
+                    ? "Free: rendered on this computer, a few seconds for each second of video."
+                    : "The costly step: each clip is charged by the service you chose."
                 : allDone
                   ? "Every scene has its clip."
                   : progress.needFilming > 0
@@ -1026,14 +1039,14 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
         {noPicture > 0 && (
           <p className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-4 py-3 text-sm">
             <span className="min-w-0 flex-1">
-              {plural(noPicture, "scene")} {noPicture === 1 ? "has" : "have"} no storyboard yet, so {noPicture === 1 ? "its clip" : "their clips"} cannot be made.
+              {plural(noPicture, "scene")} {noPicture === 1 ? "has" : "have"} no {motion ? "animation" : "storyboard"} yet, so {noPicture === 1 ? "its clip" : "their clips"} cannot be made.
             </span>
             <button type="button" className={smallButton} onClick={onStoryboard}>
-              Open the storyboard
+              {motion ? "Open the animations" : "Open the storyboard"}
             </button>
           </p>
         )}
-        {ai.length > 0 && (
+        {ai.length > 0 && !motion && (
           <details className="border-t border-[var(--line)] pt-3 text-sm">
             <summary className="cursor-pointer text-xs opacity-60 hover:opacity-100">Clip and lip-sync services</summary>
             <div className="mt-3 grid gap-4 md:grid-cols-2">

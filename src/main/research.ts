@@ -13,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { analyzePost, groupPosts, type ConceptGroup } from "./analyze";
+import { analyzePost, groupPosts, stylePost, type ConceptGroup } from "./analyze";
 import { recordUsage } from "./usage";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -601,6 +601,21 @@ function conceptGroups(items: ResearchItem[]): ConceptGroup[] {
 function settleGroup(name: unknown, existing: ConceptGroup[]): string {
   const clean = cleanGroupName(name);
   return existing.find((g) => g.name.toLowerCase() === clean.toLowerCase())?.name ?? clean;
+}
+
+/** Adds the visual style to a post that was analysed before styles were recorded, leaving the rest of its analysis as it is. */
+export async function styleResearch(dataDir: string, id: string, claudeKey: string): Promise<ResearchResult> {
+  const item = (await listResearch(dataDir)).find((i) => i.id === id);
+  if (!item) return { ok: false, error: "That post is no longer saved." };
+  if (!item.analysis) return { ok: false, error: "Analyse this post first." };
+  const result = await stylePost(claudeKey, item, join(researchDir(dataDir), id), await ensureFfmpeg(dataDir));
+  if (!result.ok) return result;
+  // Read the post again before saving, in case its rating or note changed meanwhile.
+  const latest = (await listResearch(dataDir)).find((i) => i.id === id) ?? item;
+  if (!latest.analysis) return { ok: false, error: "Analyse this post first." };
+  const updated = { ...latest, analysis: { ...latest.analysis, style: result.style, styleNotes: result.styleNotes } };
+  await writeMeta(dataDir, updated);
+  return { ok: true, item: updated };
 }
 
 /**

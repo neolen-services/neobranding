@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { MediaSettings } from "@shared/media";
-import { joinState, pickedClip, pickedPicture, type Scene, type TakeResult, type Video } from "@shared/studio";
+import { boardId, joinState, pickedClip, pickedPicture, storyboardApproved, type Scene, type TakeResult, type Video } from "@shared/studio";
+import { MotionPlayer } from "./MotionBoard";
 import { api } from "./api";
 import { readUpload } from "./ServicePicker";
 import { card, Chip, Icon, ICONS, primaryButton, smallButton } from "./studioUi";
@@ -55,6 +56,9 @@ export function SceneMedia({
   const picture = pickedPicture(scene);
   const clip = pickedClip(scene);
   const hasVoice = scene.lines.some((l) => l.audioFile);
+  // A motion graphics scene has an animation where others have a storyboard, and its clip is rendered here, not sent to a service.
+  const { animation } = scene;
+  const outOfDate = Boolean(animation && clip && clip.source !== "filmed" && clip.from !== animation.id);
   const off = disabled || busy !== "";
   const filmed = scene.madeBy === "me";
   const carriesOn = !filmed && index > 0 && scene.continues;
@@ -68,7 +72,11 @@ export function SceneMedia({
   // How this scene meets the ones around it, in a sentence.
   const flow = filmed
     ? ""
-    : [
+    : animation
+      ? outOfDate
+        ? "The animation changed after this clip was rendered. Render it again."
+        : ""
+      : [
         index === 0
           ? "Opening shot."
           : !carriesOn
@@ -89,6 +97,8 @@ export function SceneMedia({
       <div className="flex aspect-[9/16] w-32 shrink-0 items-center justify-center self-start overflow-hidden rounded-xl border border-[var(--line)] bg-black text-center text-xs text-white/60">
         {clip ? (
           <video controls preload="metadata" src={api.studioFileUrl(clip.file)} poster={picture ? api.studioFileUrl(picture.file) : undefined} className="h-full w-full object-cover" />
+        ) : animation ? (
+          <MotionPlayer key={animation.id} video={video} scene={scene} className="h-full w-full" />
         ) : picture ? (
           <img src={api.studioFileUrl(picture.file)} alt={`Storyboard: ${scene.action}`} className="h-full w-full object-cover" />
         ) : (
@@ -120,9 +130,9 @@ export function SceneMedia({
         <p className="line-clamp-2 text-sm leading-relaxed">{scene.action}</p>
         {scene.lines[0] && <p className="line-clamp-2 text-sm italic opacity-60">“{scene.lines[0].text}”</p>}
 
-        {!filmed && !picture ? (
+        {!filmed && (!boardId(scene) || (animation && !storyboardApproved(scene))) ? (
           <button type="button" className={smallButton} disabled={off} onClick={onStoryboard}>
-            Make its storyboard first
+            {animation ? "Approve its animation first" : "Make its storyboard first"}
           </button>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -132,18 +142,32 @@ export function SceneMedia({
               </button>
             ) : (
               <>
-                <button type="button" className={!clip || join === "stale" ? `${primaryButton} !px-4 !py-1.5` : smallButton} disabled={off} onClick={() => void makeClip()}>
-                  {busy === "Making the clip" ? "Making the clip… this can take minutes" : join === "stale" ? "Remake clip to join" : clip ? "Make another clip" : "Make clip"}
+                <button type="button" className={!clip || join === "stale" || outOfDate ? `${primaryButton} !px-4 !py-1.5` : smallButton} disabled={off} onClick={() => void makeClip()}>
+                  {animation
+                    ? busy === "Making the clip"
+                      ? "Rendering…"
+                      : clip
+                        ? "Render again"
+                        : "Render clip"
+                    : busy === "Making the clip"
+                      ? "Making the clip… this can take minutes"
+                      : join === "stale"
+                        ? "Remake clip to join"
+                        : clip
+                          ? "Make another clip"
+                          : "Make clip"}
                 </button>
-                <button
-                  type="button"
-                  className={smallButton}
-                  disabled={off || !hasVoice}
-                  title={hasVoice ? "Makes the speaking character's reference picture say the scene's first recorded line." : "Make the voices first (Preview tab): lip-sync needs a recorded line."}
-                  onClick={() => void lipSync()}
-                >
-                  {busy === "Lip-syncing" ? "Lip-syncing… this can take minutes" : "Lip-sync"}
-                </button>
+                {!animation && (
+                  <button
+                    type="button"
+                    className={smallButton}
+                    disabled={off || !hasVoice}
+                    title={hasVoice ? "Makes the speaking character's reference picture say the scene's first recorded line." : "Make the voices first (Preview tab): lip-sync needs a recorded line."}
+                    onClick={() => void lipSync()}
+                  >
+                    {busy === "Lip-syncing" ? "Lip-syncing… this can take minutes" : "Lip-sync"}
+                  </button>
+                )}
                 <button type="button" className={smallButton} disabled={off} onClick={addFile}>
                   {busy === "Adding your file" ? "Adding…" : "Add your own clip"}
                 </button>

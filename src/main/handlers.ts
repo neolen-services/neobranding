@@ -27,6 +27,7 @@ import {
   addResearch,
   analyzeResearch,
   groupResearch,
+  styleResearch,
   onPostSaved,
   deleteResearch,
   listResearch,
@@ -52,6 +53,8 @@ export type HandlerOptions = {
   secrets: Secrets;
   /** Shows a folder in the system's file manager. */
   openFolder: (path: string) => void;
+  /** Renders an animation page to an MP4. Only the desktop app has a way to; left out elsewhere. */
+  renderAnimation?: (page: string, seconds: number, ffmpeg: string) => Promise<Buffer>;
   /**
    * False when another copy of the app on the same data folder is the one
    * reading the Telegram bot. Two readers would each save the same link.
@@ -75,7 +78,7 @@ export function createHandlers(options: HandlerOptions) {
   const connectTelegram = async () =>
     options.listenToTelegram ? startTelegram(dataDir, key("telegram"), () => key("deepgram")) : telegramStatus();
 
-  const agent: AgentContext = { dataDir: () => dataDir, store: db, key };
+  const agent: AgentContext = { dataDir: () => dataDir, store: db, key, render: options.renderAnimation };
 
   // A post that has just been saved (pasted, sent through Telegram, or saved by the agent) is analysed on its own,
   // which also puts it in its concept group. One at a time, so each sees the groups the one before it made.
@@ -152,6 +155,8 @@ export function createHandlers(options: HandlerOptions) {
     "scene:lipsync": (videoId: unknown, sceneId: unknown, choice: unknown) => studio.sceneLipSync(videoId, sceneId, choice),
     /** Has Claude look at a video's storyboards (or one scene's) and say whether each is good to make the video from. */
     "storyboard:review": (videoId: unknown, sceneId: unknown) => studio.storyboardReview(videoId, sceneId),
+    /** Has Claude animate one scene of a motion graphics video; with a note, changes its current animation. */
+    "scene:animate": (videoId: unknown, sceneId: unknown, note: unknown) => studio.sceneAnimation(videoId, sceneId, note),
     /** The creator approves the storyboard a scene has in use (true), or takes the approval back (false). */
     "scene:approve": (videoId: unknown, sceneId: unknown, approved: unknown) => studio.sceneApprove(videoId, sceneId, approved),
     /** Says whether a scene carries straight on from the one before it (true) or is a new shot (false). */
@@ -231,6 +236,8 @@ export function createHandlers(options: HandlerOptions) {
       return autoAnalyse();
     },
     /** Sorts analysed posts into groups of similar videos: only those without a group, or all of them afresh. */
+    /** Adds the visual style to a post analysed before styles were recorded. A fraction of the cost of analysing it again. */
+    "research:style": (id: unknown) => styleResearch(dataDir, String(id), key("anthropic")),
     "research:group": (all: unknown) => groupResearch(dataDir, key("anthropic"), all === true),
     "research:audio": (id: unknown) => refreshResearchAudio(dataDir, String(id)),
     "research:update": (id: unknown, edit: ResearchEdit) => updateResearch(dataDir, String(id), edit ?? {}),

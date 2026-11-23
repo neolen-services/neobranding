@@ -84,6 +84,7 @@ export function AnalysisDetails({ analysis }: { analysis: PostAnalysis }) {
 
       <div className="flex flex-wrap gap-2">
         <Tag>{analysis.format}</Tag>
+        {analysis.style && <Tag>{analysis.style}</Tag>}
         <Tag>{analysis.hookType} hook</Tag>
         <Tag>{analysis.emotion}</Tag>
         {stats.map((s) => (
@@ -92,6 +93,14 @@ export function AnalysisDetails({ analysis }: { analysis: PostAnalysis }) {
           </Tag>
         ))}
       </div>
+
+      {analysis.style && (
+        <Part title="Visual style">
+          <p>
+            <span className="font-medium">{analysis.style}.</span> {analysis.styleNotes}
+          </p>
+        </Part>
+      )}
 
       <Part title="The hook">
         <dl className="space-y-1.5">
