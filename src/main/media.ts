@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { createFalClient } from "@fal-ai/client";
-import { choiceLabel, MEDIA_FILE, MEDIA_PROVIDERS, type MediaChoice, type MediaTask, type Take, type UploadedFile } from "../shared/media";
+import { choiceLabel, mediaCost, MEDIA_FILE, MEDIA_PROVIDERS, type MediaChoice, type MediaTask, type Take, type UploadedFile } from "../shared/media";
 import type { ApiProvider } from "../shared/settings";
 import { recordUsage } from "./usage";
 
@@ -145,8 +145,10 @@ async function eleven(key: string, kind: "image" | "video", body: Record<string,
 
 // ---------- The three jobs ----------
 
-const used = (task: MediaTask, choice: MediaChoice, detail: string, seconds?: number) =>
-  recordUsage({ feature: task, detail: `${detail} · ${choiceLabel(task, choice)}`, ...(seconds && { seconds }) });
+const used = (task: MediaTask, choice: MediaChoice, detail: string, seconds?: number) => {
+  const cost = mediaCost(choice, seconds);
+  recordUsage({ feature: task, detail: `${detail} · ${choiceLabel(task, choice)}`, provider: choice.provider, model: choice.model, ...(seconds && { seconds }), ...(cost !== null && { costUsd: cost }) });
+};
 
 /** A still (9:16, or 16:9 when `wide`) from a description, using the reference pictures to keep characters and places the same. */
 export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; detail: string; /** Tall unless a wide picture is asked for. */ wide?: boolean }): Promise<Media> {

@@ -53,6 +53,43 @@ export const DEFAULT_MEDIA: MediaSettings = {
   lipsync: { provider: "fal", model: "fal-ai/sync-lipsync/v3/image-to-video" },
 };
 
+/**
+ * List prices in US dollars, as each service published them in November 2026: for one picture at the
+ * size the app asks for, or for one second of 720p video. Used only to estimate; the service's own
+ * bill is the real figure. A model that is not here, and anything on ElevenLabs (which charges
+ * credits that vary with the settings), has no estimate.
+ */
+const MEDIA_PRICES: Record<string, { image?: number; second?: number }> = {
+  "fal:google/nano-banana-2.1/edit": { image: 0.044 },
+  "fal:google/nano-banana-2.1": { image: 0.04 },
+  "fal:fal-ai/nano-banana-pro/edit": { image: 0.15 },
+  "fal:fal-ai/nano-banana-pro": { image: 0.15 },
+  "fal:google/gemini-omni-flash/v1.2/reference-to-video": { second: 0.0819 },
+  "fal:google/gemini-omni-flash/v1.2/image-to-video": { second: 0.0819 },
+  "fal:fal-ai/kling-video/o3/pro/reference-to-video": { second: 0.112 },
+  "fal:fal-ai/sync-lipsync/v3/image-to-video": { second: 0.1333 },
+  "fal:veed/fabric-1.0": { second: 0.15 },
+  "google:gemini-nano-banana-2.1": { image: 0.0336 },
+  "google:gemini-3-pro-image": { image: 0.134 },
+  "google:gemini-omni-1.2-flash": { second: 0.07 },
+};
+
+/** What one picture, or a clip of `seconds`, is estimated to cost on a service, or null when there is no price to go by. */
+export function mediaCost(choice: MediaChoice, seconds?: number): number | null {
+  const price = MEDIA_PRICES[`${choice.provider}:${choice.model}`] ?? MEDIA_PRICES[`${choice.provider}:${choice.model.replace(/\/edit$/, "")}`];
+  if (!price) return null;
+  if (price.image !== undefined) return price.image;
+  return price.second !== undefined && seconds ? price.second * seconds : null;
+}
+
+/** The service and model named at the end of an older log line's detail ("… · fal.ai · Nano Banana 2.1"), from before they were logged apart. */
+export function choiceFromLabel(task: MediaTask, detail: string): MediaChoice | null {
+  const known = MEDIA_MODELS[task].find((m) => detail.endsWith(`${MEDIA_PROVIDERS[m.provider].label} · ${m.label}`));
+  if (known) return { provider: known.provider, model: known.model };
+  const provider = (Object.keys(MEDIA_PROVIDERS) as MediaProvider[]).find((p) => detail.includes(` · ${MEDIA_PROVIDERS[p].label} · `));
+  return provider ? { provider, model: "" } : null;
+}
+
 const isProvider = (v: unknown): v is MediaProvider => v === "fal" || v === "google" || v === "elevenlabs";
 
 /** A choice from untrusted input, or null if it is not usable. A model id is only ever plain characters. */

@@ -3,10 +3,10 @@ import { createContext, useContext, useEffect, useState, type FormEvent } from "
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { DEFAULT_STYLE, pickedClip, pickedPicture, productionLabel, styleLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
+import { DEFAULT_LENGTH, DEFAULT_STYLE, SCRIPT_FORMATS, VIDEO_LENGTHS, VIDEO_PLATFORMS, pickedClip, pickedPicture, productionLabel, styleLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { SeriesPage } from "./SeriesPage";
-import { card, Chip, Dialog, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, StylePicker, videoProgress } from "./studioUi";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, StylePicker, videoProgress } from "./studioUi";
 import { VideoPage } from "./VideoPage";
 
 /** Opens a video in Studio from anywhere in the app. Provided by the app shell. */
@@ -405,6 +405,12 @@ function NewDialog({
 }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [style, setStyle] = useState<string>(DEFAULT_STYLE);
+  /** The format to build it as, or "" to let the script writer choose. */
+  const [videoFormat, setVideoFormat] = useState("");
+  const [targetSeconds, setTargetSeconds] = useState<number>(DEFAULT_LENGTH);
+  const [platform, setPlatform] = useState("");
+  const [language, setLanguage] = useState("");
+  const brief = { style, videoFormat, targetSeconds, platform, language: language.trim() };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const idea = ideas.find((i) => i.id === picked[0]);
@@ -420,11 +426,11 @@ function NewDialog({
     setError("");
     try {
       if (isSeries) {
-        const result = await api.createSeries({ ideaIds: [idea.id], style });
+        const result = await api.createSeries({ ideaIds: [idea.id], ...brief });
         if (result.ok) await onSeries(result.value);
         else setError(result.error);
       } else {
-        const result = await api.createVideo({ ideaId: idea.id, style });
+        const result = await api.createVideo({ ideaId: idea.id, ...brief });
         if (result.ok) onVideo(result.value);
         else setError(result.error);
       }
@@ -462,6 +468,69 @@ function NewDialog({
           <p className="text-sm leading-relaxed opacity-75">No saved ideas yet. Every video and series in Studio starts from one, so write and save ideas on the Ideas page first.</p>
         ) : (
           <IdeaPicker ideas={ideas} picked={picked} onChange={setPicked} used={used} single />
+        )}
+        {idea && (
+          <div>
+            <p className="text-sm font-medium">Format</p>
+            <p className="mb-2 mt-0.5 text-xs opacity-60">The shape the script is built in{isSeries ? ", for every episode" : ""}. These are the same formats your saved posts are sorted into.</p>
+            <div role="radiogroup" aria-label="Format" className="flex flex-wrap gap-2">
+              {["", ...SCRIPT_FORMATS].map((f) => (
+                <button
+                  key={f || "any"}
+                  type="button"
+                  role="radio"
+                  aria-checked={videoFormat === f}
+                  disabled={busy}
+                  onClick={() => setVideoFormat(f)}
+                  className={`rounded-full border px-3 py-1.5 text-sm ${videoFormat === f ? "border-[var(--primary)] bg-[var(--tint)] font-medium" : "border-[var(--line)] hover:border-[var(--ink)]"}`}
+                >
+                  {f || "Let the script decide"}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {idea && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="text-sm font-medium">Length{isSeries ? " of each episode" : ""}</p>
+              <div role="radiogroup" aria-label="Length" className="mt-2 flex flex-wrap gap-2">
+                {VIDEO_LENGTHS.map((n) => (
+                  <button key={n} type="button" role="radio" aria-checked={targetSeconds === n} disabled={busy} onClick={() => setTargetSeconds(n)} className={`rounded-full border px-3 py-1.5 text-sm ${targetSeconds === n ? "border-[var(--primary)] bg-[var(--tint)] font-medium" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+                    {n}s
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs opacity-60">Longer means more scenes, so more storyboards and clips to pay for.</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium">Posted on</p>
+              <div role="radiogroup" aria-label="Platform" className="mt-2 flex flex-wrap gap-2">
+                {[{ id: "", label: "Anywhere" }, ...VIDEO_PLATFORMS].map((p) => (
+                  <button key={p.id || "any"} type="button" role="radio" aria-checked={platform === p.id} disabled={busy} onClick={() => setPlatform(p.id)} className={`rounded-full border px-3 py-1.5 text-sm ${platform === p.id ? "border-[var(--primary)] bg-[var(--tint)] font-medium" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="block text-sm sm:col-span-2">
+              <span className="font-medium">Language</span> <span className="opacity-50">optional</span>
+              <input
+                className={`${fieldClass} mt-1.5`}
+                list="video-languages"
+                placeholder="Left empty, it follows the language of the idea"
+                value={language}
+                disabled={busy}
+                onChange={(e) => setLanguage(e.target.value)}
+              />
+              <datalist id="video-languages">
+                {["English", "Spanish", "Hindi", "Portuguese", "French", "German", "Arabic", "Indonesian", "Japanese", "A mix of two languages"].map((l) => (
+                  <option key={l} value={l} />
+                ))}
+              </datalist>
+              <span className="mt-1 block text-xs opacity-55">The spoken lines, on-screen words and caption are written in it. You can name a mix, in your own words.</span>
+            </label>
+          </div>
         )}
         {drawn && (
           <div>

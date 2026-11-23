@@ -1,5 +1,6 @@
 // Studio types: the cast, series and videos being made. Shared by the main process and the UI.
 import type { SpeakingVoice } from "./brand";
+import { VIDEO_FORMATS } from "./analysis";
 import { parseTakes, type Take } from "./media";
 import type { Animation } from "./motion";
 
@@ -55,6 +56,25 @@ export const CHARACTER_STYLES = VIDEO_STYLES.filter((s) => s.id !== "motion");
  * A character in another style can still be used; storyboards redraw them in the video's style.
  */
 export const suitsStyle = (character: Pick<Character, "style">, style: string) => !character.style || !style || character.style === style;
+
+/**
+ * The formats a video can be built as: the same list a saved post's analysis uses, so what worked
+ * in research can be asked for here. "" lets the script writer choose.
+ */
+export const SCRIPT_FORMATS = VIDEO_FORMATS.filter((f) => f !== "Other");
+
+/** The lengths a video can be asked for, in seconds. */
+export const VIDEO_LENGTHS = [15, 30, 45, 60, 90] as const;
+/** The length a video is written to when none is asked for. */
+export const DEFAULT_LENGTH = 45;
+
+/** Where a video will be posted. `prompt` is what the script writer is told about the place. */
+export const VIDEO_PLATFORMS = [
+  { id: "instagram", label: "Instagram Reels", prompt: "Instagram Reels. People watch with the sound off as often as on, so the on-screen words must carry the point alone; the caption sits over the bottom of the picture; saves and shares matter most." },
+  { id: "youtube", label: "YouTube Shorts", prompt: "YouTube Shorts. Viewers arrive by search as well as by scrolling, so say the subject plainly in the first line and in the caption; the video loops, so the end can lead back into the start." },
+  { id: "tiktok", label: "TikTok", prompt: "TikTok. The opening second decides everything, the tone is loose and spoken, and a question that invites replies does better than a polished sign-off." },
+] as const;
+export const platformLabel = (platform: string) => VIDEO_PLATFORMS.find((p) => p.id === platform)?.label ?? "";
 
 /** The style every new video starts with. */
 export const DEFAULT_STYLE = "real";
@@ -202,6 +222,14 @@ export type Video = {
   style: string;
   /** The finer look within that style, e.g. "warm evening light, shallow focus". "" uses its series' look. */
   look: string;
+  /** The format it is built as, one of SCRIPT_FORMATS, or "" when the script writer chooses. */
+  videoFormat: string;
+  /** How long it should run, in seconds; 0 leaves it at DEFAULT_LENGTH. */
+  targetSeconds: number;
+  /** Where it will be posted: the id of one of VIDEO_PLATFORMS, or "" when it is not said. */
+  platform: string;
+  /** The language its spoken lines and on-screen words are written in, in the creator's words; "" follows the idea. */
+  language: string;
   /** For a motion graphics video: the stylesheet Claude designed, which every scene's animation is built on. "" until it is made. */
   design: string;
   /** Whether its scenes are generated, filmed by the creator, or both. The script is written to fit. */
@@ -279,6 +307,14 @@ export type Series = {
   style: string;
   /** The finer look within that style that every episode shares. */
   look: string;
+  /** The format every episode is built as, one of SCRIPT_FORMATS, or "" when the script writer chooses. */
+  videoFormat: string;
+  /** How long each episode should run, in seconds; 0 leaves it at DEFAULT_LENGTH. */
+  targetSeconds: number;
+  /** Where the episodes will be posted: the id of one of VIDEO_PLATFORMS, or "" when it is not said. */
+  platform: string;
+  /** The language the episodes' spoken lines and on-screen words are written in, in the creator's words; "" follows the idea. */
+  language: string;
   /** How every episode is made, unless one is changed. */
   production: Production;
   /** The saved ideas the season was planned from; [] for none. */
@@ -339,10 +375,18 @@ export type NewVideo = {
   production?: Production;
   /** The style its AI scenes are made in: the id of one of VIDEO_STYLES, or the creator's own words. */
   style?: string;
+  /** The format it is built as, one of SCRIPT_FORMATS. Left out, the script writer chooses. */
+  videoFormat?: string;
+  /** How long it should run, in seconds. */
+  targetSeconds?: number;
+  /** Where it will be posted: the id of one of VIDEO_PLATFORMS. */
+  platform?: string;
+  /** The language it is written in. */
+  language?: string;
 };
 
 /** What a new series is planned from, besides its title and what it is about. */
-export type NewSeries = { ideaIds?: string[]; postIds?: string[]; production?: Production; /** The style every episode's AI scenes are made in. */ style?: string };
+export type NewSeries = { ideaIds?: string[]; postIds?: string[]; production?: Production; /** The style every episode's AI scenes are made in. */ style?: string; /** The format every episode is built as. */ videoFormat?: string; targetSeconds?: number; platform?: string; language?: string };
 /** A series started from an idea, before its season is planned. */
 export type SeriesStart = NewSeries & { title?: string; brief?: string };
 
@@ -475,6 +519,10 @@ export function parseVideo(input: unknown): Video {
     brief: str(i.brief),
     style: str(i.style),
     look: str(i.look),
+    videoFormat: str(i.videoFormat),
+    targetSeconds: typeof i.targetSeconds === "number" && i.targetSeconds > 0 ? Math.min(Math.round(i.targetSeconds), 180) : 0,
+    platform: str(i.platform),
+    language: str(i.language),
     production: parseProduction(i.production),
     ideaIds: ideaList(i.ideaIds),
     postIds: ideaList(i.postIds),
@@ -517,6 +565,10 @@ export function parseSeries(input: unknown): Series {
     characterIds: strs(i.characterIds),
     style: str(i.style),
     look: str(i.look),
+    videoFormat: str(i.videoFormat),
+    targetSeconds: typeof i.targetSeconds === "number" && i.targetSeconds > 0 ? Math.min(Math.round(i.targetSeconds), 180) : 0,
+    platform: str(i.platform),
+    language: str(i.language),
     production: parseProduction(i.production),
     ideaIds: ideaList(i.ideaIds),
     postIds: ideaList(i.postIds),

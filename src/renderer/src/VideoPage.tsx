@@ -14,6 +14,7 @@ import {
   storyboardApproved,
   productionLabel,
   styleLabel,
+  platformLabel,
   RESULT_COUNTS,
   SPEAKER_ME,
   speakerName,
@@ -113,6 +114,9 @@ export function VideoPage({
     video.source === "remake" ? "Remake of a saved post" : "",
     productionLabel(video.production),
     video.production !== "me" && (video.style || series?.style) ? styleLabel(video.style || series?.style || "") : "",
+    video.videoFormat || series?.videoFormat || "",
+    platformLabel(video.platform || series?.platform || ""),
+    video.language || series?.language || "",
     written ? `${seconds} seconds · ${plural(video.scenes.length, "scene")}` : "",
   ].filter(Boolean);
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };

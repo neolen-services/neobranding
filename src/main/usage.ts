@@ -8,7 +8,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { estimateCostUsd } from "../shared/analysis";
-import { USAGE_FEATURES, type UsageEvent, type UsageFeature, type UsageReport, type UsageRow } from "../shared/usage";
+import { choiceFromLabel, mediaCost } from "../shared/media";
+import { USAGE_FEATURES, type MediaSpend, type UsageEvent, type UsageFeature, type UsageReport, type UsageRow } from "../shared/usage";
 
 export const USAGE_FILE = "usage.jsonl";
 const RECENT_SHOWN = 40;
@@ -64,6 +65,7 @@ export async function readUsage(dir: string, since: string): Promise<UsageReport
   }
 
   const rows = new Map<UsageFeature, UsageRow>();
+  const media = new Map<string, MediaSpend>();
   const inPeriod: UsageEvent[] = [];
   let trackedSince = "";
   for (const line of lines) {
@@ -78,6 +80,23 @@ export async function readUsage(dir: string, since: string): Promise<UsageReport
     if (!event || typeof event.at !== "string" || !(event.feature in USAGE_FEATURES)) continue;
     if (!event.earlier && (!trackedSince || event.at < trackedSince)) trackedSince = event.at;
     if (since && event.at < since) continue;
+    if (event.feature === "picture" || event.feature === "clip" || event.feature === "lipsync") {
+      // Lines written before the service and cost were logged are worked out from their detail.
+      if (!event.provider) {
+        const choice = choiceFromLabel(event.feature, event.detail ?? "");
+        if (choice) {
+          event.provider = choice.provider;
+          const cost = choice.model ? mediaCost(choice, event.seconds) : null;
+          if (cost !== null) event.costUsd = cost;
+        }
+      }
+      const spend = media.get(event.provider ?? "") ?? { provider: event.provider ?? "", pictures: 0, clips: 0, costUsd: 0, unpriced: 0 };
+      if (event.feature === "picture") spend.pictures++;
+      else spend.clips++;
+      if (event.costUsd === undefined) spend.unpriced++;
+      else spend.costUsd += event.costUsd;
+      media.set(spend.provider, spend);
+    }
     inPeriod.push(event);
     const row = rows.get(event.feature) ?? {
       feature: event.feature,
@@ -102,6 +121,7 @@ export async function readUsage(dir: string, since: string): Promise<UsageReport
   const order = Object.keys(USAGE_FEATURES);
   return {
     rows: [...rows.values()].sort((a, b) => order.indexOf(a.feature) - order.indexOf(b.feature)),
+    media: [...media.values()].sort((a, b) => b.costUsd - a.costUsd),
     recent: inPeriod.sort((a, b) => b.at.localeCompare(a.at)).slice(0, RECENT_SHOWN),
     trackedSince,
   };

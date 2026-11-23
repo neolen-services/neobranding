@@ -14,6 +14,8 @@ import {
   parseVideo,
   SPEAKER_ME,
   SPEAKER_NARRATOR,
+  DEFAULT_LENGTH,
+  VIDEO_PLATFORMS,
   isMotion,
   speakerName,
   stylePrompt,
@@ -34,6 +36,8 @@ const WORDS_PER_SECOND = 2.5;
 const VOICES_AT_ONCE = 4;
 /** Health topics switch on the health rules. The app itself is not about any one subject. */
 const HEALTH_TOPIC = /health|fitness|medic|nutrition|wellness|diet|longevity|sleep|weight/i;
+
+const platformPrompt = (platform: string) => VIDEO_PLATFORMS.find((p) => p.id === platform)?.prompt ?? "";
 
 const NewCharacter = z.object({ name: z.string(), role: z.string(), personality: z.string(), speech: z.string(), look: z.string() });
 
@@ -255,7 +259,14 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
     learned
       ? `HOW THIS CREATOR'S EARLIER VIDEOS DID (best first, by saves, shares and follows for the views they got)\n${learned}\nLearn from the openings that found the right viewers. Do not reuse their wording.`
       : "",
-    "Target length: 30 to 60 seconds in total.",
+    video.videoFormat || series?.videoFormat
+      ? `THE FORMAT\nBuild this video as: ${video.videoFormat || series?.videoFormat}. The creator chose it, so the whole structure follows that format: how it opens, how the middle is laid out, and how it ends.`
+      : "",
+    platformPrompt(video.platform || series?.platform || "") ? `WHERE IT WILL BE POSTED\n${platformPrompt(video.platform || series?.platform || "")}` : "",
+    video.language || series?.language
+      ? `THE LANGUAGE\nWrite everything a viewer hears or reads in ${video.language || series?.language}: every spoken line, the on-screen words, the three opening lines and the caption. Write it the way people really speak that language, not as a translation. Keep the directions that are not for the viewer (place, action, camera, sound, look) in English.`
+      : "",
+    `Target length: about ${video.targetSeconds || series?.targetSeconds || DEFAULT_LENGTH} seconds in total, and no more than a tenth over or under. Choose the number of scenes to fit it.`,
     note && video.scenes.length
       ? `THE CURRENT SCRIPT, WHICH THE CREATOR SENT BACK\n${JSON.stringify({ claim: video.claim, hooks: video.hooks, scenes: video.scenes.map((s) => ({ place: s.place, action: s.action, lines: s.lines.map((l) => `${speakerName(l.speaker, characters)}: ${l.text}`) })) })}\n\nTHE CREATOR'S NOTE: ${note}\nChange what the note asks for and keep the rest as it is.`
       : note

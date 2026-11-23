@@ -397,6 +397,11 @@ function Panel({
               </ul>
             </>
           )}
+          {review.problems.some((p) => /^not fixed/i.test(p.trim())) && (
+            <p className="mt-2 rounded-lg bg-black/20 px-2.5 py-2 text-xs leading-relaxed">
+              This has been tried and came back the same. Applying the fix again draws it afresh, but if it keeps failing, use a stronger picture model (Nano Banana Pro, under “Picture service and look” at the top), or approve it if the video can live with it.
+            </p>
+          )}
           {review.fix && (
             <>
               <p className="mt-2 text-xs opacity-80">

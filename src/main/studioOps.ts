@@ -138,6 +138,13 @@ export function studioOps(ctx: StudioContext) {
     return [stylePrompt(video.style || parent?.style || ""), video.look || parent?.look || ""].filter(Boolean).join(" ");
   };
 
+  /** Swaps one name for another in a piece of script, as a whole word only ("Sam" does not touch "Samuel"). */
+  const renamer = (from: string, to: string) => {
+    if (!from.trim() || from === to) return (text: string) => text;
+    const word = new RegExp(`(?<![\\p{L}\\p{N}])${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "gu");
+    return (text: string) => text.replace(word, () => to);
+  };
+
   /** The characters seen or heard in a scene. */
   // A script sometimes names someone in what happens without listing them among those seen, so the name counts too.
   const named = (text: string, name: string) => name.trim().length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "iu").test(text);
@@ -190,7 +197,24 @@ export function studioOps(ctx: StudioContext) {
       try {
         const i = (input ?? {}) as Record<string, unknown>;
         const character = parseCharacter({ ...i, id: i.id || randomUUID() });
+        const before = cast().find((c) => c.id === character.id);
         db().saveDoc("characters", character);
+        // A new name is written into every script that uses the character, so the words, the storyboards and the cast agree.
+        if (before && before.name !== character.name) {
+          const rename = renamer(before.name, character.name);
+          for (const video of videos()) {
+            if (!video.scenes.some((s) => s.characters.includes(character.id) || s.lines.some((l) => l.speaker === character.id))) continue;
+            const scenes = video.scenes.map((scene) => ({
+              ...scene,
+              action: rename(scene.action),
+              camera: rename(scene.camera),
+              text: rename(scene.text),
+              // A recorded line that said the old name is recorded again.
+              lines: scene.lines.map((line) => (rename(line.text) === line.text ? line : { speaker: line.speaker, text: rename(line.text), delivery: line.delivery })),
+            }));
+            if (JSON.stringify(scenes) !== JSON.stringify(video.scenes)) db().saveDoc("videos", { ...video, scenes, updatedAt: new Date().toISOString() });
+          }
+        }
         return { ok: true, value: character };
       } catch (e) {
         return fail(e, "Could not save the character.");
@@ -242,7 +266,7 @@ export function studioOps(ctx: StudioContext) {
         const brief = words(from.brief);
         const title = words(from.title) || ideas[0]?.title || brief.slice(0, 60) || (inspired.posts[0] ? `Inspired by ${inspired.posts[0].analysis?.topic || inspired.posts[0].author || "a saved post"}` : "");
         if (!title) return { ok: false, error: "Give the series a title, pick an idea or a post, or say what it is about." };
-        const made = parseSeries({ id: randomUUID(), title, brief, production: from.production === undefined ? (ideas[0]?.production ?? "mix") : parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE, ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
+        const made = parseSeries({ id: randomUUID(), title, brief, production: from.production === undefined ? (ideas[0]?.production ?? "mix") : parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE, videoFormat: words(from.videoFormat), targetSeconds: Number(from.targetSeconds) || 0, platform: words(from.platform), language: words(from.language), ideaIds: picked, postIds: inspired.posts.map((p) => p.id) });
         db().saveDoc("series", made);
         return { ok: true, value: made };
       } catch (e) {
@@ -287,7 +311,7 @@ export function studioOps(ctx: StudioContext) {
       try {
         const from = input ?? {};
         const now = new Date().toISOString();
-        const base = { id: randomUUID(), createdAt: now, updatedAt: now, production: parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE };
+        const base = { id: randomUUID(), createdAt: now, updatedAt: now, production: parseProduction(from.production), style: words(from.style) || DEFAULT_STYLE, videoFormat: words(from.videoFormat), targetSeconds: Number(from.targetSeconds) || 0, platform: words(from.platform), language: words(from.language) };
         const picked = ideaList([from.ideaId, ...(Array.isArray(from.ideaIds) ? from.ideaIds : [])]);
         let video: Video;
         if (!from.postId && !from.seriesId) {
@@ -333,6 +357,10 @@ export function studioOps(ctx: StudioContext) {
             brief: `${episode.teaches} Ends on: ${episode.endsOn}`,
             format: "episode",
             style: parent.style || base.style,
+            videoFormat: parent.videoFormat || base.videoFormat,
+            targetSeconds: parent.targetSeconds || base.targetSeconds,
+            platform: parent.platform || base.platform,
+            language: parent.language || base.language,
             seriesId: parent.id,
             episode: number,
             // An episode is made the way its series is.
@@ -365,8 +393,10 @@ export function studioOps(ctx: StudioContext) {
       if (toId === "new") {
         // Two characters with one name could not be told apart, so the new one is numbered.
         const taken = new Set(everyone.map((c) => c.name.toLowerCase()));
-        let name = from.name;
-        for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${from.name} ${n}`;
+        // "Sam 2" gives "Sam 3", not "Sam 2 2".
+        const base = from.name.replace(/(\s+\d+)+$/, "") || from.name;
+        let name = base;
+        for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base} ${n}`;
         to = parseCharacter({ id: randomUUID(), name, role: from.role, personality: from.personality, speech: from.speech, look: from.look, style: from.style, voice: null, pictures: [] });
         db().saveDoc("characters", to);
       }
@@ -374,14 +404,13 @@ export function studioOps(ctx: StudioContext) {
       if (to.id === from.id) return { ok: true, value: { video, removed: false } };
       const target = to;
 
-      // The old name, as a whole word, becomes the new one wherever the script says it.
-      const named = new RegExp(`(?<![\\p{L}\\p{N}])${from.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "gu");
-      const rename = (text: string) => (from.name && from.name !== target.name ? text.replace(named, target.name) : text);
+      const rename = renamer(from.name, target.name);
       const recast = parseVideo({
         ...video,
         scenes: video.scenes.map((scene) => ({
           ...scene,
           action: rename(scene.action),
+          camera: rename(scene.camera),
           text: rename(scene.text),
           characters: [...new Set(scene.characters.map((id) => (id === from.id ? target.id : id)))],
           lines: scene.lines.map((line) =>
@@ -604,7 +633,10 @@ export function studioOps(ctx: StudioContext) {
         // A change asked of the storyboard in use is an edit of that sheet, not a new drawing: the sheet is sent
         // as the first picture and everything not named in the change stays as it is.
         const asked = typeof note === "string" ? note.trim() : "";
-        const current = asked ? pickedPicture(scene) : undefined;
+        // A change that is about who someone is (the wrong face or clothes) is not an edit: the faulty storyboard would be
+        // the model's strongest guide and it would keep the wrong person. It is drawn afresh from the character pictures.
+        const aboutLooks = /reference picture/i.test(asked);
+        const current = asked && !aboutLooks ? pickedPicture(scene) : undefined;
         const first = current ?? setPicture;
         const withPictures = inScene.filter((c) => characterReference(c)).slice(0, first ? 3 : 4);
         const look = lookOf(video);
@@ -622,10 +654,10 @@ export function studioOps(ctx: StudioContext) {
               ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
               : "",
             withPictures.length
-              ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide who each character is: keep the same face, age, hair, build, clothes and colours in every frame, from whatever side the frame shows them. Draw them in the style of this video even where their picture is in another style. Do not copy the layout or the plain background of a character sheet.`
+              ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide who each character is: keep the same face, age, hair, build, clothes and colours in every frame, from whatever side the frame shows them. Match what they wear exactly: the kind of garment (a hoodie stays a hoodie, a collarless shirt stays collarless), its collar, sleeves and colour, from the front and from behind. Draw them in the style of this video even where their picture is in another style. Do not copy the layout or the plain background of a character sheet.`
               : "",
             current
-              ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else exactly as it is in that picture: the same four frames in the same order, the same composition, place, people, faces, clothes, props, light and colours. Change only what the instruction names, in every frame it applies to.`
+              ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else as it is in that picture: the same four frames in the same order, the same composition, place, props, light and colours. Change only what the instruction names, in every frame it applies to. Who the characters are still comes from their own reference pictures: where the storyboard shows one of them differently, their picture wins.`
               : setPicture && carriesOn
               ? `The LAST reference picture is the storyboard of the shot just before this one (scene ${index}). Take the place, the positions and the light from it, and the characters' faces and clothes from their own pictures. This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
               : setPicture
@@ -633,7 +665,7 @@ export function studioOps(ctx: StudioContext) {
                 : "",
             "Keep the background simple and the same in every frame: no people, objects or clutter that the action above does not need. Anyone or anything in the background of frame 1 stays the same, in the same spot, in all four frames.",
             "No captions, subtitles, speech bubbles, arrows, notes, logos or any other writing. A small frame number in a corner of each frame is the only text allowed.",
-            asked && !current ? `Change from the last attempt: ${asked}` : "",
+            asked && !current ? `${aboutLooks ? "The last attempt got this wrong, so take particular care with it" : "Change from the last attempt"}: ${asked}` : "",
           ]
             .filter(Boolean)
             .join("\n"),

@@ -10,6 +10,7 @@ import {
   type UsageRow,
   type UsageService,
 } from "@shared/usage";
+import { MEDIA_PROVIDERS, type MediaProvider } from "@shared/media";
 import { api } from "./api";
 
 const DAY = 86_400_000;
@@ -29,8 +30,8 @@ const minutes = (seconds: number) => (seconds < 60 ? `${Math.round(seconds)} sec
 function amount(service: UsageService, use: { costUsd?: number; seconds?: number; characters?: number; credits?: number }): string {
   if (service === "claude") return usd(use.costUsd ?? 0);
   if (service === "deepgram") return use.seconds ? minutes(use.seconds) : "–";
-  // Pictures, clips and lip-sync are billed by whichever service made them; only clip length is known here.
-  if (service === "media") return use.seconds ? `${count(use.seconds)} sec of video` : "–";
+  // Pictures, clips and lip-sync: an estimate at the list price of whichever service made them, when it publishes one.
+  if (service === "media") return use.costUsd ? `about ${usd(use.costUsd)}` : use.seconds ? `${count(use.seconds)} sec of video` : "–";
   if (use.credits) return `${count(use.credits)} credits`;
   if (use.characters) return `${count(use.characters)} characters`;
   return "–";
@@ -110,6 +111,18 @@ export function UsageView() {
               value={`${count(sum(eleven, "requests"))} made`}
               note={sum(eleven, "credits") ? `${count(sum(eleven, "credits"))} credits` : `${count(sum(eleven, "characters"))} characters spoken`}
             />
+            {report.media.map((m) => {
+              const made = [m.pictures > 0 && `${count(m.pictures)} ${m.pictures === 1 ? "picture" : "pictures"}`, m.clips > 0 && `${count(m.clips)} ${m.clips === 1 ? "clip" : "clips"}`].filter(Boolean).join(" · ");
+              const name = m.provider in MEDIA_PROVIDERS ? MEDIA_PROVIDERS[m.provider as MediaProvider].label : "Pictures and video";
+              return (
+                <Card
+                  key={m.provider}
+                  label={`${name} cost (estimate)`}
+                  value={m.costUsd > 0 ? usd(m.costUsd) : "No price"}
+                  note={`${made}${m.unpriced > 0 && m.costUsd > 0 ? ` · ${count(m.unpriced)} not priced` : ""}`}
+                />
+              );
+            })}
           </div>
 
           <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] shadow-sm">
@@ -168,8 +181,9 @@ export function UsageView() {
 
           <p className="text-sm leading-relaxed opacity-60">
             The Claude cost is an estimate worked out from the tokens in each reply at list prices; your Anthropic invoice is the
-            real figure. Deepgram, ElevenLabs, fal.ai and Google bill on their own accounts, so only minutes, characters,
-            credits and counts are shown for them.{" "}
+            real figure. The fal.ai and Google costs are also estimates: each picture and each second of video at the price that service
+            published in November 2026, which leaves out small extras such as reference pictures. ElevenLabs charges credits that
+            depend on the settings, and Deepgram bills on its own account, so only credits, characters and minutes are shown for them.{" "}
             {report.trackedSince
               ? `Every request has been logged since ${new Date(report.trackedSince).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" })}. Analyses made before that are included from the cost saved with them, without token counts; agent chats and idea rounds from before that are not included.`
               : "Requests are logged from now on. Analyses made before today are included from the cost saved with them, without token counts; earlier agent chats and idea rounds are not included."}
