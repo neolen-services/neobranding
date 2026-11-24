@@ -67,6 +67,7 @@ const browserApi: Api = {
   deleteVideo: (id) => call("videos:delete", id),
   writeVideo: (id, note) => call("videos:write", id, note),
   approveVideo: (id) => call("videos:approve", id),
+  checkScript: (id) => call("videos:checkScript", id),
   voiceVideo: (id) => call("videos:voices", id),
   recordVideoResults: (id, results) => call("videos:results", id, results),
   mediaSettings: () => call("media:settings"),
@@ -111,6 +112,7 @@ const browserApi: Api = {
 
   dataFolder: () => call("data:info"),
   openDataFolder: () => call("data:open"),
+  openAssetsFolder: (folder, id) => call("assets:open", folder, id),
   changeDataFolder: (path) => call("data:change", path),
   browseForFolder: async () => "",
   canBrowseForFolder: false,

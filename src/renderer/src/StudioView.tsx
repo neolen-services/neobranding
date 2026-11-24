@@ -1,12 +1,12 @@
 // Studio's home: every video and series with where it stands and what to do next, one way to start something new, and the list of scenes to film.
 import { createContext, useContext, useEffect, useState, type FormEvent } from "react";
 import type { BrandKit } from "@shared/brand";
-import { ideaKind, type Idea } from "@shared/ideas";
+import { IDEA_NEEDS, ideaKind, ideaNeeds, productionClash, suggestedProduction, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { DEFAULT_LENGTH, DEFAULT_STYLE, SCRIPT_FORMATS, VIDEO_LENGTHS, VIDEO_PLATFORMS, pickedClip, pickedPicture, productionLabel, styleLabel, type Character, type NewVideo, type Series, type Video } from "@shared/studio";
+import { DEFAULT_LENGTH, DEFAULT_STYLE, SCRIPT_FORMATS, VIDEO_LENGTHS, VIDEO_PLATFORMS, pickedClip, pickedPicture, productionLabel, styleLabel, type Character, type NewVideo, type Production, type Series, type Video } from "@shared/studio";
 import { api } from "./api";
 import { SeriesPage } from "./SeriesPage";
-import { card, Chip, Dialog, fieldClass, Icon, ICONS, IdeaPicker, label, primaryButton, ProgressBars, quietButton, STAGES, StylePicker, videoProgress } from "./studioUi";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, IdeaPicker, label, primaryButton, ProductionPicker, ProgressBars, quietButton, STAGES, StylePicker, videoProgress } from "./studioUi";
 import { VideoPage } from "./VideoPage";
 
 /** Opens a video in Studio from anywhere in the app. Provided by the app shell. */
@@ -410,12 +410,16 @@ function NewDialog({
   const [targetSeconds, setTargetSeconds] = useState<number>(DEFAULT_LENGTH);
   const [platform, setPlatform] = useState("");
   const [language, setLanguage] = useState("");
-  const brief = { style, videoFormat, targetSeconds, platform, language: language.trim() };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const idea = ideas.find((i) => i.id === picked[0]);
+  /** How it is made, once the creator changes it; until then what the idea suits. */
+  const [chosen, setChosen] = useState<Production | null>(null);
+  const production: Production = chosen ?? (idea ? suggestedProduction(idea) : "mix");
+  const clash = idea ? productionClash(idea, production) : "";
+  const brief = { production, style, videoFormat, targetSeconds, platform, language: language.trim() };
   // A video the creator films entirely themself has nothing drawn, so no style to choose.
-  const drawn = idea !== undefined && (idea.production ?? "mix") !== "me";
+  const drawn = idea !== undefined && production !== "me";
   const isSeries = idea !== undefined && ideaKind(idea) === "series";
 
   async function submit(e: FormEvent) {
@@ -452,8 +456,8 @@ function NewDialog({
             <p role={error ? "alert" : undefined} className={`mr-auto min-w-0 flex-1 text-sm ${error ? "font-medium text-red-400" : "opacity-60"}`}>
               {error ||
                 (idea
-                  ? `${isSeries ? "A series" : "A single video"}, ${productionLabel(idea.production ?? "mix").toLowerCase()}${drawn ? `, ${styleLabel(style).toLowerCase()}` : ""}. Next: ${isSeries ? "the season plan" : "the script"}.`
-                  : "Pick one saved idea. It already says whether it is a single video or a series, and how it is made.")}
+                  ? `${isSeries ? "A series" : "A single video"}, ${productionLabel(production).toLowerCase()}${drawn ? `, ${styleLabel(style).toLowerCase()}` : ""}. Next: ${isSeries ? "the season plan" : "the script"}.`
+                  : "Pick one saved idea. It already says whether it is a single video or a series.")}
             </p>
             <button type="button" className={quietButton} disabled={busy} onClick={onClose}>
               Cancel
@@ -467,7 +471,30 @@ function NewDialog({
         {ideas.length === 0 ? (
           <p className="text-sm leading-relaxed opacity-75">No saved ideas yet. Every video and series in Studio starts from one, so write and save ideas on the Ideas page first.</p>
         ) : (
-          <IdeaPicker ideas={ideas} picked={picked} onChange={setPicked} used={used} single />
+          <IdeaPicker
+            ideas={ideas}
+            picked={picked}
+            onChange={(next) => {
+              setPicked(next);
+              setChosen(null);
+            }}
+            used={used}
+            single
+          />
+        )}
+        {idea && (
+          <div>
+            <p className="text-sm font-medium">How it is made</p>
+            <p className="mb-2 mt-0.5 text-xs opacity-60">
+              {IDEA_NEEDS[ideaNeeds(idea)]}: {ideaNeeds(idea) === "ai" ? "it shows things a phone cannot film." : ideaNeeds(idea) === "you" ? "it is about you, on camera." : "it works filmed or generated."} You can change scenes one by one later.
+            </p>
+            <ProductionPicker value={production} onChange={setChosen} disabled={busy} />
+            {clash && (
+              <p role="status" className="mt-2 rounded-lg border border-[var(--accent)]/50 bg-[var(--accent)]/10 px-3 py-2 text-xs leading-snug">
+                {clash}
+              </p>
+            )}
+          </div>
         )}
         {idea && (
           <div>

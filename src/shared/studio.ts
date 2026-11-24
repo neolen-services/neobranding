@@ -131,6 +131,12 @@ export type Scene = {
   approved: string;
   /** What the storyboard check said about one of this scene's storyboards, or null when none has been checked. */
   review: StoryboardReview | null;
+  /**
+   * Full-size pictures of the storyboard's first and last frames, which the clip is pinned to start and end on.
+   * `board` is the storyboard they were drawn from; once another one is in use they are drawn again.
+   * `first` is null for a scene that carries on: it opens on the last frame of the clip before instead.
+   */
+  keyframes: { board: string; first: Take | null; last: Take | null } | null;
   /** Every clip made or filmed for the scene, and the id of the one in use. */
   clips: Take[];
   clip: string;
@@ -211,6 +217,54 @@ export const MAX_IDEAS = 10;
 /** One rule the script was checked against. */
 export type ScriptCheck = { rule: string; ok: boolean; note: string };
 
+/** What the continuity check found on reading the whole script: things that contradict each other from scene to scene. */
+export type ScriptReview = {
+  /** The script it read, as scriptSignature gives it. Once the script changes, it has to be checked again. */
+  signature: string;
+  ok: boolean;
+  /** Each contradiction, with the number of the scene it shows up in (1-based). [] when there is none. */
+  problems: { scene: number; problem: string }[];
+  /** What to ask for in a rewrite to put every problem right; "" when nothing needs changing. */
+  fix: string;
+  checkedAt: string;
+};
+
+/** What one place in the script looks like, written once so every storyboard and clip of it shows the same set. */
+export type PlaceSet = {
+  /** The place's name exactly as the scenes use it. */
+  place: string;
+  /** Its layout, furniture and props (each named the same way every time), where people are, and the light and time of day. */
+  description: string;
+};
+
+const placeKey = (place: string) => place.trim().toLowerCase();
+/** The description of a scene's place, or "" when the script has none. */
+export const setOf = (video: Pick<Video, "sets">, place: string) => (placeKey(place) ? (video.sets.find((s) => placeKey(s.place) === placeKey(place))?.description ?? "") : "");
+
+/** A short fingerprint of everything in the script a viewer sees or hears, so a check is known to be about this version of it. */
+export function scriptSignature(video: Pick<Video, "scenes" | "sets">): string {
+  const text = JSON.stringify([
+    video.sets.map((s) => [s.place, s.description]),
+    video.scenes.map((s) => [s.madeBy, s.continues, s.place, s.characters, s.action, s.camera, s.text, s.lines.map((l) => [l.speaker, l.text])]),
+  ]);
+  let a = 5381;
+  let b = 52711;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = (Math.imul(a, 33) ^ c) >>> 0;
+    b = (Math.imul(b, 31) + c) >>> 0;
+  }
+  return `${a.toString(36)}${b.toString(36)}${text.length.toString(36)}`;
+}
+
+/** Where the continuity check stands for the script as it is now. */
+export function scriptReviewState(video: Video): "unchecked" | "stale" | "failed" | "passed" {
+  const r = video.scriptReview;
+  if (!r) return "unchecked";
+  if (r.signature !== scriptSignature(video)) return "stale";
+  return r.ok ? "passed" : "failed";
+}
+
 export type Video = {
   id: string;
   title: string;
@@ -251,7 +305,11 @@ export type Video = {
   /** The on-screen text of the opening. */
   overlay: string;
   scenes: Scene[];
+  /** Each place the scenes happen in, described in detail. [] on videos written before places were described. */
+  sets: PlaceSet[];
   checks: ScriptCheck[];
+  /** The last continuity check of the script, or null when it has not been checked. */
+  scriptReview: ScriptReview | null;
   caption: string;
   /** For a remake: what was borrowed from the original and what is new. */
   kept: string[];
@@ -349,6 +407,7 @@ export function approvalProblem(video: Video): string {
   if (video.claim && video.claim.evidence !== "none" && !video.claim.checked) {
     return "Check the claim's source yourself and tick the box before approving.";
   }
+  if (scriptReviewState(video) === "failed") return "The continuity check found things in the script that contradict each other. Fix them, or rewrite, before approving.";
   return "";
 }
 
@@ -440,6 +499,13 @@ function parseReview(input: unknown): StoryboardReview | null {
   return { picture: str(r.picture), ok: r.ok === true, problems: strs(r.problems), minor: strs(r.minor), fix: str(r.fix), checkedAt: str(r.checkedAt) };
 }
 
+function parseKeyframes(input: unknown): Scene["keyframes"] {
+  if (!input || typeof input !== "object") return null;
+  const k = input as Record<string, unknown>;
+  if (!str(k.board)) return null;
+  return { board: str(k.board), first: parseTakes([k.first])[0] ?? null, last: parseTakes([k.last])[0] ?? null };
+}
+
 function parseScene(input: Record<string, unknown>, index: number): Scene {
   const seconds = typeof input.seconds === "number" && Number.isFinite(input.seconds) ? input.seconds : 5;
   return {
@@ -458,6 +524,7 @@ function parseScene(input: Record<string, unknown>, index: number): Scene {
     animation: parseAnimation(input.animation),
     approved: str(input.approved),
     review: parseReview(input.review),
+    keyframes: parseKeyframes(input.keyframes),
     clips: parseTakes(input.clips),
     clip: str(input.clip),
     lines: objs(input.lines)
@@ -534,9 +601,13 @@ export function parseVideo(input: unknown): Video {
     overlay: str(i.overlay),
     design: typeof i.design === "string" ? i.design : "",
     scenes: objs(i.scenes).map(parseScene),
+    sets: objs(i.sets)
+      .map((s) => ({ place: str(s.place), description: str(s.description) }))
+      .filter((s) => s.place && s.description),
     checks: objs(i.checks)
       .map((c) => ({ rule: str(c.rule), ok: c.ok === true, note: str(c.note) }))
       .filter((c) => c.rule),
+    scriptReview: parseScriptReview(i.scriptReview),
     caption: str(i.caption),
     kept: strs(i.kept),
     changed: strs(i.changed),
@@ -547,6 +618,17 @@ export function parseVideo(input: unknown): Video {
     createdAt: str(i.createdAt) || now(),
     updatedAt: str(i.updatedAt) || now(),
   };
+}
+
+function parseScriptReview(input: unknown): ScriptReview | null {
+  if (!input || typeof input !== "object") return null;
+  const r = input as Record<string, unknown>;
+  const signature = str(r.signature);
+  if (!signature) return null;
+  const problems = objs(r.problems)
+    .map((p) => ({ scene: typeof p.scene === "number" ? Math.max(0, Math.round(p.scene)) : 0, problem: str(p.problem) }))
+    .filter((p) => p.problem);
+  return { signature, ok: r.ok === true && problems.length === 0, problems, fix: str(r.fix), checkedAt: str(r.checkedAt) };
 }
 
 /** Validates and normalises a series from untrusted input. */

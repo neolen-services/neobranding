@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import {
   approvalProblem,
   ideaList,
+  scriptReviewState,
+  scriptSignature,
+  setOf,
   parseCharacter,
   parseProduction,
   parseResults,
@@ -23,12 +26,12 @@ import type { ApiProvider } from "../shared/settings";
 import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
-import { planSeries, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
+import { planSeries, reviewScript, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
 import { animateScene, designMotion } from "./motion";
 import { animationPage } from "../shared/motion";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaSettings, type MediaTask, type UploadedFile } from "../shared/media";
+import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaChoice, type MediaSettings, type MediaTask, type Take, type UploadedFile } from "../shared/media";
 import { boardId, characterReference, DEFAULT_STYLE, isMotion, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
 import { audioFilePath } from "./audio";
 import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
@@ -48,6 +51,13 @@ const fail = (e: unknown, fallback: string) => ({ ok: false as const, error: e i
 const rate = (v: Video) => {
   const r = v.results;
   return r ? ((r.saves ?? 0) + (r.shares ?? 0) + (r.follows ?? 0)) / Math.max(r.views ?? 0, 1) : 0;
+};
+
+/** Where a scene happens, with its set described in full when the script has one. */
+const placeLine = (video: Video, scene: Scene) => {
+  if (!scene.place) return "";
+  const set = setOf(video, scene.place);
+  return `Place: ${scene.place}.${set ? ` The set, which every shot of this place shows the same way: ${set}` : ""}`;
 };
 
 export function studioOps(ctx: StudioContext) {
@@ -151,26 +161,131 @@ export function studioOps(ctx: StudioContext) {
   const castOf = (scene: Scene) => cast().filter((c) => scene.characters.includes(c.id) || scene.lines.some((l) => l.speaker === c.id) || named(scene.action, c.name));
 
   /**
-   * What a scene's clip is made from: its storyboard, and, for a scene that carries on from the one
-   * before, the very last frame of that scene's clip, which this clip opens on. `from` is the id of
-   * the clip it opens on, or of the storyboard when it opens on nothing.
+   * Everyone who can be in frame in a scene. `own` are those the script puts in it. `nearby` are the others who
+   * are at the same place or in the same continuous take: a script often names only who a shot is about, but the
+   * people from the shot before are still sitting there, and without their pictures they are drawn as strangers.
+   */
+  function shotCast(video: Video, index: number): { own: Character[]; nearby: Character[] } {
+    const own = castOf(video.scenes[index]);
+    const seen = new Set(own.map((c) => c.id));
+    const nearby: Character[] = [];
+    const add = (scene: Scene) => {
+      for (const c of castOf(scene)) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        nearby.push(c);
+      }
+    };
+    // The same take: back to where it started, and on to where it ends.
+    for (let i = index; i > 0 && video.scenes[i].continues; i--) add(video.scenes[i - 1]);
+    for (let i = index + 1; i < video.scenes.length && video.scenes[i].continues; i++) add(video.scenes[i]);
+    // The same place in any other scene.
+    const here = video.scenes[index].place.trim().toLowerCase();
+    if (here) for (const scene of video.scenes) if (scene.place.trim().toLowerCase() === here) add(scene);
+    return { own, nearby };
+  }
+
+  /**
+   * Has Claude read the whole script for continuity: what one scene says differently from another or from its place's set.
+   * The sets come back completed and are saved, and what was found is kept on the video with the version it was about.
+   */
+  async function checkScript(id: unknown): Promise<StudioResult<Video>> {
+    const video = findVideo(id);
+    if (!video) return { ok: false, error: "That video no longer exists." };
+    const result = await reviewScript(ctx.key("anthropic"), video, cast());
+    if (!result.ok) return result;
+    // The script may have changed while Claude was reading: the check is only kept if it is about the script as it is now.
+    const now = findVideo(video.id);
+    if (!now) return { ok: false, error: "That video no longer exists." };
+    if (scriptSignature(now) !== scriptSignature(video)) return { ok: false, error: "The script changed while it was being checked. Check it again." };
+    const r = result.value;
+    const withSets = { ...now, sets: r.sets.length ? r.sets : now.sets };
+    const saved = parseVideo({
+      ...withSets,
+      scriptReview: { signature: scriptSignature(withSets), ok: r.ok, problems: r.problems, fix: r.fix, checkedAt: new Date().toISOString() },
+      // A check that finds a problem in an approved script takes the approval back, as a storyboard check does.
+      approvedAt: r.ok ? now.approvedAt : "",
+      costUsd: now.costUsd + r.costUsd,
+      updatedAt: new Date().toISOString(),
+    });
+    db().saveDoc("videos", saved);
+    return { ok: true, value: saved };
+  }
+
+  /**
+   * Draws one frame of a scene's storyboard on its own, full size, for a clip to start or end on exactly.
+   * Cutting it out of the sheet would give a small, soft picture with borders and a number on it, and the
+   * video model would copy those faces at that size; drawn again from the sheet and the character pictures, it is sharp.
+   */
+  async function drawKeyframe(video: Video, scene: Scene, which: "first" | "last", picture: MediaChoice): Promise<Take> {
+    const index = video.scenes.indexOf(scene);
+    const present = shotCast(video, index);
+    const withPictures = [...present.own, ...present.nearby].filter((c) => characterReference(c)).slice(0, 5);
+    const look = lookOf(video);
+    const frame = which === "first" ? "frame 1 (top left)" : "frame 4 (bottom right)";
+    const media = await makePicture(ctx.key, picture, {
+      prompt: [
+        `Reference picture 1 is a storyboard sheet: four numbered frames in a 2 by 2 grid showing one shot. Draw ${frame} again on its own, as one full-size tall 9:16 picture.`,
+        "Keep that frame exactly: the same framing and camera angle, the same people in the same places facing the same way, the same poses, clothes, props, place and light. Only make it sharp and finished.",
+        withPictures.length ? `The other reference pictures show, in order, ${withPictures.map((c) => c.name).join(", ")}. Take each one's face, hair, build and clothes from their own picture, not from the small drawing on the sheet.` : "",
+        look ? `Style and look: ${look}` : "",
+        placeLine(video, scene),
+        "No border, frame number, grid, caption or any other writing.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      references: await Promise.all([pickedPicture(scene)!, ...withPictures.map((c) => characterReference(c)!)].map((take) => loadTake(ctx.dataDir(), take))),
+      labels: ["the storyboard sheet", ...withPictures.map((c) => `${c.name}. This is who ${c.name} is.`)],
+      detail: `${video.title} · scene ${index + 1} · ${which} frame`,
+    });
+    return saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("picture", picture));
+  }
+
+  /**
+   * What a scene's clip is made from: its storyboard, the frame it starts on and the frame it ends on.
+   * It ends on the storyboard's last frame. It starts on the storyboard's first frame, or, for a scene that
+   * carries on from the one before, on the very last frame of that scene's clip. The full-size frames are
+   * drawn once per storyboard and kept on the scene. `from` is the id of the clip it opens on, or of the storyboard.
    */
   async function clipSource(
     videoId: unknown,
     sceneId: unknown,
-  ): Promise<{ ok: true; video: Video; scene: Scene; index: number; storyboard: Media; opening?: Media; from: string } | { ok: false; error: string }> {
-    const { video, scene } = find(videoId, sceneId);
+    picture: MediaChoice,
+  ): Promise<{ ok: true; video: Video; scene: Scene; index: number; storyboard: Media; first?: Media; last?: Media; from: string } | { ok: false; error: string }> {
+    let { video, scene } = find(videoId, sceneId);
     if (!video.approvedAt) return { ok: false, error: "Approve the script first. Clips are made for an approved script, so none are wasted on words that change." };
     const index = video.scenes.indexOf(scene);
-    const picture = pickedPicture(scene);
-    if (!picture) return { ok: false, error: `Scene ${index + 1} has no storyboard yet. Make it on the Storyboard tab first: the clip follows it.` };
+    const board = pickedPicture(scene);
+    if (!board) return { ok: false, error: `Scene ${index + 1} has no storyboard yet. Make it on the Storyboard tab first: the clip follows it.` };
     if (!storyboardApproved(scene)) return { ok: false, error: `Scene ${index + 1}'s storyboard is not approved yet. Approve it on the Storyboard tab first.` };
     const before = scene.continues && scene.madeBy === "ai" ? video.scenes[index - 1] : undefined;
     const beforeClip = before && pickedClip(before);
-    // Without FFmpeg, or if the frame cannot be read, the clip is made from the storyboard alone.
+    // Without FFmpeg, or if the frame cannot be read, the clip opens on the storyboard's first frame instead.
     const toolsDir = beforeClip ? await ensureFfmpeg(ctx.dataDir()) : null;
     const opening = beforeClip && toolsDir ? await lastFrame(ctx.dataDir(), beforeClip, toolsDir).catch(() => undefined) : undefined;
-    return { ok: true, video, scene, index, storyboard: await loadTake(ctx.dataDir(), picture), ...(opening && { opening }), from: opening && beforeClip ? beforeClip.id : picture.id };
+
+    // The frames drawn for an earlier storyboard are no use for this one.
+    const kept = scene.keyframes?.board === board.id ? scene.keyframes : null;
+    if (scene.keyframes && !kept) for (const t of [scene.keyframes.first, scene.keyframes.last]) if (t) await deleteTake(ctx.dataDir(), t);
+    const [first, last] = await Promise.all([
+      opening ? Promise.resolve(kept?.first ?? null) : kept?.first ? Promise.resolve(kept.first) : drawKeyframe(video, scene, "first", picture),
+      kept?.last ? Promise.resolve(kept.last) : drawKeyframe(video, scene, "last", picture),
+    ]);
+    if (first !== kept?.first || last !== kept?.last) {
+      const saved = change(video.id, scene.id, (s) => ({ ...s, keyframes: { board: board.id, first, last } }));
+      if (saved.ok) ({ video, scene } = find(video.id, scene.id));
+    }
+    const start = opening ?? (first ? await loadTake(ctx.dataDir(), first) : undefined);
+    return {
+      ok: true,
+      video,
+      scene,
+      index,
+      storyboard: await loadTake(ctx.dataDir(), board),
+      ...(start && { first: start }),
+      ...(last && { last: await loadTake(ctx.dataDir(), last) }),
+      from: opening && beforeClip ? beforeClip.id : board.id,
+    };
   }
 
   /** What the creator's posted videos show about which openings find their audience, for the script writer. */
@@ -474,13 +589,23 @@ export function studioOps(ctx: StudioContext) {
         if (added.length) db().saveDoc("series", { ...parent, characterIds: [...parent.characterIds, ...added] });
       }
       db().saveDoc("videos", result.value.video);
-      return { ok: true, value: result.value.video };
+      // Every new script is read for continuity straight away. If the check cannot run, approving runs it again.
+      const checked = await checkScript(result.value.video.id);
+      return { ok: true, value: checked.ok ? checked.value : result.value.video };
     },
 
+    checkScript,
+
     /** Marks the script as approved, and for an episode adds what happened to the series' story so far. */
-    approve(id: unknown): StudioResult<Video> {
-      const video = findVideo(id);
+    async approve(id: unknown): Promise<StudioResult<Video>> {
+      let video = findVideo(id);
       if (!video) return { ok: false, error: "That video no longer exists." };
+      // A script is approved only once the continuity check has read this version of it and found nothing.
+      if (video.scenes.length > 0 && scriptReviewState(video) !== "passed" && scriptReviewState(video) !== "failed") {
+        const checked = await checkScript(video.id);
+        if (!checked.ok) return { ok: false, error: `The continuity check could not run: ${checked.error}` };
+        video = checked.value;
+      }
       const problem = approvalProblem(video);
       if (problem) return { ok: false, error: problem };
       const approved = { ...video, approvedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -621,7 +746,8 @@ export function studioOps(ctx: StudioContext) {
         const { video, scene } = find(videoId, sceneId);
         if (!video.approvedAt) return { ok: false, error: "Approve the script first. A storyboard is made for an approved script, so none is wasted on words that change." };
         const choice = choose("picture", override);
-        const inScene = castOf(scene);
+        const present = shotCast(video, video.scenes.indexOf(scene));
+        const inScene = [...present.own, ...present.nearby];
         // What the picture model is shown so the scenes belong together: for a scene that carries on, the storyboard
         // of the scene before; otherwise the storyboard of the nearest earlier scene in the same place.
         const here = scene.place.trim().toLowerCase();
@@ -638,30 +764,39 @@ export function studioOps(ctx: StudioContext) {
         const aboutLooks = /reference picture/i.test(asked);
         const current = asked && !aboutLooks ? pickedPicture(scene) : undefined;
         const first = current ?? setPicture;
-        const withPictures = inScene.filter((c) => characterReference(c)).slice(0, first ? 3 : 4);
+        // An edit still sees the storyboard it has to match, or a fix about who stands where could not be made.
+        const guide = current && setPicture ? setPicture : undefined;
+        const withPictures = inScene.filter((c) => characterReference(c)).slice(0, 6 - (first ? 1 : 0) - (guide ? 1 : 0));
         const look = lookOf(video);
         const said = scene.lines.map((l) => `${speakerName(l.speaker, cast())}: ${l.text}`).join(" / ");
         const media = await makePicture(ctx.key, choice, {
           prompt: [
-            `A storyboard sheet for ONE shot of a vertical short video, ${scene.seconds} seconds long. Draw exactly four frames in a 2 by 2 grid, read left to right and top to bottom, with a thin dark border between them. Each frame is a tall 9:16 picture. Together they show this one continuous shot from its first moment to its last: frame 1 is how it opens, frames 2 and 3 are the action in between, frame 4 is how it ends.`,
+            `A storyboard sheet for ONE shot of a vertical short video, ${scene.seconds} seconds long. Draw exactly four frames in a 2 by 2 grid, read left to right and top to bottom, with a thin dark border between them: frames 1 and 2 side by side in the top half, frames 3 and 4 side by side in the bottom half. Each frame is a tall 9:16 picture filling a quarter of the sheet, never a wide strip across it. Together they show this one continuous shot from its first moment to its last: frame 1 is how it opens, frames 2 and 3 are the action in between, frame 4 is how it ends.`,
             "It is one take, not four shots: the same place, people, clothes, props and light in every frame. Only the action moves on, and the camera only as the camera note says.",
             look ? `Draw every frame in the style and look of the finished video: ${look}` : "Draw every frame as the finished video will look.",
-            scene.place && `Place: ${scene.place}.`,
+            placeLine(video, scene),
             `What happens across the four frames: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
             said && `What is said during the shot (show who is speaking; do not write the words): ${said}`,
-            inScene.length
-              ? `Characters in the shot: ${inScene.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.`
+            present.own.length ? `Characters in the shot: ${present.own.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}.` : "",
+            present.nearby.length
+              ? `Also at this place, and in frame whenever the framing takes them in: ${present.nearby.map((c) => `${c.name} (${c.look || c.role})`).join("; ")}. They are not what the shot is about, but if any of them is visible, even from behind or out of focus, it must be that same person in the same clothes.`
               : "",
+            inScene.length ? "Nobody else is a recognisable person in this shot: anyone beyond these is a blurred passer-by far in the background." : "",
             withPictures.length
               ? `The first ${withPictures.length === 1 ? "reference picture shows" : `${withPictures.length} reference pictures show, in order,`} ${withPictures.map((c) => `${c.name}${c.sheet ? " (a character sheet: front, back and face)" : ""}`).join(", ")}. These decide who each character is: keep the same face, age, hair, build, clothes and colours in every frame, from whatever side the frame shows them. Match what they wear exactly: the kind of garment (a hoodie stays a hoodie, a collarless shirt stays collarless), its collar, sleeves and colour, from the front and from behind. Draw them in the style of this video even where their picture is in another style. Do not copy the layout or the plain background of a character sheet.`
               : "",
             current
-              ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else as it is in that picture: the same four frames in the same order, the same composition, place, props, light and colours. Change only what the instruction names, in every frame it applies to. Who the characters are still comes from their own reference pictures: where the storyboard shows one of them differently, their picture wins.`
+              ? `The LAST reference picture is this shot's current storyboard. Make the SAME sheet again with one change: ${asked} Keep everything else as it is in that picture: the same four frames in the same order, the same composition, place, props, light and colours. Change only what the instruction names, in every frame it applies to. Who the characters are still comes from their own reference pictures: where the storyboard shows one of them differently, their picture wins.${guide ? ` The reference picture just before it is the storyboard of scene ${video.scenes.indexOf(sameSet!) + 1}, ${carriesOn ? "which this shot carries straight on from" : "an earlier shot in this same place"}: where the change is about who stands where, which way they face, the props or the light, match its frame 4.` : ""}`
               : setPicture && carriesOn
               ? `The LAST reference picture is the storyboard of the shot just before this one (scene ${index}). Take the place, the positions and the light from it, and the characters' faces and clothes from their own pictures. This shot carries straight on from it with no cut: frame 1 here is the same moment as its last frame, with the same place, people, clothes, props, light and camera position.`
               : setPicture
-                ? `The LAST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). Take the place from it, and the characters' faces and clothes from their own pictures. Keep the same walls, furniture, props, light, time of day and what everyone wears.`
+                ? [
+                    `The LAST reference picture is the storyboard of an earlier shot in this same place (scene ${video.scenes.indexOf(sameSet!) + 1}). This shot is a cut to a new camera angle on the same moment${video.scenes.indexOf(sameSet!) === index - 1 ? ", right after that shot's frame 4" : ""}, so a viewer must see the same set-up from another angle, not a new one.`,
+                    "Keep the blocking of its last frame: who stands or sits where, who is to the left and right of whom, which way each person faces, and the table, food, cups and other props on it. Keep the same walls, furniture, light, time of day and what everyone wears.",
+                    "Only the framing changes, as the camera note says. Keep the 180-degree rule: the camera stays on the same side of the people, so whoever was on the left of the frame is still on the left. Someone the new framing leaves out is still there, just out of frame. Nothing and nobody appears or disappears without the action saying so.",
+                    "The characters' faces and clothes still come from their own pictures.",
+                  ].join(" ")
                 : "",
             "Keep the background simple and the same in every frame: no people, objects or clutter that the action above does not need. Anyone or anything in the background of frame 1 stays the same, in the same spot, in all four frames.",
             "No captions, subtitles, speech bubbles, arrows, notes, logos or any other writing. A small frame number in a corner of each frame is the only text allowed.",
@@ -669,7 +804,12 @@ export function studioOps(ctx: StudioContext) {
           ]
             .filter(Boolean)
             .join("\n"),
-          references: await Promise.all([...withPictures.map((c) => characterReference(c)!), ...(first ? [first] : [])].map((take) => loadTake(ctx.dataDir(), take))),
+          references: await Promise.all([...withPictures.map((c) => characterReference(c)!), ...(guide ? [guide] : []), ...(first ? [first] : [])].map((take) => loadTake(ctx.dataDir(), take))),
+          labels: [
+            ...withPictures.map((c) => `${c.name}${c.sheet ? ", a character sheet showing them from the front, from the back, and their face" : ""}. This is who ${c.name} is.`),
+            ...(guide ? ["the storyboard of an earlier shot, for the place and where people are. Not for what anyone looks like."] : []),
+            ...(first ? [current ? "this shot's current storyboard" : "the storyboard of an earlier shot, for the place and where people are. Not for what anyone looks like."] : []),
+          ],
           detail: `${video.title} · scene ${video.scenes.indexOf(scene) + 1}`,
         });
         const take = await saveTake(ctx.dataDir(), "videos", video.id, media, "ai", choiceLabel("picture", choice));
@@ -696,8 +836,15 @@ export function studioOps(ctx: StudioContext) {
         const has = (i: number) => video.scenes[i]?.madeBy === "ai" && pickedPicture(video.scenes[i]) !== undefined;
         const check = video.scenes.map((_, i) => i).filter((i) => has(i) && (fresh ? video.scenes[i].review?.picture !== video.scenes[i].picture : all || i === only));
         if (check.length === 0) return { ok: false, error: fresh && video.scenes.some((_, i) => has(i)) ? "Every storyboard has been checked already." : "There is no storyboard to check yet. Make one first." };
-        // The storyboard before each checked one is shown too, so continuity can be judged.
-        const shown = video.scenes.map((_, i) => i).filter((i) => has(i) && (check.includes(i) || check.includes(i + 1)));
+        // The storyboard before each checked one is shown too, and the last earlier one in the same place, so
+        // continuity can be judged across a cut as well as within a take.
+        const samePlace = (i: number) => {
+          const here = video.scenes[i].place.trim().toLowerCase();
+          for (let j = i - 1; here && j >= 0; j--) if (has(j) && video.scenes[j].place.trim().toLowerCase() === here) return j;
+          return -1;
+        };
+        const needed = new Set(check.flatMap((i) => [i, i - 1, samePlace(i)]));
+        const shown = video.scenes.map((_, i) => i).filter((i) => has(i) && needed.has(i));
         const toolsDir = await ensureFfmpeg(ctx.dataDir());
         const sheets = await Promise.all(shown.map(async (i) => ({ scene: i + 1, ...(await forLooking(ctx.dataDir(), pickedPicture(video.scenes[i])!, toolsDir)) })));
         const looked = new Map(shown.map((i) => [i + 1, video.scenes[i].picture]));
@@ -708,7 +855,7 @@ export function studioOps(ctx: StudioContext) {
           sheets,
           faces: await Promise.all(
             cast()
-              .filter((c) => characterReference(c) && check.some((i) => castOf(video.scenes[i]).some((x) => x.id === c.id)))
+              .filter((c) => characterReference(c) && check.some((i) => [...shotCast(video, i).own, ...shotCast(video, i).nearby].some((x) => x.id === c.id)))
               .slice(0, 6)
               .map(async (c) => ({ name: c.name, ...(await forLooking(ctx.dataDir(), characterReference(c)!, toolsDir)) })),
           ),
@@ -730,7 +877,11 @@ export function studioOps(ctx: StudioContext) {
           scenes: now.scenes.map((s, i) => {
             const r = result.value.reviews.find((x) => x.scene === i + 1);
             const picture = looked.get(i + 1);
-            return r && picture ? { ...s, review: { picture, ok: r.ok, problems: r.problems, minor: r.minor, fix: r.fix, checkedAt } } : s;
+            if (!r || !picture) return s;
+            // A check run after approving can find what was missed: a storyboard with something that must be fixed is
+            // no longer approved, so its problems show and a fix can be applied. "Approve anyway" still keeps it.
+            const reopened = !r.ok && s.approved !== "" && s.approved === picture;
+            return { ...s, review: { picture, ok: r.ok, problems: r.problems, minor: r.minor, fix: r.fix, checkedAt }, ...(reopened && { approved: "" }) };
           }),
           updatedAt: checkedAt,
         };
@@ -816,11 +967,13 @@ export function studioOps(ctx: StudioContext) {
           return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
         }
         if (isMotion(asked.video) && asked.scene.madeBy === "ai") return { ok: false, error: `Scene ${asked.video.scenes.indexOf(asked.scene) + 1} is not animated yet. Animate it on the Storyboard tab first.` };
-        const source = await clipSource(videoId, sceneId);
+        const choice = choose("clip", override);
+        // The start and end frames are drawn with the picture service in Settings.
+        const source = await clipSource(videoId, sceneId, choose("picture", undefined));
         if (!source.ok) return source;
         const { video, scene, index } = source;
-        const choice = choose("clip", override);
-        const inScene = castOf(scene).filter((c) => characterReference(c));
+        const present = shotCast(video, index);
+        const inScene = [...present.own, ...present.nearby].filter((c) => characterReference(c));
         const references: ClipReference[] = [
           {
             media: source.storyboard,
@@ -831,13 +984,15 @@ export function studioOps(ctx: StudioContext) {
         const look = lookOf(video);
         const media = await makeClip(ctx.key, choice, {
           references,
-          opening: source.opening,
+          first: source.first,
+          last: source.last,
           prompt: [
             `One continuous ${scene.seconds}-second vertical shot, full frame, with no cuts.`,
-            source.opening && `It carries straight on from the shot before (scene ${index}): open on that shot's last frame and continue the same movement.`,
+            source.first && source.from !== pickedPicture(scene)?.id && `It carries straight on from the shot before (scene ${index}): its first frame is that shot's last frame, so continue the same movement.`,
+            source.first && source.last && "Move from the first frame to the last frame in one continuous take, passing through the storyboard's middle frames; the people, clothes, props, place and light stay the same throughout.",
             `What happens: ${scene.action}`,
             scene.camera && `Camera: ${scene.camera}.`,
-            scene.place && `Place: ${scene.place}.`,
+            placeLine(video, scene),
             look && `Style and look: ${look}`,
             "No captions, subtitles or any text on screen. No split screen.",
           ]

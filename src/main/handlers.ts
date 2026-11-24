@@ -140,6 +140,8 @@ export function createHandlers(options: HandlerOptions) {
     "videos:delete": (id: unknown) => studio.deleteVideo(id),
     "videos:write": (id: unknown, note: unknown) => studio.writeScript(id, note),
     "videos:approve": (id: unknown) => studio.approve(id),
+    /** Has Claude read the script for continuity, completing each place's set. */
+    "videos:checkScript": (id: unknown) => studio.checkScript(id),
     "videos:voices": (id: unknown) => studio.voices(id),
     "videos:results": (id: unknown, results: unknown) => studio.recordResults(id, results),
     // Pictures, clips and lip-sync. `choice` picks the service for this one request; without it the Settings default is used.
@@ -266,6 +268,14 @@ export function createHandlers(options: HandlerOptions) {
     },
 
     "data:info": () => dataInfo(),
+    /** Shows, in the file manager, the folder of one video's or one character's files, or the folder of voice lines. */
+    "assets:open": (folder: unknown, id: unknown) => {
+      const inside = folder === "audio" ? ["audio"] : (folder === "videos" || folder === "cast") && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [folder, id] : null;
+      if (!inside) return;
+      const path = join(dataDir, ...inside);
+      mkdirSync(path, { recursive: true });
+      options.openFolder(path);
+    },
     "data:open": () => {
       mkdirSync(dataDir, { recursive: true });
       options.openFolder(dataDir);

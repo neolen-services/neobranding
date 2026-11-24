@@ -10,11 +10,12 @@ import { IdeasView } from "./IdeasView";
 import { ResearchView } from "./ResearchView";
 import { SettingsView, type SettingsTab } from "./SettingsView";
 import { UsageView } from "./UsageView";
+import { AssetsView } from "./AssetsView";
 import { CastView } from "./CastView";
 import { OpenVideoContext, StudioView } from "./StudioView";
 import { brandVars } from "./theme";
 
-type Page = "dashboard" | "agent" | "brand" | "cast" | "ideas" | "edit" | "research" | "studio" | "usage" | "settings";
+type Page = "dashboard" | "agent" | "brand" | "cast" | "assets" | "ideas" | "edit" | "research" | "studio" | "usage" | "settings";
 
 type Screen =
   | { name: "loading" }
@@ -31,6 +32,7 @@ const PAGE_TITLES: Record<Page, string> = {
   research: "Research",
   studio: "Studio",
   cast: "Characters",
+  assets: "Assets",
   usage: "Usage",
   settings: "Settings",
 };
@@ -170,6 +172,7 @@ export function App() {
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
             {navItem("studio", "Studio", <Icon d="M4 9h16v10H4zM4 9l1.500-4 3 4 2-4 3 4 2-4 3 4" />)}
             {navItem("cast", "Characters", <Icon d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 2.700-5 6-5s6 2 6 5M16 11a3 3 0 1 0 0-6M21 20c0-2.500-1.700-4.200-4-4.800" />)}
+            {navItem("assets", "Assets", <Icon d="M4 6h7v7H4zM13 6h7v4h-7zM13 12h7v7h-7zM4 15h7v4H4z" />)}
           </nav>
 
           <nav className="mt-auto space-y-1 border-t border-white/10 pt-3">
@@ -332,6 +335,7 @@ export function App() {
             <StudioView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={openKeys} onOpenCast={() => go("cast")} onOpenBrand={() => go("brand")} />
           )}
           {page === "cast" && <CastView brand={brand} onOpenSettings={openKeys} onOpenBrand={() => go("brand")} />}
+          {page === "assets" && <AssetsView />}
           {page === "usage" && <UsageView />}
           {page === "edit" && (
             <BrandForm

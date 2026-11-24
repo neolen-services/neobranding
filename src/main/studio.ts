@@ -17,7 +17,9 @@ import {
   DEFAULT_LENGTH,
   VIDEO_PLATFORMS,
   isMotion,
+  setOf,
   speakerName,
+  type PlaceSet,
   stylePrompt,
   type Character,
   type Production,
@@ -59,6 +61,7 @@ const VideoSchema = z.object({
       lines: z.array(z.object({ speaker: z.string(), text: z.string(), delivery: z.string() })),
     }),
   ),
+  sets: z.array(z.object({ place: z.string(), description: z.string() })),
   checks: z.array(z.object({ rule: z.string(), ok: z.boolean(), note: z.string() })),
   caption: z.string(),
   kept: z.array(z.string()),
@@ -105,9 +108,15 @@ Write:
 - scenes: the whole video in order. Each scene is ONE continuous shot of 4 to 8 seconds, never shorter (a shorter beat belongs inside the scene next to it):
   - made_by: "me" when the creator is on camera (they deliver the fact and the closing ask in their own face and voice unless told otherwise), "ai" for everything else: characters, places a camera cannot go, anything a phone cannot film.
   - flow: "continues" when this scene carries straight on from the one before it: the same place and the same moment, the action picking up exactly where the last frame left off, so the two play as one take (the camera may move or push in, but there is no cut). "cut" when it is a new shot: another place, another time, another subject, or a deliberate change of angle. The first scene is always "cut".
-  - seconds, place (a short name, reused exactly when scenes share a place), characters (names of cast members seen; [] for none), action (what happens, one sentence), camera (framing and movement), text (on-screen words, six or fewer, or ""), sound (a sound effect or music cue, or "").
+  - seconds, place (a short name, reused exactly when scenes share a place), characters (names of every cast member who is in frame, including those who only sit or stand in the background because the scene carries on from one they were in; [] for none), action (what happens, one sentence), camera (framing and movement), text (on-screen words, six or fewer, or ""), sound (a sound effect or music cue, or "").
   - lines: what is said in the scene, each with speaker, text (the exact words) and delivery (one or two words such as "calm" or "mocking", or ""). speaker is exactly "ME" (the creator on camera), "NARRATOR" (a voice over the scene), or the exact name of a cast member.
   - Only ONE speaker is seen talking in a scene. A conversation is cut into alternating close shots. A wide shot with several characters has no spoken line, or a NARRATOR line.
+- sets: one entry for every place the scenes use, with place (its name exactly as the scenes write it) and description: three to five sentences a set designer could build from, because every storyboard and clip of that place is drawn from this description alone and anything it leaves out comes out different in every shot. Say:
+  - the kind of place and its layout from where the camera usually stands (what is in front, behind, left and right);
+  - every piece of furniture and every prop any scene uses or touches, each with one plain name, its material, colour and size, and where it stands (for example "a low steel table at the centre with three red plastic stools around it");
+  - where each person in the place is when it is first seen (standing or sitting, on what, beside whom, facing which way);
+  - the light and the time of day, and what is in the background.
+  In the scenes, call every object by exactly the name its set gives it, and never use furniture or a prop the set does not have. [] when no scene has a place (motion graphics).
 - checks: go through every rule you are given and report honestly: rule (copied), ok (true or false), note (one short sentence: what you found or what must change). If something fails, still write the best script you can and say what to fix.
 - caption: a ready-to-post caption of one to three sentences in the creator's voice.
 - kept and changed: only for a remake, otherwise []. kept = what you borrowed from the original (format, kind of hook, order of beats). changed = what is new (characters, place, every word, the topic).
@@ -123,7 +132,8 @@ Rules for the writing:
 - Entertainment is the delivery, never the goal. A story may dramatise the problem, never the evidence.
 - A remake borrows the structure of the original, never its words, characters, setting, examples or closing line.
 - A series episode must make sense to someone who has seen no other episode: it teaches one complete thing, then stops just before the next answer, and ends with on-screen text asking the viewer to follow for the next part.
-- Write characters the way their personality and speech notes say.`;
+- Write characters the way their personality and speech notes say.
+- Keep continuity like a film crew would: each place has one set (given in sets) that every scene in it uses as it is. An object keeps its name and stays where it is unless an action moves it. Someone holding something still holds it in the next scene unless they put it down. A scene that carries on starts exactly where the one before ended.`;
 
 const SERIES_SYSTEM = `You plan a short season of vertical videos for one creator: a series people follow because one question runs through it and every episode also gives them something complete.
 
@@ -268,7 +278,7 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
       : "",
     `Target length: about ${video.targetSeconds || series?.targetSeconds || DEFAULT_LENGTH} seconds in total, and no more than a tenth over or under. Choose the number of scenes to fit it.`,
     note && video.scenes.length
-      ? `THE CURRENT SCRIPT, WHICH THE CREATOR SENT BACK\n${JSON.stringify({ claim: video.claim, hooks: video.hooks, scenes: video.scenes.map((s) => ({ place: s.place, action: s.action, lines: s.lines.map((l) => `${speakerName(l.speaker, characters)}: ${l.text}`) })) })}\n\nTHE CREATOR'S NOTE: ${note}\nChange what the note asks for and keep the rest as it is.`
+      ? `THE CURRENT SCRIPT, WHICH THE CREATOR SENT BACK\n${JSON.stringify({ claim: video.claim, hooks: video.hooks, sets: video.sets, scenes: video.scenes.map((s) => ({ place: s.place, action: s.action, lines: s.lines.map((l) => `${speakerName(l.speaker, characters)}: ${l.text}`) })) })}\n\nTHE CREATOR'S NOTE: ${note}\nChange what the note asks for and keep the rest as it is.`
       : note
         ? `THE CREATOR'S DIRECTION: ${note}`
         : "",
@@ -329,7 +339,10 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
         sound: s.sound,
         lines: s.lines.map((l) => ({ speaker: speaker(l.speaker), text: l.text, delivery: l.delivery })),
       })),
+      sets: isMotion(video) ? [] : out.sets,
       checks: out.checks,
+      // A new script has not been checked for continuity yet.
+      scriptReview: null,
       caption: out.caption,
       kept: video.source === "remake" ? out.kept : [],
       changed: video.source === "remake" ? out.changed : [],
@@ -340,6 +353,101 @@ export async function writeVideo(apiKey: string, input: WriteVideoInput): Promis
       updatedAt: new Date().toISOString(),
     });
     return { ok: true, value: { video: written, newCharacters } };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
+  }
+}
+
+const ScriptReviewSchema = z.object({
+  /** Each place's set, completed: written down before judging, so contradictions are found against it, and saved for the storyboards. */
+  sets: z.array(z.object({ place: z.string(), description: z.string() })),
+  problems: z.array(z.object({ scene: z.number(), problem: z.string() })),
+  fix: z.string(),
+});
+
+const SCRIPT_REVIEW_SYSTEM = `You check the script of a short vertical video for continuity before any picture or video is made from it. Each scene is drawn and then made into a clip on its own, by models that see only that scene's words, so anything the script says differently from one scene to another comes out different on screen: a stool in one shot becomes a table in the next, a glass becomes a cup, someone sitting is suddenly standing.
+
+Each place has a set: a description of its layout, furniture, props, where people are and the light. Every storyboard and clip of that place is drawn from it, so it must hold everything the scenes in that place use, each object under one name.
+
+Read the whole script as a continuity supervisor would, scene by scene, keeping track of:
+- The set: what each place has in it (furniture, objects, what people stand or sit on, the light and time of day). An object a scene uses must be one the set has, or be brought in plainly. A scene that names something as a different object from what the set or an earlier scene in the same place called it (a stool that becomes a table or a bench, a glass that becomes a cup) is a problem.
+- The people: who is there, where they are (standing, sitting, on what, beside whom), what they wear and what they hold. A scene that carries on with no cut starts exactly where the one before ended. Someone who left does not come back without entering. Someone holding or eating something still has it, or puts it down.
+- The action: what a scene does must be physically possible from where the scene before left everyone. Someone standing on a stool cannot slam a palm on a table in the same moment unless the table is within reach.
+- The words: whoever speaks is in the scene; a line does not talk about something the scenes do not show, or show differently.
+
+Only report what a viewer would see as a mistake or what would make two shots disagree. Do not judge the writing, the story, the jokes, the length or the rules; those are checked elsewhere. A detail one scene adds that no other scene contradicts is fine.
+
+Answer:
+- sets: write these first and judge against them. One entry for every place the scenes use (place copied exactly as the scenes write it). Start from the set the script gives and keep its wording where it is right. Complete it where it falls short: add any furniture or prop a scene uses that it lacks, give each object one plain name with its material, colour, size and where it stands, say where each person is when the place is first seen, and the light, time of day and background. Three to six sentences. Where the scenes disagree with each other about an object, keep what the earliest scene says. Do not change what happens in the scenes.
+  Missing detail in a set is not a problem to report: put it right in sets.
+- problems: each contradiction between scenes, or between a scene and its set as you completed it, in one plain sentence naming the scenes and what disagrees ("Scene 1 has the friend standing on a stool; scene 2 has the host slamming a palm on a table the set never had."), with scene = the number of the later scene. [] when the script holds together, which is the usual answer.
+- fix: only when there are problems: one or two sentences to send to the script writer that put every problem right at once with the smallest change, usually by naming the set once and using the same words for it in every scene ("Give the café a low metal table with plastic stools around it in its set, and call them that in every scene."). Otherwise "".`;
+
+/** Reads a whole script for continuity: things one scene says differently from another. */
+export async function reviewScript(
+  apiKey: string,
+  video: Video,
+  characters: Character[],
+): Promise<StudioResult<{ ok: boolean; problems: { scene: number; problem: string }[]; fix: string; sets: PlaceSet[]; costUsd: number }>> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  if (video.scenes.length === 0) return { ok: false, error: "Write the script first." };
+  const scenes = video.scenes
+    .map((s, i) => {
+      const who = s.characters.map((id) => characters.find((c) => c.id === id)?.name).filter(Boolean);
+      return [
+        `Scene ${i + 1} (${s.seconds}s, ${s.madeBy === "me" ? "filmed by the creator" : "AI"}, ${i > 0 && s.continues ? `carries on from scene ${i} with no cut` : "a new shot"})`,
+        `Place: ${s.place || "not given"}`,
+        who.length ? `In it: ${who.join(", ")}` : "",
+        `What happens: ${s.action}`,
+        s.camera ? `Camera: ${s.camera}` : "",
+        s.text ? `On screen: ${s.text}` : "",
+        s.lines.length ? `Said: ${s.lines.map((l) => `${speakerName(l.speaker, characters)}: ${l.text}`).join(" / ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const used = new Set(video.scenes.flatMap((s) => s.characters));
+  const cast = characters.filter((c) => used.has(c.id));
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages.stream({
+      model: "claude-opus-5-5",
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default" as const,
+      system: SCRIPT_REVIEW_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: [
+            `THE VIDEO\n${video.title}${video.look ? `\nLook: ${video.look}` : ""}`,
+            cast.length ? `THE CHARACTERS\n${cast.map((c) => `${c.name}: ${c.look || c.role}`).join("\n")}` : "",
+            `THE SETS\n${video.sets.length ? video.sets.map((s) => `${s.place}: ${s.description}`).join("\n") : "(none written yet: write them)"}`,
+            `THE SCRIPT\n${scenes}`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        },
+      ],
+      output_config: { format: betaZodOutputFormat(ScriptReviewSchema) },
+    }).finalMessage();
+    recordClaude("script_check", response.usage, video.title);
+    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to check this script." };
+    const out = response.parsed_output;
+    if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The check came back incomplete. Try again." };
+    const problems = out.problems
+      .map((p) => ({ scene: Math.max(0, Math.min(video.scenes.length, Math.round(p.scene))), problem: p.problem.trim() }))
+      .filter((p) => p.problem);
+    // Only sets for places the scenes really use are kept; a place the check left out keeps what it had.
+    const places = [...new Map(video.scenes.filter((s) => s.place.trim()).map((s) => [s.place.trim().toLowerCase(), s.place.trim()])).values()];
+    const sets = places
+      .map((place) => {
+        const told = out.sets.find((s) => s.place.trim().toLowerCase() === place.toLowerCase())?.description.trim();
+        return { place, description: told || setOf(video, place) };
+      })
+      .filter((s) => s.description);
+    return { ok: true, value: { ok: problems.length === 0, problems, fix: problems.length ? out.fix.trim() : "", sets, costUsd: estimateCostUsd(response.usage) } };
   } catch (e) {
     return { ok: false, error: describeClaudeError(e) };
   }
@@ -360,15 +468,18 @@ const StoryboardSchema = z.object({
 const STORYBOARD_SYSTEM = `You check the storyboards of a short vertical video before any costly video is made from them. You are shown the script of each scene and, as pictures, its storyboard: one sheet of four frames in a 2 by 2 grid, read left to right and top to bottom, showing one continuous shot from its first moment (frame 1) to its last (frame 4).
 
 HOW THE STORYBOARD IS USED
-A video model is given the sheet as a guide, together with the script and each character's own reference picture, and makes one moving shot. It takes from the sheet what happens and in what order, who is in the shot and roughly where, the place, the framing and the look. It does not copy the sheet pixel by pixel, and small differences between frames never reach the video. But who is in the shot does reach it: if the storyboard shows a different-looking person from the character's reference picture, the video model is pulled between the two and the character comes out wrong. So judge each sheet by one question: would a video made from it come out wrong?
+Frame 1 and frame 4 are redrawn full size and the video model is made to start exactly on frame 1 and end exactly on frame 4, with the sheet, the script and each character's own reference picture as a guide for what happens in between. So frames 1 and 4 reach the video as they are: who stands where, which way they face, the props and the light in them are what the viewer sees at the start and end of the shot. Frames 2 and 3 only guide the movement, and small differences in them never reach the video. But who is in the shot does reach it: if the storyboard shows a different-looking person from the character's reference picture, the video model is pulled between the two and the character comes out wrong. So judge each sheet by one question: would a video made from it come out wrong?
 
 MUST FIX: only what would make the video wrong
 - The wrong thing happens: the action, the place or the order of events does not match the script, or the action does not start in frame 1 and finish by frame 4.
 - The wrong people: a character the script puts in the shot is missing, someone who speaks is not there, or a main character is plainly a different person from their reference picture (when you are shown one), from their description, or from the other frames. A different face shape, age, hair, build or outfit counts; a slightly different expression or angle does not.
 - Not one shot: the frames show different places or times, or a cut, so it cannot be one continuous take.
-- It is not a storyboard: not four frames in a grid, or frames in an order that cannot be followed.
+- It is not a storyboard laid out as asked: not four tall frames in a 2 by 2 grid (four wide strips stacked on top of each other count as wrong, because frame 1 and frame 4 are cut from the corners), or frames in an order that cannot be followed.
 - Writing in the frames (captions, speech bubbles, labels) other than small frame numbers, because a video model tends to copy it.
-- A scene marked as carrying on does not start where the scene before ends: a different place, different people, or a clearly different position.
+- A scene marked as carrying on does not start where the scene before ends: a different place, different people, a clearly different position, or a different set (furniture or a prop that is not in the scene before, or has turned into something else).
+- The set is wrong: a scene's set (when it is given) says what the place holds and where people are, and every storyboard of that place is drawn from it. Furniture or a prop that the set names and the action uses is missing or is a different thing, people are placed against what the set says without the action moving them, or the light or time of day is not the set's. Background detail the set does not mention is minor.
+- An object the action depends on is the wrong thing or changes: the script says someone stands on a stool and the sheet shows a table, a prop someone uses turns into a different object between frames, or the scene uses furniture or a prop that the storyboard of an earlier scene in the same place (when you are shown it) does not have or shows as something else. Small drift in its colour or shape is minor; a different object is not.
+- A new camera angle in the same place as an earlier scene breaks continuity with that scene's storyboard (you are shown it): people have swapped sides of the frame or moved to other seats, someone faces the other way for no reason in the action, a table or prop appears or vanishes, or the light or time of day changes. Compare its frame 1 with the earlier sheet's frame 4. A closer or wider framing, or someone left out of frame by a close-up, is fine.
 - A main character is badly malformed (extra limbs, a broken face) in a way that would be copied.
 
 MINOR: note it, but it is not a reason to make the sheet again
@@ -390,6 +501,13 @@ Answer for every scene you were asked to check, using its number.
 - minor: up to three small flaws, one short sentence each. [] is fine.
 - fix: only when must_fix is not empty: one or two sentences the creator can send to the picture model to put right everything in must_fix at once, written as an instruction ("Show ...", "Keep ..."). Otherwise "".
 Write plainly, for a creator who is not a film maker.`;
+
+/** The index of the last earlier AI scene in the same place as scene `i`, or -1. */
+function samePlaceBefore(video: Video, i: number): number {
+  const here = video.scenes[i].place.trim().toLowerCase();
+  for (let j = i - 1; here && j >= 0; j--) if (video.scenes[j].madeBy === "ai" && video.scenes[j].place.trim().toLowerCase() === here) return j;
+  return -1;
+}
 
 /**
  * Looks at the storyboards of a video's scenes and says, for each, whether it is good to make the video from.
@@ -433,7 +551,7 @@ export async function reviewStoryboards(
                 `THE SCENES\n${video.scenes
                   .map(
                     (s, i) =>
-                      `Scene ${i + 1} (${s.seconds}s, ${s.madeBy === "me" ? "filmed by the creator, no storyboard" : i > 0 && s.continues ? `carries on from scene ${i} with no cut` : "a new shot"})\nPlace: ${s.place || "not given"}\nWhat happens: ${s.action}${s.camera ? `\nCamera: ${s.camera}` : ""}${
+                      `Scene ${i + 1} (${s.seconds}s, ${s.madeBy === "me" ? "filmed by the creator, no storyboard" : i > 0 && s.continues ? `carries on from scene ${i} with no cut` : samePlaceBefore(video, i) >= 0 ? `a new camera angle in the same place as scene ${samePlaceBefore(video, i) + 1}` : "a new shot"})\nPlace: ${s.place || "not given"}${setOf(video, s.place) ? `\nThe set: ${setOf(video, s.place)}` : ""}\nWhat happens: ${s.action}${s.camera ? `\nCamera: ${s.camera}` : ""}${
                         s.lines.length ? `\nSaid: ${s.lines.map((l) => `${speakerName(l.speaker, input.characters)}: ${l.text}`).join(" / ")}` : ""
                       }`,
                   )

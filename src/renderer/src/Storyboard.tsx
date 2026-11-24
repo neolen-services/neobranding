@@ -37,6 +37,10 @@ export function StoryboardTab({
   const [active, setActive] = useState<ReadonlySet<string>>(new Set());
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
+  /** How many rounds of fixing the automatic run may take, what it is doing now ("" when it is not running), and whether Stop was pressed. */
+  const [rounds, setRounds] = useState(3);
+  const [auto, setAuto] = useState("");
+  const stop = useRef(false);
 
   const scenes = video.scenes;
   const isAi = (i: number) => scenes[i].madeBy === "ai";
@@ -105,14 +109,142 @@ export function StoryboardTab({
     try {
       const result = await api.reviewStoryboard(video.id, everything ? undefined : "new");
       if (!result.ok) return setError(result.error);
+      const reopened = result.video.scenes.filter((s, i) => storyboardApproved(scenes[i] ?? s) && !storyboardApproved(s)).length;
       onChange(result.video);
       const bad = result.video.scenes.filter((s) => s.review?.picture === s.picture && !s.review.ok && !storyboardApproved(s)).length;
-      setNotice(bad === 0 ? "Checked: nothing has to be fixed. Look through them yourself, then approve." : `Checked: ${plural(bad, "storyboard")} ${bad === 1 ? "has" : "have"} something that would make the video wrong. The notes are under each one.`);
+      setNotice(
+        bad === 0
+          ? "Checked: nothing has to be fixed. Look through them yourself, then approve."
+          : `Checked: ${plural(bad, "storyboard")} ${bad === 1 ? "has" : "have"} something that would make the video wrong. The notes are under each one.${reopened > 0 ? ` ${reopened === 1 ? "One of them was approved, so its approval was" : `${reopened} of them were approved, so their approval was`} taken back.` : ""}`,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "The storyboards could not be checked.");
     } finally {
       setDoing("");
     }
+  }
+
+  /**
+   * Does the whole loop without being asked at each step: draws what is missing, has the storyboards checked,
+   * applies every suggested fix, and checks the redrawn ones again, for up to `rounds` rounds of fixing.
+   * It stops as soon as nothing has to be fixed, when a round fixes nothing, or when Stop is pressed.
+   * It never approves: that stays the creator's call.
+   */
+  async function autoFix() {
+    if (!choices) return;
+    setError("");
+    setNotice("");
+    stop.current = false;
+    let now = video;
+    let drawn = 0;
+    let checks = 0;
+    /** How many times each scene has been made again, so one that will not come right is not retried for ever. */
+    const tries = new Map<string, number>();
+    const isAi = (v: Video, i: number) => v.scenes[i].madeBy === "ai";
+    const toFix = (v: Video) =>
+      v.scenes.map((_, i) => i).filter((i) => {
+        const sc = v.scenes[i];
+        return isAi(v, i) && sc.picture !== "" && sc.review?.picture === sc.picture && !sc.review.ok && sc.review.fix !== "" && !storyboardApproved(sc);
+      });
+    const unchecked = (v: Video) => v.scenes.some((sc) => sc.madeBy === "ai" && sc.picture !== "" && sc.review?.picture !== sc.picture && !storyboardApproved(sc));
+    /** Makes storyboards for the given scenes, several at once, and returns whether all of them worked. */
+    const draw = async (which: number[], dependsOn: (i: number) => number | undefined, change: (i: number) => string | undefined) => {
+      const made = await inOrder(which, dependsOn, async (i) => {
+        const id = now.scenes[i].id;
+        setActive((a) => new Set(a).add(id));
+        try {
+          const result = await api.makeScenePicture(now.id, id, choices.picture, change(i));
+          if (!result.ok) setError(`Scene ${i + 1}: ${result.error}`);
+          else {
+            now = result.video;
+            onChange(now);
+            drawn++;
+          }
+          return result.ok;
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "The storyboard could not be made.");
+          return false;
+        } finally {
+          setActive((a) => {
+            const next = new Set(a);
+            next.delete(id);
+            return next;
+          });
+        }
+      });
+      return made === which.length;
+    };
+    const check = async () => {
+      const result = await api.reviewStoryboard(now.id, "new");
+      if (!result.ok) {
+        setError(result.error);
+        return false;
+      }
+      now = result.video;
+      onChange(now);
+      checks++;
+      return true;
+    };
+
+    let ended = "";
+    try {
+      const missingNow = now.scenes.map((_, i) => i).filter((i) => isAi(now, i) && !pickedPicture(now.scenes[i]));
+      if (missingNow.length > 0) {
+        setAuto(`Drawing ${plural(missingNow.length, "storyboard")}`);
+        const from = (i: number) => {
+          if (i > 0 && now.scenes[i].continues) return i - 1;
+          const here = now.scenes[i].place.trim().toLowerCase();
+          if (!here) return undefined;
+          for (let j = i - 1; j >= 0; j--) if (isAi(now, j) && now.scenes[j].place.trim().toLowerCase() === here) return j;
+          return undefined;
+        };
+        if (!(await draw(missingNow, from, () => undefined))) ended = "A storyboard could not be drawn, so it stopped.";
+      }
+      for (let round = 1; !ended && !stop.current; round++) {
+        if (unchecked(now)) {
+          setAuto(`Checking${round > 1 ? `, round ${round}` : ""}`);
+          if (!(await check())) {
+            ended = "The check could not be run, so it stopped.";
+            break;
+          }
+        }
+        const failing = toFix(now);
+        if (failing.length === 0) break;
+        if (round > rounds) {
+          ended = `Stopped after ${plural(rounds, "round")}.`;
+          break;
+        }
+        // A scene that has been made again twice and still fails is left for the creator: a third try rarely differs.
+        const worth = failing.filter((i) => (tries.get(now.scenes[i].id) ?? 0) < 2);
+        if (worth.length === 0) {
+          ended = "What is left did not come right after two tries each.";
+          break;
+        }
+        if (stop.current) break;
+        setAuto(`Fixing ${plural(worth.length, "storyboard")}, round ${round} of ${rounds}`);
+        for (const i of worth) tries.set(now.scenes[i].id, (tries.get(now.scenes[i].id) ?? 0) + 1);
+        // A fix edits a scene's own storyboard, so none waits for another.
+        if (!(await draw(worth, () => undefined, (i) => now.scenes[i].review?.fix))) {
+          ended = "A storyboard could not be made again, so it stopped.";
+          break;
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That did not work.");
+    } finally {
+      setAuto("");
+    }
+    const left = toFix(now).map((i) => i + 1);
+    const did = [drawn > 0 && `${plural(drawn, "storyboard")} drawn`, checks > 0 && `${plural(checks, "check")} run`].filter(Boolean).join(", ");
+    setNotice(
+      [
+        stop.current ? "Stopped." : left.length === 0 && !unchecked(now) ? "Nothing has to be fixed any more. Look through them, then approve." : ended,
+        left.length > 0 && `Still to fix: ${left.length === 1 ? "scene" : "scenes"} ${left.join(", ")}.`,
+        did && `${did.charAt(0).toUpperCase()}${did.slice(1)}.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
 
   /** Approves every storyboard in use that is not approved yet. */
@@ -140,7 +272,7 @@ export function StoryboardTab({
   }
 
   if (!choices) return null;
-  const off = busy !== "" || doing !== "";
+  const off = busy !== "" || doing !== "" || auto !== "";
   const unchecked = drawn.length - checked.length;
   const unapproved = drawn.length - approved.length;
   const allApproved = ai.length > 0 && missing.length === 0 && unapproved === 0;
@@ -206,6 +338,39 @@ export function StoryboardTab({
 
         {ai.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3">
+            {auto ? (
+              <span className="flex items-center gap-3 rounded-full border border-[var(--primary)] bg-[var(--tint)] py-1 pl-4 pr-1 text-sm">
+                <span role="status">{auto}…</span>
+                <button type="button" className={smallButton} disabled={stop.current} onClick={() => ((stop.current = true), setAuto(`${auto}, stopping after this step`))}>
+                  Stop
+                </button>
+              </span>
+            ) : (
+              stage < 3 && (
+                <span className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className={smallButton}
+                    disabled={off}
+                    title="Draws what is missing, checks, applies every suggested fix and checks again, until nothing has to be fixed or the rounds run out. It never approves for you."
+                    onClick={() => void autoFix()}
+                  >
+                    Check and fix automatically
+                  </button>
+                  <label className="flex items-center gap-1.5 text-xs opacity-70">
+                    up to
+                    <select className="rounded-md border border-[var(--line)] bg-[var(--surface)] px-1.5 py-1" aria-label="Rounds of fixing" value={rounds} disabled={off} onChange={(e) => setRounds(Number(e.target.value))}>
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                    {rounds === 1 ? "round" : "rounds"}
+                  </label>
+                </span>
+              )
+            )}
             {/* The steps that are not next are still within reach, as quiet buttons. */}
             {stage !== 1 && drawn.length > 0 && (
               <button type="button" className={smallButton} disabled={off} title="Claude looks at every storyboard again, including those already checked. Uses your Claude credits." onClick={() => void check(true)}>

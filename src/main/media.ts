@@ -151,7 +151,7 @@ const used = (task: MediaTask, choice: MediaChoice, detail: string, seconds?: nu
 };
 
 /** A still (9:16, or 16:9 when `wide`) from a description, using the reference pictures to keep characters and places the same. */
-export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; detail: string; /** Tall unless a wide picture is asked for. */ wide?: boolean }): Promise<Media> {
+export async function makePicture(keys: Keys, choice: MediaChoice, input: { prompt: string; references: Media[]; /** What each reference picture is, in the same order; used where a service lets pictures be named. */ labels?: string[]; detail: string; /** Tall unless a wide picture is asked for. */ wide?: boolean }): Promise<Media> {
   const key = needKey(keys, choice);
   const { prompt, references } = input;
   const shape = input.wide ? "16:9" : "9:16";
@@ -174,7 +174,14 @@ export async function makePicture(keys: Keys, choice: MediaChoice, input: { prom
       key,
       {
         model: choice.model,
-        input: [{ type: "text", text: prompt }, ...references.map((r) => ({ type: "image", mime_type: r.mime, data: b64(r) }))],
+        // Each picture is named just before it, so the model cannot mix up who is who; the request itself comes last.
+        input: [
+          ...references.flatMap((r, i) => [
+            ...(input.labels?.[i] ? [{ type: "text", text: `Reference picture ${i + 1}: ${input.labels[i]}` }] : []),
+            { type: "image", mime_type: r.mime, data: b64(r) },
+          ]),
+          { type: "text", text: prompt },
+        ],
         response_format: { type: "image", aspect_ratio: shape },
       },
       "image",
@@ -191,59 +198,83 @@ export async function makePicture(keys: Keys, choice: MediaChoice, input: { prom
 export type ClipReference = { media: Media; /** What the picture is and how to use it, as the end of "… is". */ role: string };
 
 /**
- * A 9:16 clip of about `seconds` that follows reference pictures: the scene's storyboard first, then
- * anything else that guides it. `opening` is the exact frame the clip opens on (the last frame of the clip
- * before it); only some services can pin a first frame, the others are shown it as one more reference.
- * Each service names the pictures in its own way, so the roles are written into the prompt here.
+ * A 9:16 clip of about `seconds`. `first` and `last` are the exact frames it starts and ends on, so one
+ * scene's clip ends where the next begins. `references` guide everything in between: the scene's storyboard
+ * first, then the characters. Each service takes these in its own way:
+ *   Kling (fal)         first frame, last frame and up to four references in one request
+ *   Gemini Omni (fal)   its image-to-video form takes the two frames but no references
+ *   Google              the two frames first, in order, then the references, each named in the prompt
+ *   ElevenLabs          the two frames, no references
+ * Without frames, every service is given the references alone.
  */
-export async function makeClip(keys: Keys, choice: MediaChoice, input: { references: ClipReference[]; opening?: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
+export async function makeClip(keys: Keys, choice: MediaChoice, input: { references: ClipReference[]; first?: Media; last?: Media; prompt: string; seconds: number; detail: string }): Promise<Media> {
   const key = needKey(keys, choice);
   const kling = choice.provider === "fal" && /kling/i.test(choice.model);
   const veo = choice.provider === "elevenlabs" && /^veo/i.test(choice.model);
-  const openingRole = "the exact frame this shot opens on: begin on it and carry on from it with no cut";
-  // Kling pins the opening frame itself; every other service is shown it as a reference, right after the storyboard.
-  const shown: ClipReference[] = input.opening && !kling ? [input.references[0], { media: input.opening, role: openingRole }, ...input.references.slice(1)] : input.references;
-  // The most reference pictures each service takes, as their guides say.
-  const references = shown.slice(0, kling ? 4 : choice.provider === "fal" ? 10 : choice.provider === "google" ? 6 : veo ? 3 : 9);
-  const name = (i: number) => (kling ? `@Image${i + 1}` : choice.provider === "fal" ? `<IMAGE_REF_${i}>` : `Reference picture ${i + 1}`);
-  const prompt = [...references.map((r, i) => `${name(i)} is ${r.role}.`), input.opening && kling && "The first frame is given: carry on from it with no cut.", input.prompt].filter(Boolean).join("\n");
-  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), 15);
+  const { first, last } = input;
+  // Gemini Omni on fal pins frames only in its image-to-video form, a sibling of the reference model.
+  const falFrames = choice.provider === "fal" && !kling && first !== undefined && /\/reference-to-video$/.test(choice.model);
+  const model = falFrames ? choice.model.replace(/\/reference-to-video$/, "/image-to-video") : choice.model;
+  const framesOnly = falFrames || (choice.provider === "elevenlabs" && first !== undefined);
+  // Google takes the frames as its first pictures, so they count against its six.
+  const frames = choice.provider === "google" ? [first, last].filter((f): f is Media => f !== undefined) : [];
+  const references = framesOnly ? [] : input.references.slice(0, kling ? 4 : choice.provider === "fal" ? 10 : choice.provider === "google" ? 6 - frames.length : veo ? 3 : 9);
+  const name = (i: number) => (kling ? `@Image${i + 1}` : choice.provider === "fal" ? `<IMAGE_REF_${i}>` : `Reference picture ${i + 1 + frames.length}`);
+  const prompt = [
+    choice.provider === "google" && first && "Reference picture 1 is the exact first frame of this shot: start on it.",
+    choice.provider === "google" && last && `Reference picture ${first ? 2 : 1} is the exact last frame of this shot: end on it.`,
+    choice.provider !== "google" && (first || last) && `The ${first && last ? "first and last frames are" : first ? "first frame is" : "last frame is"} given: start and end on ${first && last ? "them" : "it"} exactly.`,
+    ...references.map((r, i) => `${name(i)} is ${r.role}.`),
+    input.prompt,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  // With an end frame Gemini Omni makes at most 10 seconds.
+  const most = last && /gemini|omni/i.test(model) ? 10 : 15;
+  const seconds = Math.min(Math.max(Math.round(input.seconds), 3), most);
   let made: Media;
   if (choice.provider === "fal") {
-    const data = await fal(key, choice.model, async (upload) => ({
-      prompt,
-      image_urls: await Promise.all(references.map((r) => upload(r.media))),
-      aspect_ratio: "9:16",
-      ...(kling
-        ? { ...(input.opening && { start_image_url: await upload(input.opening) }), duration: String(seconds), generate_audio: false }
-        : { resolution: "720p", duration: seconds }),
-    }));
+    const data = await fal(key, model, async (upload) =>
+      falFrames
+        ? { prompt, image_url: await upload(first!), ...(last && { end_image_url: await upload(last) }), aspect_ratio: "9:16", resolution: "720p", duration: seconds }
+        : {
+            prompt,
+            ...(references.length && { image_urls: await Promise.all(references.map((r) => upload(r.media))) }),
+            aspect_ratio: "9:16",
+            ...(kling
+              ? { ...(first && { start_image_url: await upload(first) }), ...(last && { end_image_url: await upload(last) }), duration: String(seconds), generate_audio: false }
+              : { resolution: "720p", duration: seconds }),
+          },
+    );
     if (!data.video?.url) throw new Error("fal.ai returned no clip.");
     made = await download(data.video.url, "video/mp4");
   } else if (choice.provider === "google") {
     made = await google(
       key,
       {
-        model: choice.model,
-        input: [...references.map((r) => ({ type: "image", data: b64(r.media), mime_type: r.media.mime })), { type: "text", text: prompt }],
+        model,
+        input: [...[...frames, ...references.map((r) => r.media)].map((m) => ({ type: "image", data: b64(m), mime_type: m.mime })), { type: "text", text: prompt }],
         response_format: { type: "video", aspect_ratio: "9:16", duration: `${seconds}s` },
-        // Says the pictures are references, so none of them is taken as the first frame.
-        generation_config: { video_config: { task: "reference_to_video" } },
+        // With frames Google's guide sets no task: it reads which picture is which from the prompt. Without them the
+        // task says the pictures are references, so none is taken as the first frame.
+        ...(frames.length === 0 && { generation_config: { video_config: { task: "reference_to_video" } } }),
       },
       "video",
     );
   } else {
     made = await eleven(key, "video", {
-      model_id: choice.model,
+      model_id: model,
       prompt,
       aspect_ratio: "9:16",
-      // Veo on ElevenLabs makes 8 seconds when it is given reference pictures.
+      // Veo on ElevenLabs makes 8 seconds when it is given pictures.
       duration_secs: veo ? 8 : seconds,
-      images: references.map((r) => (veo ? { image: inline(r.media), role: "subject" } : inline(r.media))),
+      ...(framesOnly
+        ? { start_frame: inline(first!), ...(last && { end_frame: inline(last) }) }
+        : { images: references.map((r) => (veo ? { image: inline(r.media), role: "subject" } : inline(r.media))) }),
       generate_audio: false,
     });
   }
-  used("clip", choice, input.detail, veo ? 8 : seconds);
+  used("clip", { provider: choice.provider, model }, input.detail, veo ? 8 : seconds);
   return made;
 }
 

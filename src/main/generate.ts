@@ -14,7 +14,6 @@ import type { BrandKit } from "../shared/brand";
 import { recordClaude } from "./usage";
 import { MIN_ANALYSED_POSTS, type GenerateOptions, type GenerateResult, type Idea, type IdeaDraft } from "../shared/ideas";
 import type { ResearchItem } from "../shared/research";
-import type { Production } from "../shared/studio";
 import { describeClaudeError } from "./analyze";
 
 /** Ideas written per idea asked for; the judge cuts them back down. */
@@ -36,8 +35,8 @@ const WriterSchema = z.object({
       caption: z.string(),
       hashtags: z.array(z.string()),
       pillar: z.string(),
-      platform: z.string(),
       series: z.string(),
+      needs: z.enum(["ai", "you", "either"]),
     }),
   ),
 });
@@ -68,7 +67,7 @@ Rules:
 - Every opening line names the viewer or their exact problem, so the right person stops and everyone else scrolls on. "If your bread never rises in winter" is right; "You won't believe this baking trick" is wrong.
 - Every idea leaves the viewer one thing they can do or check today.
 - Borrow structure, never content. Do not reuse another creator's lines, story, numbers or claims.
-- Unless the request says how the ideas are made, the creator must be able to film each one alone with a phone this week. When it does say (AI only, filmed by the creator, or a mix), every idea must fit that.
+- How a video is made is decided later, when the creator turns the idea into a video: filmed by the creator with a phone, generated with AI (made-up characters, things given a voice, places a camera cannot go), or a mix of both. So an idea may use any of these, and each idea says which it needs. Whatever it needs must be makeable by one person this week.
 - Spread the ideas across different templates and across the creator's content pillars. Do not lean on one template.
 - Where the topic is health: keep claims accurate and proportionate, never promise cures or diagnose, and do not present the creator as a medical professional unless their bio says they are one.
 
@@ -83,8 +82,8 @@ For each idea give:
 - caption: a ready-to-post caption of one to three sentences in the creator's voice.
 - hashtags: three to six hashtags, each starting with #.
 - pillar: the exact title of the content pillar it belongs to, copied from the brand.
-- platform: the one platform from the brand's list that it suits best, copied exactly.
-- series: a short name for a repeatable format this idea could belong to, so that several ideas share the same series name when they use the same kind of structure. Use at most four different series names across all ideas.`;
+- series: a short name for a repeatable format this idea could belong to, so that several ideas share the same series name when they use the same kind of structure. Use at most four different series names across all ideas.
+- needs: "ai" when it cannot work without something a phone cannot film (a made-up character, a talking object, the inside of the body); "you" when it cannot work without the creator on camera (their own face, routine, kitchen or story); "either" when it can be filmed or generated equally well.`;
 
 const JUDGE_SYSTEM = `You are a sceptical viewer scrolling short videos, and also an experienced short-form editor. You did not write these ideas and have no reason to be kind to them. Most ideas are average: use the whole scale, and give high scores rarely.
 
@@ -96,7 +95,7 @@ For each idea, read its three opening lines and its outline, then give:
 - worthSaving: 1 to 10. Does the video leave that viewer one specific thing to do or check, worth saving or sending to someone?
 - clarity: 1 to 10. Is it obvious within seconds what the video is about and what the viewer gets?
 - brandFit: 1 to 10. Does it fit this creator's topics, audience and voice?
-- easyToFilm: 1 to 10. How easy is it to make the way it will be made? When you are told how (AI only, filmed by the creator, or a mix), judge it that way: an AI-only idea is not marked down for being impossible to film. When you are not told: can one person film it with a phone in under an hour?
+- easyToFilm: 1 to 10. How easy is it to make the way the idea says it needs: filmed by the creator with a phone, generated with AI, or either. An idea that needs AI is not marked down for being impossible to film with a phone; it is marked down if even AI would struggle to show it clearly.
 - reason: one or two sentences saying what is strong and what is weak. Be specific.`;
 
 export function describeBrand(brand: BrandKit): string {
@@ -121,13 +120,6 @@ export function describeBrand(brand: BrandKit): string {
     ...brand.platforms.map((p) => `- ${p.platform}${p.focus ? `: ${p.focus}` : ""}`),
   ].join("\n");
 }
-
-/** What the writer and the judge are told about how the ideas will be made. */
-const HOW_MADE: Record<Production, string> = {
-  ai: "AI only. Every scene is generated and the creator is never on camera or heard. Ideas can use made-up characters, things given a voice, places a camera cannot go, or anything a phone cannot film. None may need the creator on screen.",
-  me: "Filmed by the creator only, alone with a phone. Nothing is generated: no made-up characters and no scenes a phone cannot film.",
-  mix: "A mix. The creator is on camera for part of it (usually the fact and the closing ask), and AI generates the rest: characters, places a camera cannot go, anything a phone cannot film.",
-};
 
 /** What the writer is told when every idea is to be a series instead of a single video. */
 const SERIES_REQUEST = `Every idea is a SERIES, not a single video: a season of five to eight short episodes that people follow because one question runs through it, while each episode still gives them something complete. Still model each one on a library post: its structure becomes the shape every episode repeats. Fill the fields like this:
@@ -180,7 +172,6 @@ export async function generateIdeas(
       error: `Analyse at least ${MIN_ANALYSED_POSTS} saved posts first, or tick the ones to learn from. ${analysed.length} analysed so far.`,
     };
   }
-  const how = options.production ? HOW_MADE[options.production] : "";
   const asSeries = options.kind === "series";
   const templates = analysed.slice(0, MAX_TEMPLATES).map((post, i) => ({ code: `P${i + 1}`, post }));
 
@@ -190,10 +181,8 @@ export async function generateIdeas(
   const request = [
     `Write ${candidates} ideas.`,
     asSeries && SERIES_REQUEST,
-    how && `How every idea will be made: ${how}`,
     chosen.length > 0 && `The creator chose these ${analysed.length === 1 ? "post" : `${analysed.length} posts`} to learn from, so every idea is modelled on one of them.`,
     options.pillar && `Every idea must belong to the content pillar "${options.pillar}".`,
-    options.platform && `Every idea must be made for ${options.platform}.`,
     options.series &&
       !asSeries &&
       `Every idea must be a new episode of the creator's existing series "${options.series}": same kind of structure, a different subject each time. Use that exact series name for every idea.`,
@@ -248,12 +237,13 @@ export async function generateIdeas(
       messages: [
         {
           role: "user",
-          content: `THE CREATOR\n${brandText}\n\n${how ? `HOW THESE IDEAS WILL BE MADE\n${how}\n\n` : ""}${asSeries ? "THESE ARE IDEAS FOR SERIES, NOT SINGLE VIDEOS\nEach is a season of episodes. Its opening lines are the running question as episode one would open, and its outline lists the episodes. Judge stopScroll and rightViewer on that opening; worthSaving on whether the right viewer would follow to see the next episode; easyToFilm on whether the creator could keep making it for the whole season.\n\n" : ""}IDEAS TO JUDGE\n${drafts
+          content: `THE CREATOR\n${brandText}\n\n${asSeries ? "THESE ARE IDEAS FOR SERIES, NOT SINGLE VIDEOS\nEach is a season of episodes. Its opening lines are the running question as episode one would open, and its outline lists the episodes. Judge stopScroll and rightViewer on that opening; worthSaving on whether the right viewer would follow to see the next episode; easyToFilm on whether the creator could keep making it for the whole season.\n\n" : ""}IDEAS TO JUDGE\n${drafts
             .map((d, i) =>
               [
                 `Idea ${i + 1}: ${d.title}`,
                 `  For: ${d.viewer}`,
                 `  The viewer leaves with: ${d.takeaway}`,
+                `  Needs: ${d.needs === "ai" ? "AI (things a phone cannot film)" : d.needs === "you" ? "the creator on camera" : "filmed or generated, either works"}`,
                 ...d.hooks.map((h, n) => `  Opening line ${n + 1}: ${h}`),
                 `  Outline: ${d.outline.join(" / ")}`,
                 `  Closing ask: ${d.cta}`,
@@ -291,7 +281,7 @@ export async function generateIdeas(
           title: d.title,
           viewer: d.viewer,
           takeaway: d.takeaway,
-          production: options.production,
+          needs: d.needs,
           hook: d.hooks[best] ?? "",
           altHooks: d.hooks.filter((_, n) => n !== best),
           outline: d.outline,
@@ -299,7 +289,8 @@ export async function generateIdeas(
           caption: d.caption,
           hashtags: d.hashtags,
           pillar: d.pillar,
-          platform: d.platform,
+          // Where it is posted is chosen when a video is made from it.
+          platform: "",
           series: d.series,
           modelledOnId: template?.post.id,
           modelledOnLabel: template ? template.post.author || template.post.authorHandle : undefined,

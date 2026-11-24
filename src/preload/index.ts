@@ -75,6 +75,7 @@ const api = {
   /** Has Claude write the script, or rewrite it as the note asks. Costs a few cents. */
   writeVideo: (id: string, note: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:write", id, note),
   approveVideo: (id: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approve", id),
+  checkScript: (id: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:checkScript", id),
   /** Speaks the AI lines that have no audio yet. Uses ElevenLabs credits. */
   voiceVideo: (id: string): Promise<VideoVoicesResult> => ipcRenderer.invoke("videos:voices", id),
 
@@ -151,6 +152,8 @@ const api = {
   /** Where all of the user's data is kept. */
   dataFolder: (): Promise<DataFolderInfo> => ipcRenderer.invoke("data:info"),
   openDataFolder: (): Promise<void> => ipcRenderer.invoke("data:open"),
+  /** Shows the folder of one video's or character's files, or of the voice lines, in the file manager. */
+  openAssetsFolder: (folder: "videos" | "cast" | "audio", id: string): Promise<void> => ipcRenderer.invoke("assets:open", folder, id),
   /** Switches to another folder, using data already there or copying the current data into it. */
   changeDataFolder: (path: string): Promise<DataFolderResult> => ipcRenderer.invoke("data:change", path),
   /** Opens the system's folder chooser and returns the chosen path, or "" if cancelled. */

@@ -230,10 +230,8 @@ const TOOLS: Tool[] = [
       properties: {
         count: { type: "integer", description: "How many to return, 1 to 10." },
         pillar: { type: "string", description: "Exact title of one content pillar, or omit for any." },
-        platform: { type: "string", description: "Exact name of one of the brand's platforms, or omit for any." },
         series: { type: "string", description: "Exact name of an existing series to write more episodes of, or omit." },
         notes: { type: "string", description: "Any extra direction from the creator." },
-        made_with: { type: "string", enum: ["ai", "me", "mix"], description: "How the ideas will be made: ai (every scene generated), me (filmed by the creator alone) or mix. Only set what the creator said." },
         post_ids: { type: "array", items: { type: "string" }, description: "Ids of the analysed saved posts to learn from. Leave out to use every analysed post." },
         kind: { type: "string", enum: ["video", "series"], description: "Whether each idea is one video or a whole series of episodes. Leave out for single videos." },
       },
@@ -950,10 +948,8 @@ async function runTool(
         {
           count: typeof input.count === "number" ? input.count : 5,
           pillar: text(input.pillar),
-          platform: text(input.platform),
           series: text(input.series),
           notes: text(input.notes),
-          production: input.made_with === undefined ? undefined : parseProduction(input.made_with),
           postIds: ids(input.post_ids),
           kind: input.kind === "series" ? "series" : "video",
         },
@@ -1248,7 +1244,8 @@ async function runTool(
     }
 
     case "approve_video_script": {
-      const approved = studio.approve(input.id);
+      say("Checking the script for continuity");
+      const approved = await studio.approve(input.id);
       if (!approved.ok) throw new Error(approved.error);
       return { result: { approved: videoSummary(approved.value) } };
     }

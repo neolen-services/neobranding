@@ -1,7 +1,7 @@
 // What the app has used on the services the user connected, shared by the main process and the UI.
 
 export type UsageService = "claude" | "deepgram" | "elevenlabs" | "media";
-export type UsageFeature = "agent" | "analysis" | "ideas" | "script" | "concepts" | "video" | "storyboard" | "animation" | "series" | "transcript" | "voiceover" | "sound_effect" | "music" | "picture" | "clip" | "lipsync";
+export type UsageFeature = "agent" | "analysis" | "ideas" | "script" | "concepts" | "video" | "script_check" | "storyboard" | "animation" | "series" | "transcript" | "voiceover" | "sound_effect" | "music" | "picture" | "clip" | "lipsync";
 
 export const USAGE_SERVICES: Record<UsageService, string> = {
   claude: "Claude",
@@ -20,6 +20,7 @@ export const USAGE_FEATURES: Record<UsageFeature, { label: string; service: Usag
   // Studio no longer suggests ideas to choose from; this names what was spent on that before.
   concepts: { label: "Studio idea options (earlier versions)", service: "claude" },
   video: { label: "Studio video scripts", service: "claude" },
+  script_check: { label: "Script continuity checks", service: "claude" },
   storyboard: { label: "Storyboard checks", service: "claude" },
   animation: { label: "Motion graphics", service: "claude" },
   series: { label: "Series plans", service: "claude" },

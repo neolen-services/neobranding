@@ -2,17 +2,17 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { formatUsd } from "@shared/analysis";
 import type { BrandKit } from "@shared/brand";
-import { ideaKind, MIN_ANALYSED_POSTS, type GenerateOptions, type Idea, type IdeaDraft, type IdeaSuggestion } from "@shared/ideas";
+import { IDEA_NEEDS, ideaKind, ideaNeeds, MIN_ANALYSED_POSTS, type GenerateOptions, type Idea, type IdeaDraft, type IdeaNeeds, type IdeaSuggestion } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { PRODUCTIONS, productionLabel, type Series, type Video } from "@shared/studio";
+import type { Series, Video } from "@shared/studio";
 import { AnalyseAll } from "./AnalysisView";
 import { api } from "./api";
 import { MakeVideoButton } from "./StudioView";
-import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, PostPicker, primaryButton, ProductionPicker, quietButton, smallButton } from "./studioUi";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, PostPicker, primaryButton, quietButton, smallButton } from "./studioUi";
 
 type Tab = "saved" | "review";
 type Sort = "newest" | "score";
-const BLANK: GenerateOptions = { kind: "video", count: 5, pillar: "", platform: "", notes: "", series: "", production: "mix", postIds: [] };
+const BLANK: GenerateOptions = { kind: "video", count: 5, pillar: "", notes: "", series: "", postIds: [] };
 const TRASH = "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3";
 const CHEVRON = "M6 9l6 6 6-6";
 
@@ -132,7 +132,7 @@ export function IdeasView({
       (!q || [i.title, i.hook, i.pillar, i.series ?? "", i.viewer ?? ""].some((t) => t.toLowerCase().includes(q))) &&
       (!pillar || i.pillar === pillar) &&
       (!series || i.series === series) &&
-      (!made || i.production === made) &&
+      (!made || ((i.needs || i.production) && ideaNeeds(i) === made)) &&
       (!kind || ideaKind(i) === kind) &&
       (!freshOnly || !used.has(i.id)),
   );
@@ -296,12 +296,12 @@ export function IdeasView({
                   ))}
                 </select>
               )}
-              {values((i) => i.production).length > 0 && (
-                <select className={select} aria-label="How it is made" value={made} onChange={(e) => setMade(e.target.value)}>
-                  <option value="">Made any way</option>
-                  {PRODUCTIONS.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
+              {ideas.some((i) => i.needs || i.production) && (
+                <select className={select} aria-label="What it needs" value={made} onChange={(e) => setMade(e.target.value)}>
+                  <option value="">Needs anything</option>
+                  {(Object.keys(IDEA_NEEDS) as IdeaNeeds[]).map((n) => (
+                    <option key={n} value={n}>
+                      {IDEA_NEEDS[n]}
                     </option>
                   ))}
                 </select>
@@ -419,7 +419,7 @@ const Tags = ({ idea, inStudio }: { idea: IdeaDraft; inStudio?: boolean }) => (
     {inStudio && <Chip tone="good">In Studio</Chip>}
     {ideaKind(idea) === "series" && <Chip tone="strong">Series</Chip>}
     {idea.pillar && <Chip>{idea.pillar}</Chip>}
-    {idea.production && <Chip>{productionLabel(idea.production)}</Chip>}
+    {(idea.needs || idea.production) && <Chip>{IDEA_NEEDS[ideaNeeds(idea)]}</Chip>}
     {idea.series && idea.series !== idea.title && <Chip>{idea.series}</Chip>}
     {idea.platform && <Chip>{idea.platform}</Chip>}
   </span>
@@ -643,7 +643,7 @@ function Part({ title, children }: { title: string; children: ReactNode }) {
 
 // ---------- Writing a round ----------
 
-/** Asks for a round of ideas: how they are made, which posts to learn from, anything specific, and a few optional limits. Shows progress while Claude works. */
+/** Asks for a round of ideas: single videos or series, which posts to learn from, anything specific, and a few optional limits. Shows progress while Claude works. */
 function WriteDialog({
   brand,
   posts,
@@ -674,7 +674,7 @@ function WriteDialog({
   const picked = options.postIds ?? [];
   const learning = picked.length || analysed;
   const set = (changes: Partial<GenerateOptions>) => onOptions({ ...options, ...changes });
-  const limits = [options.pillar, options.platform, options.series].filter(Boolean).length + (options.count !== 5 ? 1 : 0);
+  const limits = [options.pillar, options.series].filter(Boolean).length + (options.count !== 5 ? 1 : 0);
   const step = (n: number, text: string, optional?: boolean) => (
     <p className="mb-2.5 flex items-center gap-2 text-sm font-semibold">
       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--tint)] text-xs">{n}</span>
@@ -760,11 +760,7 @@ function WriteDialog({
               </div>
             </div>
             <div>
-              {step(2, "How will they be made?")}
-              <ProductionPicker value={options.production ?? "mix"} onChange={(production) => set({ production })} />
-            </div>
-            <div>
-              {step(3, "Which saved posts should they learn from?")}
+              {step(2, "Which saved posts should they learn from?")}
               <PostPicker
                 posts={posts}
                 picked={picked}
@@ -778,7 +774,7 @@ function WriteDialog({
               />
             </div>
             <div>
-              {step(4, "Anything specific?", true)}
+              {step(3, "Anything specific?", true)}
               <textarea
                 className={fieldClass}
                 rows={2}
@@ -791,7 +787,7 @@ function WriteDialog({
             <details open={limits > 0 || undefined}>
               <summary className="cursor-pointer text-sm font-semibold">
                 More options
-                <span className="ml-2 font-normal opacity-50">{limits > 0 ? `${limits} set` : options.kind === "series" ? "how many, pillar, platform" : "how many, pillar, platform, series"}</span>
+                <span className="ml-2 font-normal opacity-50">{limits > 0 ? `${limits} set` : options.kind === "series" ? "how many, pillar" : "how many, pillar, series"}</span>
               </summary>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <Field name="How many to keep">
@@ -808,14 +804,6 @@ function WriteDialog({
                     <option value="">Any pillar</option>
                     {brand.pillars.map((p) => (
                       <option key={p.title}>{p.title}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field name="Platform">
-                  <select className={fieldClass} value={options.platform} onChange={(e) => set({ platform: e.target.value })}>
-                    <option value="">Any platform</option>
-                    {brand.platforms.map((p) => (
-                      <option key={p.platform}>{p.platform}</option>
                     ))}
                   </select>
                 </Field>

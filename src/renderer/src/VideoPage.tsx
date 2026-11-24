@@ -16,6 +16,7 @@ import {
   styleLabel,
   platformLabel,
   RESULT_COUNTS,
+  scriptReviewState,
   SPEAKER_ME,
   speakerName,
   type Character,
@@ -26,6 +27,7 @@ import {
   type VideoResults,
 } from "@shared/studio";
 import { api } from "./api";
+import { VideoAssets } from "./AssetsView";
 import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
 import { inOrder } from "./inOrder";
@@ -73,6 +75,8 @@ export function VideoPage({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  /** Whether the video's assets are shown in place of its stages. */
+  const [assets, setAssets] = useState(false);
 
   const written = video.scenes.length > 0;
   const approved = video.approvedAt !== "";
@@ -121,6 +125,8 @@ export function VideoPage({
   ].filter(Boolean);
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };
 
+  if (assets) return <VideoAssets video={video} onBack={() => setAssets(false)} />;
+
   return (
     <div>
       <div className="sticky top-0 z-20 border-b border-[var(--line)] bg-[var(--bg)]">
@@ -139,6 +145,10 @@ export function VideoPage({
                 <Icon d={ICONS.arrow} />
               </button>
             )}
+            <button type="button" className={`${quietButton} flex items-center gap-2`} title="Every storyboard, clip and voice line made for this video, and the folder they are in" onClick={() => setAssets(true)}>
+              <Icon d={ICONS.film} />
+              Assets
+            </button>
             <DeleteButton name="this video" onConfirm={onDelete} />
           </div>
 
@@ -328,6 +338,8 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
 
   const approved = video.approvedAt !== "";
   const problem = approvalProblem(video);
+  const continuity = scriptReviewState(video);
+  const contradictions = video.scriptReview?.problems ?? [];
   const failed = video.checks.filter((c) => !c.ok);
   const needsSource = video.claim !== null && video.claim.evidence !== "none";
   const words = video.scenes.reduce((n, s) => n + s.lines.reduce((m, l) => m + countWords(l.text), 0), 0);
@@ -395,6 +407,8 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
           </ol>
         </section>
 
+        {video.sets.length > 0 && <PlacesCard video={video} disabled={busy !== ""} save={save} />}
+
         {video.caption && (
           <section className={card}>
             <div className="flex items-center justify-between gap-3">
@@ -428,21 +442,90 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
               <ul className="mt-3 space-y-2 text-sm">
                 {tick(!needsSource || video.claim!.checked, needsSource ? (video.claim!.checked ? "You checked the claim's source" : "Check the claim's source, below") : "No factual claim to check")}
                 {tick(failed.length === 0, failed.length === 0 ? `All ${plural(video.checks.length, "rule")} pass` : `${plural(failed.length, "rule")} failed, below`)}
+                {tick(
+                  continuity === "passed",
+                  continuity === "passed"
+                    ? "Nothing contradicts itself from scene to scene"
+                    : continuity === "failed"
+                      ? `${plural(contradictions.length, "continuity problem")} to fix, below`
+                      : "Continuity is checked when you approve",
+                )}
               </ul>
               <button
                 type="button"
                 className={`${primaryButton} mt-4 w-full`}
                 disabled={busy !== "" || problem !== ""}
                 onClick={async () => {
-                  if (await run("Approving", () => api.approveVideo(video.id))) onApproved();
+                  let done = false;
+                  await run("Approving", async () => {
+                    // Approving reads the script for continuity first; if that finds something, the problems show instead.
+                    if (continuity !== "passed") {
+                      const checked = await api.checkScript(video.id);
+                      if (!checked.ok || !checked.value.scriptReview?.ok) return checked;
+                    }
+                    const result = await api.approveVideo(video.id);
+                    done = result.ok;
+                    return result;
+                  });
+                  if (done) onApproved();
                 }}
               >
-                {busy === "Approving" ? "Approving…" : "Approve script"}
+                {busy === "Approving" ? (continuity === "passed" ? "Approving…" : "Checking continuity… about 30 seconds") : continuity === "passed" ? "Approve script" : "Check and approve"}
               </button>
               <p className="mt-2 text-center text-xs opacity-60">Nothing costly has been made yet.</p>
             </>
           )}
         </section>
+
+        {video.scenes.length > 0 && (
+          <section className={`${card} ${continuity === "failed" ? "border-[var(--accent)]" : ""}`}>
+            <p className={label}>Continuity</p>
+            {continuity === "failed" ? (
+              <>
+                <p className="mt-2 text-sm opacity-70">Claude read the whole script like a film set's continuity checker. These would show as mistakes between shots:</p>
+                <ul className="mt-3 space-y-2.5 text-sm">
+                  {contradictions.map((p, i) => (
+                    <li key={i} className="flex gap-2.5">
+                      <span aria-hidden className="mt-0.5 shrink-0 font-bold text-red-400">!</span>
+                      <span>
+                        {p.scene > 0 && <span className="font-medium">Scene {p.scene}: </span>}
+                        {p.problem}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className={`${primaryButton} mt-4 w-full`}
+                  disabled={busy !== ""}
+                  onClick={() =>
+                    void run("Fixing", () =>
+                      api.writeVideo(
+                        video.id,
+                        [`Fix these continuity problems and change nothing else:`, ...contradictions.map((p) => `- ${p.scene > 0 ? `Scene ${p.scene}: ` : ""}${p.problem}`), video.scriptReview?.fix ?? ""].filter(Boolean).join("\n"),
+                      ),
+                    )
+                  }
+                >
+                  {busy === "Fixing" ? "Rewriting and checking again… about a minute" : `Fix them with a rewrite (${SCRIPT_COST})`}
+                </button>
+                <p className="mt-2 text-xs opacity-60">The rewrite is checked again as soon as it is written.</p>
+              </>
+            ) : continuity === "stale" ? (
+              <p className="mt-2 text-sm opacity-70">The script changed since it was last checked.{approved ? "" : " It is checked again when you approve."}</p>
+            ) : continuity === "unchecked" ? (
+              <p className="mt-2 text-sm opacity-70">
+                Not checked yet. Claude reads every scene for things that contradict each other, like a stool that turns into a table, and writes out each place in detail so every storyboard shows the same set.
+                {approved ? " A problem it finds takes the approval back." : ""}
+              </p>
+            ) : (
+              <p className="mt-2 text-sm opacity-70">Checked: nothing contradicts itself from scene to scene.</p>
+            )}
+            <button type="button" className={`${quietButton} mt-3 w-full`} disabled={busy !== ""} onClick={() => void run("Checking", () => api.checkScript(video.id))}>
+              {busy === "Checking" ? "Checking… about 30 seconds" : `${continuity === "unchecked" ? "Check now" : "Check again"} (a few cents)`}
+            </button>
+          </section>
+        )}
 
         {video.claim && (
           <section className={card}>
@@ -549,6 +632,36 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
         </section>
       </aside>
     </div>
+  );
+}
+
+/** Each place the scenes happen in, as every storyboard and clip of it will show it. The creator can correct it. */
+function PlacesCard({ video, disabled, save }: { video: Video; disabled: boolean; save: Shared["save"] }) {
+  const [drafts, setDrafts] = useState(video.sets.map((s) => s.description));
+  useEffect(() => setDrafts(video.sets.map((s) => s.description)), [video.sets]);
+  return (
+    <section className={card}>
+      <p className={label}>Places</p>
+      <p className="mt-1 text-sm opacity-60">Every storyboard and clip of a place is drawn from what is written here, so each shot shows the same set. Correct anything that is wrong.</p>
+      <div className="mt-4 space-y-4">
+        {video.sets.map((set, i) => (
+          <label key={set.place} className="block text-sm">
+            <span className="font-medium">{set.place}</span>
+            <textarea
+              className={`${fieldClass} mt-1.5`}
+              rows={4}
+              disabled={disabled}
+              value={drafts[i] ?? ""}
+              onChange={(e) => setDrafts(drafts.map((d, j) => (j === i ? e.target.value : d)))}
+              onBlur={() => {
+                const text = (drafts[i] ?? "").trim();
+                if (text && text !== set.description) void save({ sets: video.sets.map((s, j) => (j === i ? { ...s, description: text } : s)) });
+              }}
+            />
+          </label>
+        ))}
+      </div>
+    </section>
   );
 }
 
