@@ -27,6 +27,10 @@ import {
   type StudioResult,
   type Video,
   type VideoVoicesResult,
+  musicScenesKey,
+  platformLabel,
+  type MusicCue,
+  type VideoMusic,
 } from "../shared/studio";
 import { describeClaudeError } from "./analyze";
 import { generateSpeech } from "./audio";
@@ -715,4 +719,144 @@ export async function voiceVideo(
   const scenes = video.scenes.map((scene, index) => ({ ...scene, lines: scene.lines.map((line, at) => ({ ...line, ...spoken.get(`${index}:${at}`) })) }));
   if (failure && made === 0) return { ok: false, error: failure };
   return { ok: true, video: { ...video, scenes, updatedAt: new Date().toISOString() }, made, skipped: [...skipped, ...(failure ? [`stopped early: ${failure}`] : [])] };
+}
+
+// ---------- Music ----------
+
+const MUSIC_SYSTEM = `You choose the music for a short vertical video (Reels, Shorts, TikTok) from its script. Each piece of music you choose is then made by an AI music service from the description you write, so the description is all it has.
+
+How to choose:
+- Music serves the story. Follow the video's emotional arc: where the mood turns (a problem becomes a solution, tension becomes relief, a reveal), the music can change; where it does not, one piece carries on. Most videos under a minute need one or two pieces; never more than one piece per three scenes.
+- A scene may have no music when silence lands harder (a punchline, a hard truth, a dramatic pause). Leave it out of every piece.
+- Speech must stay clear. Where people talk, keep the volume about 0.15 to 0.3; where nobody speaks, up to 0.6.
+- Pieces cover runs of whole scenes, in order, and never overlap.
+- Match the platform and the creator's voice: energetic and punchy for a fast tip, warm and gentle for a story, tense for a myth being busted, and so on.
+
+How to write a piece's description (the prompt): instrumental only, no vocals. Say the genre, the mood, the tempo in beats per minute, the main instruments, and how it moves over its length (builds, stays steady, drops out at the end). It must start cleanly and end cleanly, since it is cut to the scenes. Never name a real artist, band, song, film or brand: the music service refuses those. Write it in English.
+
+label: two to five words the creator will see, e.g. "Soft piano, hopeful".
+why: one sentence on why this music suits these scenes.
+
+When the creator gives feedback on an earlier plan: change exactly what they asked for and nothing else. A piece you leave as it was keeps its prompt word for word and is marked keep: true, so its track is not made again. In reply, tell the creator in one or two plain sentences what you changed.`;
+
+const MusicSchema = z.object({
+  summary: z.string(),
+  reply: z.string(),
+  cues: z.array(
+    z.object({
+      from_scene: z.number(),
+      to_scene: z.number(),
+      label: z.string(),
+      prompt: z.string(),
+      why: z.string(),
+      volume: z.number(),
+      keep: z.boolean(),
+    }),
+  ),
+});
+
+/**
+ * Plans a video's music, or changes an earlier plan as the creator's feedback asks. Pieces kept as they were keep their
+ * made tracks; changed ones are left to be made again.
+ */
+export async function planMusic(
+  apiKey: string,
+  video: Video,
+  characters: Character[],
+  brand: BrandKit | null,
+  feedback: string,
+): Promise<StudioResult<{ music: VideoMusic; reply: string; costUsd: number }>> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  if (video.scenes.length === 0) return { ok: false, error: "Write the script first." };
+  let t = 0;
+  const scenes = video.scenes
+    .map((s, i) => {
+      const at = t;
+      t += s.seconds;
+      return [
+        `Scene ${i + 1} (${at}s to ${t}s)`,
+        `What happens: ${s.action}`,
+        s.sound ? `Sound: ${s.sound}` : "",
+        s.text ? `On screen: ${s.text}` : "",
+        s.lines.length ? `Said: ${s.lines.map((l) => `${speakerName(l.speaker, characters)}${l.delivery ? ` (${l.delivery})` : ""}: ${l.text}`).join(" / ")}` : "Nobody speaks.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const before = video.music;
+  const earlier = before?.cues.length
+    ? `YOUR PLAN SO FAR\n${before.summary}\n${before.cues.map((c, i) => `Piece ${i + 1}: scenes ${c.fromScene} to ${c.toScene}, volume ${c.volume}, "${c.label}"\nPrompt: ${c.prompt}`).join("\n")}`
+    : before
+      ? "YOUR PLAN SO FAR\nNo music."
+      : "";
+  const rounds = before?.rounds.length ? `EARLIER FEEDBACK\n${before.rounds.map((r) => `- ${r.feedback}`).join("\n")}` : "";
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages
+      .stream({
+        model: "claude-opus-5-5",
+        max_tokens: 8000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default" as const,
+        system: MUSIC_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: [
+              `THE VIDEO\n${video.title}${video.brief ? `\nAbout: ${video.brief}` : ""}${platformLabel(video.platform) ? `\nPosted on: ${platformLabel(video.platform)}` : ""}`,
+              brand?.voice.length ? `THE CREATOR'S VOICE\n${brand.voice.join(", ")}` : "",
+              `THE SCRIPT\n${scenes}`,
+              earlier,
+              rounds,
+              feedback ? `THE CREATOR'S FEEDBACK NOW\n${feedback}` : "Plan the music.",
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          },
+        ],
+        output_config: { format: betaZodOutputFormat(MusicSchema) },
+      })
+      .finalMessage();
+    recordClaude("music_plan", response.usage, video.title);
+    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to plan music for this video." };
+    const out = response.parsed_output;
+    if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The plan came back incomplete. Try again." };
+    const count = video.scenes.length;
+    let last = 0;
+    const cues: MusicCue[] = [];
+    for (const c of [...out.cues].sort((a, b) => a.from_scene - b.from_scene)) {
+      const from = Math.min(Math.max(Math.round(c.from_scene), last + 1), count);
+      const to = Math.min(Math.max(Math.round(c.to_scene), from), count);
+      if (from <= last || !c.prompt.trim()) continue;
+      last = to;
+      const prompt = c.prompt.trim();
+      // A piece kept as it was (same prompt) keeps the track already made for it.
+      const same = c.keep ? before?.cues.find((x) => x.prompt === prompt) : undefined;
+      cues.push({
+        id: same?.id ?? randomUUID(),
+        fromScene: from,
+        toScene: to,
+        label: c.label.trim() || "Music",
+        prompt,
+        why: c.why.trim(),
+        volume: Math.min(Math.max(c.volume, 0.05), 0.8),
+        audioId: same?.audioId ?? "",
+        audioFile: same?.audioFile ?? "",
+        madeFrom: same?.madeFrom ?? "",
+      });
+    }
+    const costUsd = estimateCostUsd(response.usage);
+    const music: VideoMusic = {
+      summary: out.summary.trim(),
+      cues,
+      rounds: [...(before?.rounds ?? []), ...(feedback ? [{ feedback, reply: out.reply.trim(), at: new Date().toISOString() }] : [])],
+      scenesKey: musicScenesKey(video),
+      approvedAt: "",
+      costUsd: (before?.costUsd ?? 0) + costUsd,
+    };
+    return { ok: true, value: { music, reply: out.reply.trim(), costUsd } };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
+  }
 }

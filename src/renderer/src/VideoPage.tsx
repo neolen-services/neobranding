@@ -1,4 +1,4 @@
-// One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Preview. Storyboard and Clips each show every scene at once.
+// One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Music, Preview. Storyboard and Clips each show every scene at once.
 // Each tab shows only what that stage needs, and the header always says what to do next.
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
@@ -30,6 +30,7 @@ import { inOrder } from "./inOrder";
 import { SceneMedia } from "./SceneMedia";
 import { Player } from "./Player";
 import { ClipsTab, StoryboardTab } from "./Scenes";
+import { MusicStep } from "./MusicStep";
 import { OpenEditorContext } from "./EditorView";
 import { MotionBoard } from "./MotionBoard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
@@ -126,7 +127,7 @@ export function VideoPage({
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };
   /** A short note beside a step's name: what it still wants. */
   const badge = (i: number) =>
-    i === 1 && approved && castInfo.unready > 0 ? `${castInfo.unready} to set up` : (i === 2 || i === 3) && approved && progress.tab === i && progress.waiting ? progress.next.toLowerCase() : "";
+    i === 1 && approved && castInfo.unready > 0 ? `${castInfo.unready} to set up` : (i === 2 || i === 3 || i === 4) && approved && progress.tab === i && progress.waiting ? progress.next.toLowerCase() : "";
 
   if (assets) return <VideoAssets video={video} onBack={() => setAssets(false)} />;
 
@@ -207,7 +208,8 @@ export function VideoPage({
         {tab === 2 && approved && isMotion(video) && <MotionBoard video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(3)} />}
         {tab === 3 && approved && !isMotion(video) && <ClipsTab {...shared} progress={progress} onOpenCast={() => setTab(1)} onStoryboards={() => setTab(2)} onNext={() => setTab(4)} />}
         {tab === 3 && approved && isMotion(video) && <MakeTab {...shared} progress={progress} onNext={() => setTab(4)} />}
-        {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onClips={() => setTab(3)} />}
+        {tab === 4 && approved && <MusicStep video={video} setError={setError} setNotice={setNotice} onChange={onChange} onPlay={() => setPlaying(true)} onNext={() => setTab(5)} />}
+        {tab === 5 && approved && <PreviewTab {...shared} progress={progress} onClips={() => setTab(3)} />}
       </div>
 
       {playing && <Player video={video} cast={cast} onClose={() => setPlaying(false)} />}

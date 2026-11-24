@@ -147,6 +147,12 @@ export function createHandlers(options: HandlerOptions) {
     /** Has Claude read the script for continuity, completing each place's set. */
     "videos:checkScript": (id: unknown) => studio.checkScript(id),
     "videos:voices": (id: unknown) => studio.voices(id),
+    /** Has Claude plan the music (or change it as the feedback says) and makes the tracks. Uses Claude and ElevenLabs credits. */
+    "videos:music": (id: unknown, feedback: unknown) => studio.music(id, feedback),
+    /** Makes any music tracks still missing. Uses ElevenLabs credits. */
+    "videos:makeMusic": (id: unknown) => studio.makeMusic(id),
+    /** true approves the music, false takes it back, "none" chooses no music. */
+    "videos:approveMusic": (id: unknown, approved: unknown) => studio.approveMusic(id, approved),
     "videos:results": (id: unknown, results: unknown) => studio.recordResults(id, results),
     // Pictures, clips and lip-sync. `choice` picks the service for this one request; without it the Settings default is used.
     "media:settings": () => studio.mediaSettings(),

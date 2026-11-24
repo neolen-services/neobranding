@@ -78,6 +78,32 @@ export function Player({
     return () => clearTimeout(timer);
   }, [playing, at, steps]);
 
+  // The approved or planned music: the piece under the scene now playing, started where these scenes come in it.
+  const musicEls = useRef(new Map<string, HTMLAudioElement>());
+  const musicNow = useRef("");
+  useEffect(() => {
+    const cue = step ? video.music?.cues.find((c) => c.audioFile && c.madeFrom === c.prompt && step.sceneIndex + 1 >= c.fromScene && step.sceneIndex + 1 <= c.toScene) : undefined;
+    for (const [id, el] of musicEls.current) if (id !== cue?.id) el.pause();
+    if (!cue || !step) {
+      musicNow.current = "";
+      return;
+    }
+    let el = musicEls.current.get(cue.id);
+    if (!el) {
+      el = new Audio(api.audioFileUrl(cue.audioFile));
+      musicEls.current.set(cue.id, el);
+    }
+    if (musicNow.current !== cue.id) {
+      el.currentTime = video.scenes.slice(cue.fromScene - 1, step.sceneIndex).reduce((n, s) => n + s.seconds, 0);
+      musicNow.current = cue.id;
+    }
+    // Lower while a line is spoken, a little fuller under pictures alone.
+    el.volume = Math.min(step.line ? cue.volume : cue.volume * 1.5, 1);
+    if (playing) void el.play().catch(() => undefined);
+    else el.pause();
+  }, [at, playing, video.music]);
+  useEffect(() => () => musicEls.current.forEach((el) => el.pause()), []);
+
   useEffect(() => {
     // In the page, the keys belong to the page.
     if (inline) return;

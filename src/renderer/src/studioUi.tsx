@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { CHARACTER_STYLES, MAX_IDEAS, VIDEO_STYLES, boardId, isMotion, joinState, pickedClip, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
+import { CHARACTER_STYLES, MAX_IDEAS, VIDEO_STYLES, boardId, isMotion, joinState, musicState, pickedClip, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
 import { api } from "./api";
 
 export const fieldClass =
@@ -583,7 +583,7 @@ export function StylePicker({ value, onChange, disabled }: { value: string; onCh
 }
 
 /** The steps of a video's page, in the order the work is done. Storyboard and Clips each show every scene at once. */
-export const STAGES = ["Script", "Cast", "Storyboard", "Clips", "Preview"] as const;
+export const STAGES = ["Script", "Cast", "Storyboard", "Clips", "Music", "Preview"] as const;
 
 /**
  * The one thing to do next on a step, with the one main button for it. Every step of a video's page starts with one,
@@ -692,7 +692,7 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   if (!video.approvedAt) return { ...base, done: 0, tab: 0, next: "Review and approve the script", waiting: true };
   if (video.results) {
     const views = video.results.views;
-    return { ...base, done: 5, tab: 4, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
+    return { ...base, done: 6, tab: 5, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
   }
   const unready = videoCast(video, cast, brand).unready;
   if (unready > 0) return { ...base, done: 1, tab: 1, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
@@ -701,7 +701,12 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   if (needClip > 0) return { ...base, done: 3, tab: 3, next: motion ? `Render ${plural(needClip, "clip")}` : `Make ${plural(needClip, "clip")}`, waiting: true };
   if (needFilming > 0) return { ...base, done: 3, tab: 3, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
   if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
-  return { ...base, done: 5, tab: 4, next: "Ready: watch it through", waiting: false };
+  const music = musicState(video);
+  if (music !== "approved") {
+    const next = music === "none" ? "Choose the music" : music === "stale" ? "Plan the music again: the script changed" : music === "unmade" ? "Make the music" : "Approve the music";
+    return { ...base, done: 4, tab: 4, next, waiting: true };
+  }
+  return { ...base, done: 6, tab: 5, next: "Ready: watch it through", waiting: false };
 }
 
 /** One short bar for each stage, filled for those already behind a video. */

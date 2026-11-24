@@ -265,6 +265,58 @@ export function scriptReviewState(video: Video): "unchecked" | "stale" | "failed
   return r.ok ? "passed" : "failed";
 }
 
+/** One piece of music in a video: what plays under a run of scenes, why, and the track made for it. */
+export type MusicCue = {
+  id: string;
+  /** The first and last scene it plays under, numbered from 1. */
+  fromScene: number;
+  toScene: number;
+  /** A few words for the creator, e.g. "Soft piano, hopeful". */
+  label: string;
+  /** What the music service is asked for: genre, mood, tempo, instruments and how it moves. */
+  prompt: string;
+  /** Why this music suits these scenes. */
+  why: string;
+  /** How loud under the video, 0 to 1. Kept low under speech. */
+  volume: number;
+  /** The track made for it, a file of the audio folder, or "" until it is made. */
+  audioId: string;
+  audioFile: string;
+  /** The prompt the track was made from. A different prompt now means the track has to be made again. */
+  madeFrom: string;
+};
+
+/** The music for a video: planned by Claude, made by ElevenLabs, changed with the creator's feedback until they approve it. */
+export type VideoMusic = {
+  /** The plan in a sentence or two. */
+  summary: string;
+  /** [] when the video has no music. */
+  cues: MusicCue[];
+  /** Each round of the creator's feedback, oldest first, with what Claude changed for it. */
+  rounds: { feedback: string; reply: string; at: string }[];
+  /** The scenes it was planned for, so a rewritten script shows the plan is out of date. */
+  scenesKey: string;
+  approvedAt: string;
+  /** Estimated Claude cost of planning it, in US dollars. Music is charged by ElevenLabs. */
+  costUsd: number;
+};
+
+/** The scenes as music is fitted to them: their ids and lengths. */
+export const musicScenesKey = (video: Pick<Video, "scenes">) => video.scenes.map((s) => `${s.id}:${s.seconds}`).join(",");
+/** A cue whose track is missing or was made from an earlier prompt. */
+export const cueNeedsTrack = (c: MusicCue) => !c.audioFile || c.madeFrom !== c.prompt;
+/** How long a cue plays: the scenes it covers. */
+export const cueSeconds = (video: Pick<Video, "scenes">, c: MusicCue) => video.scenes.slice(c.fromScene - 1, c.toScene).reduce((n, s) => n + s.seconds, 0);
+
+/** Where a video's music stands. */
+export function musicState(video: Video): "none" | "stale" | "unmade" | "ready" | "approved" {
+  const m = video.music;
+  if (!m) return "none";
+  if (m.scenesKey !== musicScenesKey(video)) return "stale";
+  if (m.cues.some(cueNeedsTrack)) return "unmade";
+  return m.approvedAt ? "approved" : "ready";
+}
+
 export type Video = {
   id: string;
   title: string;
@@ -310,6 +362,8 @@ export type Video = {
   checks: ScriptCheck[];
   /** The last continuity check of the script, or null when it has not been checked. */
   scriptReview: ScriptReview | null;
+  /** The music, or null until it is planned. */
+  music: VideoMusic | null;
   caption: string;
   /** For a remake: what was borrowed from the original and what is new. */
   kept: string[];
@@ -387,7 +441,7 @@ export type Series = {
 };
 
 /** The stages of a video as the agent names them. */
-export const VIDEO_STAGES = ["Script", "Cast", "Storyboard", "Clips", "Preview"] as const;
+export const VIDEO_STAGES = ["Script", "Cast", "Storyboard", "Clips", "Music", "Preview"] as const;
 
 /** What comes back from making or adding a picture or clip. */
 export type TakeResult = { ok: true; video: Video } | { ok: false; error: string };
@@ -395,7 +449,8 @@ export type TakeResult = { ok: true; video: Video } | { ok: false; error: string
 /** How far a video has got: an index into VIDEO_STAGES. */
 export function videoStage(video: Video): number {
   if (video.scenes.length === 0 || !video.approvedAt) return 0;
-  if (video.results) return 4;
+  if (video.results || video.music?.approvedAt) return 5;
+  if (video.music) return 4;
   if (video.scenes.some((s) => s.clips.length > 0)) return 3;
   return video.scenes.some((s) => s.pictures.length > 0 || s.animation) ? 2 : 1;
 }
@@ -607,6 +662,7 @@ export function parseVideo(input: unknown): Video {
       .map((c) => ({ rule: str(c.rule), ok: c.ok === true, note: str(c.note) }))
       .filter((c) => c.rule),
     scriptReview: parseScriptReview(i.scriptReview),
+    music: parseMusic(i.music),
     caption: str(i.caption),
     kept: strs(i.kept),
     changed: strs(i.changed),
@@ -616,6 +672,37 @@ export function parseVideo(input: unknown): Video {
     costUsd: typeof i.costUsd === "number" ? i.costUsd : 0,
     createdAt: str(i.createdAt) || now(),
     updatedAt: str(i.updatedAt) || now(),
+  };
+}
+
+function parseMusic(input: unknown): VideoMusic | null {
+  if (!input || typeof input !== "object") return null;
+  const m = input as Record<string, unknown>;
+  const num = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  return {
+    summary: str(m.summary),
+    cues: objs(m.cues)
+      .map((c) => {
+        const file = str(c.audioFile);
+        const ok = /^[\w.-]+$/.test(file);
+        return {
+          id: str(c.id) || crypto.randomUUID(),
+          fromScene: Math.max(1, Math.round(num(c.fromScene, 1))),
+          toScene: Math.max(1, Math.round(num(c.toScene, 1))),
+          label: str(c.label),
+          prompt: str(c.prompt),
+          why: str(c.why),
+          volume: Math.min(Math.max(num(c.volume, 0.3), 0), 1),
+          audioId: ok ? str(c.audioId) : "",
+          audioFile: ok ? file : "",
+          madeFrom: ok ? str(c.madeFrom) : "",
+        };
+      })
+      .filter((c) => c.prompt && c.toScene >= c.fromScene),
+    rounds: objs(m.rounds).map((r) => ({ feedback: str(r.feedback), reply: str(r.reply), at: str(r.at) })),
+    scenesKey: str(m.scenesKey),
+    approvedAt: str(m.approvedAt),
+    costUsd: num(m.costUsd, 0),
   };
 }
 

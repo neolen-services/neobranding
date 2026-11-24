@@ -246,7 +246,7 @@ export function ClipsTab({
   onOpenCast: () => void;
   /** Opens the Storyboard step. */
   onStoryboards: () => void;
-  /** Opens the Preview step. */
+  /** Opens the Music step. */
   onNext: () => void;
 }) {
   const [choices] = useMediaChoices();
@@ -351,7 +351,7 @@ export function ClipsTab({
           ? { title: `Make ${plural(progress.unvoiced, "voice line")}`, note: "Charged by ElevenLabs.", action: "Make them", act: oneVoiceRun }
           : waiting.length > 0
             ? { title: `${plural(waiting.length, "scene")} ${waiting.length === 1 ? "waits" : "wait"} for an approved storyboard`, note: "A clip is made only from an approved storyboard.", action: "Go to storyboards", act: async () => onStoryboards() }
-            : { title: "Every clip is ready", note: "Watch the whole video through on the last step.", action: "Go to preview", act: async () => onNext() };
+            : { title: "Every clip is ready", note: "Next, the music: Claude suggests what plays where.", action: "Go to music", act: async () => onNext() };
 
   return (
     <div className="space-y-5">

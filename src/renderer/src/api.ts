@@ -87,6 +87,9 @@ const browserApi: Api = {
   addSceneFile: (videoId, sceneId, file) => call("scene:addFile", videoId, sceneId, asJson(file)),
   changeTake: (videoId, sceneId, takeId, action) => call("scene:changeTake", videoId, sceneId, takeId, action),
   studioFileUrl: (file) => `/media/studio/${file}`,
+  musicForVideo: (id, feedback) => call("videos:music", id, feedback),
+  makeVideoMusic: (id) => call("videos:makeMusic", id),
+  approveVideoMusic: (id, approved) => call("videos:approveMusic", id, approved),
 
   usage: (since) => call("usage:get", since),
 

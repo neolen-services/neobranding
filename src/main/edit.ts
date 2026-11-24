@@ -257,7 +257,9 @@ export function editOps(ctx: EditContext) {
       project.fromVideoId = video.id;
       try {
         let t = 0;
+        const sceneStart: number[] = [];
         for (const [i, scene] of video.scenes.entries()) {
+          sceneStart.push(t);
           const clip = pickedClip(scene);
           const picture = pickedPicture(scene);
           const take = clip ?? picture;
@@ -291,10 +293,23 @@ export function editOps(ctx: EditContext) {
             if (asset.kind === "image") c.motion = "zoom-in";
             project.clips.push(c);
           }
-          const sceneLength = project.clips.length ? clipLength(project.clips[project.clips.length - 1]) : scene.seconds;
+          // A scene with nothing to show yet (still to be filmed) takes only as long as its recorded lines.
+          const shown = Boolean(source && existsSync(source));
+          const sceneLength = shown ? clipLength(project.clips[project.clips.length - 1]) : lines.length ? said : 0;
           for (const l of lines) project.audio.push(newAudio(l.asset, "voice", t + l.at));
-          if (scene.text) project.texts.push({ id: randomUUID(), text: scene.text, start: t, end: t + Math.min(sceneLength, 3.5), position: "top", style: "title" });
+          if (scene.text && sceneLength > 0) project.texts.push({ id: randomUUID(), text: scene.text, start: t, end: t + Math.min(sceneLength, 3.5), position: "top", style: "title" });
           t += sceneLength;
+        }
+        sceneStart.push(t);
+        // The video's music, each piece under the scenes it was chosen for. Music is kept low under speech by the export.
+        for (const cue of video.music?.cues ?? []) {
+          const path = cue.audioFile && cue.madeFrom === cue.prompt ? audioFilePath(ctx.dataDir(), cue.audioFile) : null;
+          if (!path) continue;
+          const asset = await copyIn(project, path, `Music: ${cue.label}`, "studio");
+          project.assets.push(asset);
+          const start = sceneStart[cue.fromScene - 1] ?? 0;
+          const end = sceneStart[Math.min(cue.toScene, video.scenes.length)] ?? t;
+          project.audio.push({ ...newAudio(asset, "music", start), out: Math.min(asset.seconds, Math.max(end - start, 0.5)), volume: cue.volume, fadeIn: 0.4, fadeOut: 0.8 });
         }
       } catch (e) {
         await rm(folder(project.id), { recursive: true, force: true });

@@ -26,14 +26,14 @@ import type { ApiProvider } from "../shared/settings";
 import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
-import { planSeries, reviewScript, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
+import { planMusic, planSeries, reviewScript, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
 import { animateScene, designMotion } from "./motion";
 import { animationPage } from "../shared/motion";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaChoice, type MediaSettings, type MediaTask, type Take, type UploadedFile } from "../shared/media";
-import { boardId, characterReference, DEFAULT_STYLE, isMotion, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
-import { audioFilePath } from "./audio";
+import { boardId, characterReference, cueNeedsTrack, cueSeconds, DEFAULT_STYLE, isMotion, musicScenesKey, musicState, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
+import { audioFilePath, generateMusic } from "./audio";
 import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
 
 const MEDIA_SETTING = "media_settings";
@@ -616,6 +616,67 @@ export function studioOps(ctx: StudioContext) {
         db().saveDoc("series", { ...parent, storySoFar: [...parent.storySoFar, ...added] });
       }
       return { ok: true, value: approved };
+    },
+
+    // ---------- Music ----------
+
+    /**
+     * Has Claude plan the video's music, or change the plan as the creator's feedback says, then makes the tracks that
+     * are new or changed with ElevenLabs. Kept pieces keep their tracks. Any earlier approval is taken back.
+     */
+    async music(id: unknown, feedback: unknown): Promise<StudioResult<Video>> {
+      const video = findVideo(id);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const said = typeof feedback === "string" ? feedback.trim().slice(0, 2000) : "";
+      const planned = await planMusic(ctx.key("anthropic"), video, cast(), db().getBrand(), said);
+      if (!planned.ok) return planned;
+      const now = findVideo(video.id) ?? video;
+      const saved = { ...now, music: planned.value.music, updatedAt: new Date().toISOString() };
+      db().saveDoc("videos", saved);
+      return this.makeMusic(saved.id);
+    },
+
+    /** Makes the track of every music cue that has none, or whose description changed. Uses ElevenLabs credits. */
+    async makeMusic(id: unknown): Promise<StudioResult<Video>> {
+      let video = findVideo(id);
+      if (!video?.music) return { ok: false, error: "Plan the music first." };
+      const key = ctx.key("elevenlabs");
+      if (video.music.cues.some(cueNeedsTrack) && !key) return { ok: false, error: "Add your ElevenLabs API key in Settings to make the music." };
+      for (const cue of video.music.cues.filter(cueNeedsTrack)) {
+        // A little longer than its scenes, so it never runs out before the cut; at least the service's shortest.
+        const seconds = Math.max(Math.ceil(cueSeconds(video, cue) + 1.5), 5);
+        const made = await generateMusic(ctx.dataDir(), key, { description: cue.prompt, seconds, instrumental: true, title: `${video.title}: ${cue.label}` });
+        if (!made.ok) return { ok: false, error: `"${cue.label}" could not be made: ${made.error}` };
+        const latest = findVideo(video.id);
+        if (!latest?.music) return { ok: false, error: "That video no longer exists." };
+        video = {
+          ...latest,
+          music: { ...latest.music, cues: latest.music.cues.map((c) => (c.id === cue.id ? { ...c, audioId: made.audio.id, audioFile: made.audio.file, madeFrom: cue.prompt } : c)) },
+          updatedAt: new Date().toISOString(),
+        };
+        db().saveDoc("videos", video);
+      }
+      return { ok: true, value: video };
+    },
+
+    /** The creator approves the music as it is (true), takes the approval back (false), or chooses no music ("none"). */
+    approveMusic(id: unknown, approved: unknown): StudioResult<Video> {
+      const video = findVideo(id);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const at = new Date().toISOString();
+      if (approved === "none") {
+        const music = { summary: "No music.", cues: [], rounds: video.music?.rounds ?? [], scenesKey: musicScenesKey(video), approvedAt: at, costUsd: video.music?.costUsd ?? 0 };
+        const saved = { ...video, music, updatedAt: at };
+        db().saveDoc("videos", saved);
+        return { ok: true, value: saved };
+      }
+      if (!video.music) return { ok: false, error: "Plan the music first." };
+      const state = musicState(video);
+      if (approved === true && state === "stale") return { ok: false, error: "The script changed after the music was planned. Plan it again first." };
+      if (approved === true && state === "unmade") return { ok: false, error: "Make every track first, so you can hear what you approve." };
+      const saved = { ...video, music: { ...video.music, approvedAt: approved === true ? at : "" }, updatedAt: at };
+      db().saveDoc("videos", saved);
+      return { ok: true, value: saved };
     },
 
     /** Speaks every AI line that has no audio yet. Uses ElevenLabs credits. */

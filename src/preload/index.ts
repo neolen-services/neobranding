@@ -111,6 +111,13 @@ const api = {
   /** Address the UI can show a stored picture or clip from. */
   studioFileUrl: (file: string): string => `media://studio/${file}`,
 
+  /** Has Claude plan the music, or change it as the feedback says, and makes the tracks. Uses Claude and ElevenLabs credits. */
+  musicForVideo: (id: string, feedback: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:music", id, feedback),
+  /** Makes any music tracks still missing. Uses ElevenLabs credits. */
+  makeVideoMusic: (id: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:makeMusic", id),
+  /** true approves the music, false takes the approval back, "none" chooses no music. */
+  approveVideoMusic: (id: string, approved: boolean | "none"): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approveMusic", id, approved),
+
   /** Saves how a posted video did. */
   recordVideoResults: (id: string, results: VideoResults): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:results", id, results),
 
