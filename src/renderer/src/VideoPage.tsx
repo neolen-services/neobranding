@@ -1,6 +1,6 @@
-// One video, worked on a stage at a time: Idea, Script, Cast, Storyboard, Preview, Make, Finish.
+// One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Preview. Storyboard and Clips each show every scene at once.
 // Each tab shows only what that stage needs, and the header always says what to do next.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import type { Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
@@ -8,23 +8,19 @@ import {
   approvalProblem,
   EVIDENCE_LABELS,
   joinState, pickedClip,
-  pickedPicture,
   boardId,
   isMotion,
   storyboardApproved,
   productionLabel,
   styleLabel,
   platformLabel,
-  RESULT_COUNTS,
   scriptReviewState,
   SPEAKER_ME,
   speakerName,
   type Character,
   type Scene,
-  type SceneLine,
   type Series,
   type Video,
-  type VideoResults,
 } from "@shared/studio";
 import { api } from "./api";
 import { VideoAssets } from "./AssetsView";
@@ -32,14 +28,14 @@ import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
 import { inOrder } from "./inOrder";
 import { SceneMedia } from "./SceneMedia";
-import { StoryboardTab } from "./Storyboard";
-import { MotionBoard, MotionPlayer } from "./MotionBoard";
+import { Player } from "./Player";
+import { ClipsTab, StoryboardTab } from "./Scenes";
+import { MotionBoard } from "./MotionBoard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, fieldClass, Icon, ICONS, label, PlayLine, postName, primaryButton, quietButton, SCRIPT_COST, smallButton, STAGES, videoProgress, WORDS_PER_SECOND } from "./studioUi";
+import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, NextBar, postName, primaryButton, quietButton, SCRIPT_COST, smallButton, STAGES, videoCast, videoProgress, WORDS_PER_SECOND } from "./studioUi";
 
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
 /** How many frames a scene's storyboard sheet holds: two across, two down. */
-const FRAMES = 4;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export function VideoPage({
@@ -67,7 +63,7 @@ export function VideoPage({
   onDelete: () => Promise<void>;
   onOpenSettings: () => void;
   onOpenBrand: () => void;
-  /** A character was changed on the Cast tab. */
+  /** A character was changed on the Cast step. */
   onCast: (character: Character) => void;
 }) {
   const progress = videoProgress(video, cast, brand);
@@ -75,20 +71,26 @@ export function VideoPage({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  /** Whether the video's assets are shown in place of its stages. */
+  /** Whether the video's assets are shown in place of its steps, the whole video is playing, or its settings are open. */
   const [assets, setAssets] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [settings, setSettings] = useState(false);
 
   const written = video.scenes.length > 0;
   const approved = video.approvedAt !== "";
-  /** Why a tab cannot be opened yet, or "" when it can. */
-  const storyboardsApproved = video.scenes.every(storyboardApproved);
-  const locked = (index: number) =>
-    index <= 1 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : index >= 4 && index <= 5 && !storyboardsApproved ? isMotion(video) ? "Approve every scene's animation first." : "Approve every scene's storyboard first." : "";
+  const castInfo = videoCast(video, cast, brand);
+  /** Why a step cannot be opened yet, or "" when it can. Only the script gates anything: the rest says what is missing in place. */
+  const locked = (index: number) => (index === 0 ? "" : !written ? "Write the script first." : !approved ? "Approve the script first." : "");
 
-  // A rewrite takes the approval back, which can close the tab being looked at.
+  // A rewrite takes the approval back, which can close the step being looked at.
   useEffect(() => {
-    if (locked(tab)) setTab(progress.tab);
+    if (locked(tab)) setTab(0);
   });
+  // Messages belong to the step they were shown on.
+  useEffect(() => {
+    setError("");
+    setNotice("");
+  }, [tab]);
 
   /** Runs one action on the video, showing what it is doing and what went wrong. */
   async function run(what: string, work: () => Promise<{ ok: true; value: Video } | { ok: false; error: string }>) {
@@ -114,16 +116,16 @@ export function VideoPage({
 
   const seconds = video.scenes.reduce((n, s) => n + s.seconds, 0);
   const meta = [
-    video.format === "episode" ? `Episode ${video.episode ?? ""}${series ? ` of ${series.title}` : ""}` : "Single video",
-    video.source === "remake" ? "Remake of a saved post" : "",
+    video.format === "episode" ? `Episode ${video.episode ?? ""}${series ? ` of ${series.title}` : ""}` : "",
     productionLabel(video.production),
     video.production !== "me" && (video.style || series?.style) ? styleLabel(video.style || series?.style || "") : "",
-    video.videoFormat || series?.videoFormat || "",
     platformLabel(video.platform || series?.platform || ""),
-    video.language || series?.language || "",
-    written ? `${seconds} seconds · ${plural(video.scenes.length, "scene")}` : "",
+    written ? `${seconds}s · ${plural(video.scenes.length, "scene")}` : "",
   ].filter(Boolean);
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };
+  /** A short note beside a step's name: what it still wants. */
+  const badge = (i: number) =>
+    i === 1 && approved && castInfo.unready > 0 ? `${castInfo.unready} to set up` : (i === 2 || i === 3) && approved && progress.tab === i && progress.waiting ? progress.next.toLowerCase() : "";
 
   if (assets) return <VideoAssets video={video} onBack={() => setAssets(false)} />;
 
@@ -139,45 +141,42 @@ export function VideoPage({
               <h2 className="truncate font-display text-xl font-semibold">{video.title}</h2>
               <p className="truncate text-sm opacity-60">{meta.join(" · ")}</p>
             </div>
-            {progress.waiting && tab !== progress.tab && (
-              <button type="button" className={`${primaryButton} flex items-center gap-2`} onClick={() => setTab(progress.tab)}>
-                Next: {progress.next}
-                <Icon d={ICONS.arrow} />
+            {written && (
+              <button type="button" className={`${quietButton} flex items-center gap-2`} title="Play the whole video as it stands: clips where they are made, the storyboard and voices elsewhere" onClick={() => setPlaying(true)}>
+                <Icon d={ICONS.play} />
+                Play
               </button>
             )}
-            <button type="button" className={`${quietButton} flex items-center gap-2`} title="Every storyboard, clip and voice line made for this video, and the folder they are in" onClick={() => setAssets(true)}>
+            <button type="button" aria-label="Video settings" title="Style, look, and the services that make pictures and clips" className="rounded-full border border-[var(--line)] p-2 hover:border-[var(--ink)]" onClick={() => setSettings(true)}>
+              <Icon d={ICONS.gear} />
+            </button>
+            <button type="button" aria-label="Assets" title="Every storyboard, clip and voice line made for this video, and the folder they are in" className="rounded-full border border-[var(--line)] p-2 hover:border-[var(--ink)]" onClick={() => setAssets(true)}>
               <Icon d={ICONS.film} />
-              Assets
             </button>
             <DeleteButton name="this video" onConfirm={onDelete} />
           </div>
 
-          <div role="tablist" aria-label="Stages" className="-mb-px mt-4 flex gap-1 overflow-x-auto">
+          <div role="tablist" aria-label="Steps" className="-mb-px mt-4 flex gap-1 overflow-x-auto">
             {STAGES.map((name, i) => {
               const why = locked(i);
               const done = i < progress.done;
+              const note = badge(i);
               return (
                 <button
                   key={name}
                   type="button"
                   role="tab"
                   aria-selected={tab === i}
-                  disabled={why !== ""}
+                  aria-disabled={why !== ""}
                   title={why || undefined}
-                  onClick={() => setTab(i)}
-                  className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium ${
-                    tab === i ? "border-[var(--primary)]" : "border-transparent opacity-65 hover:opacity-100"
-                  } disabled:cursor-not-allowed disabled:opacity-35`}
+                  onClick={() => (why ? setError(why) : setTab(i))}
+                  className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium ${tab === i ? "border-[var(--primary)]" : "border-transparent opacity-65 hover:opacity-100"} ${why ? "cursor-not-allowed !opacity-35" : ""}`}
                 >
-                  <span
-                    className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${
-                      done ? "bg-[var(--primary)] text-white" : tab === i ? "border border-[var(--primary)]" : "border border-[var(--line)]"
-                    }`}
-                  >
-                    {why ? <Icon d={ICONS.lock} className="h-3 w-3" /> : done ? <Icon d={ICONS.check} className="h-3 w-3" /> : i + 1}
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[0.7rem] font-semibold ${done ? "bg-[var(--primary)] text-white" : tab === i ? "border border-[var(--primary)]" : "border border-[var(--line)]"}`}>
+                    {done ? <Icon d={ICONS.check} className="h-3 w-3" /> : i + 1}
                   </span>
                   {name}
-                  {progress.waiting && progress.tab === i && tab !== i && <span aria-label="next step is here" className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />}
+                  {note && <span className="rounded-full bg-[var(--accent)]/15 px-2 py-0.5 text-xs font-medium text-[var(--accent)]">{note}</span>}
                 </button>
               );
             })}
@@ -200,17 +199,66 @@ export function VideoPage({
           </p>
         )}
 
-        {tab === 0 && <IdeaTab {...shared} ideas={ideas} posts={posts} series={series} onNext={() => setTab(1)} />}
-        {tab === 1 && !written && <WriteScript {...shared} />}
-        {tab === 1 && written && <ScriptTab {...shared} onApproved={() => setTab(2)} />}
-        {tab === 2 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(3)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
-        {tab === 3 && approved && !isMotion(video) && <StoryboardTab video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
-        {tab === 3 && approved && isMotion(video) && <MotionBoard video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(4)} />}
-        {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onOpenCast={() => setTab(2)} onOpenSettings={onOpenSettings} onStoryboard={() => setTab(3)} onNext={() => setTab(5)} />}
-        {tab === 5 && approved && <MakeTab {...shared} progress={progress} onStoryboard={() => setTab(3)} onNext={() => setTab(6)} />}
-        {tab === 6 && approved && <FinishTab {...shared} />}
+        {tab === 0 && !written && <WriteScript {...shared} ideas={ideas} posts={posts} series={series} />}
+        {tab === 0 && written && <ScriptTab {...shared} ideas={ideas} posts={posts} series={series} onApproved={() => setTab(castInfo.unready > 0 ? 1 : 2)} />}
+        {tab === 1 && approved && <CastStep video={video} cast={cast} brand={brand} onCast={onCast} onVideo={onChange} onNext={() => setTab(2)} onOpenSettings={onOpenSettings} onOpenBrand={onOpenBrand} />}
+        {tab === 2 && approved && !isMotion(video) && <StoryboardTab {...shared} onNext={() => setTab(3)} />}
+        {tab === 2 && approved && isMotion(video) && <MotionBoard video={video} busy={busy} save={save} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(3)} />}
+        {tab === 3 && approved && !isMotion(video) && <ClipsTab {...shared} progress={progress} onOpenCast={() => setTab(1)} onStoryboards={() => setTab(2)} onNext={() => setTab(4)} />}
+        {tab === 3 && approved && isMotion(video) && <MakeTab {...shared} progress={progress} onNext={() => setTab(4)} />}
+        {tab === 4 && approved && <PreviewTab {...shared} progress={progress} onClips={() => setTab(3)} />}
       </div>
+
+      {playing && <Player video={video} cast={cast} onClose={() => setPlaying(false)} />}
+      {settings && <VideoSettings video={video} series={series} save={save} onClose={() => setSettings(false)} />}
     </div>
+  );
+}
+
+/** The video's settings in one place: the style and look of its AI scenes, and the services that make its pictures and clips. */
+function VideoSettings({ video, series, save, onClose }: { video: Video; series?: Series; save: (changes: Partial<Video>, keepApproval?: boolean) => Promise<boolean>; onClose: () => void }) {
+  const keys = useMediaKeys();
+  const [choices, setChoice] = useMediaChoices();
+  const [look, setLook] = useState(video.look);
+  const close = async () => {
+    const changes: Partial<Video> = {};
+    if (look.trim() !== video.look) changes.look = look.trim();
+    if (Object.keys(changes).length) await save(changes, true);
+    onClose();
+  };
+  return (
+    <Dialog
+      title="Video settings"
+      onClose={() => void close()}
+      footer={
+        <button type="button" className={primaryButton} onClick={() => void close()}>
+          Done
+        </button>
+      }
+    >
+      {video.production !== "me" && !isMotion(video) && (
+        <section className="space-y-3">
+          <h3 className={label}>Look of the AI scenes</h3>
+          <p className="text-sm opacity-70">Style: {styleLabel(video.style || series?.style || "")}, chosen when the video was started.</p>
+          <label className="block text-sm">
+            <span className="font-medium">Look every AI scene shares</span>
+            <input className={`${fieldClass} mt-1.5`} placeholder="For example: warm evening light, shallow focus" value={look} onChange={(e) => setLook(e.target.value)} />
+          </label>
+          <p className="text-xs opacity-60">Used for what is drawn from now on. Storyboards already made keep their look until they are drawn again.</p>
+        </section>
+      )}
+      {choices && (
+        <section className="space-y-3">
+          <h3 className={label}>Services</h3>
+          <p className="text-xs opacity-60">These are your defaults for every video.</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <ServicePicker task="picture" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />
+            <ServicePicker task="clip" value={choices.clip} keys={keys} onChange={(c) => setChoice("clip", c)} stacked />
+            <ServicePicker task="lipsync" value={choices.lipsync} keys={keys} onChange={(c) => setChoice("lipsync", c)} stacked />
+          </div>
+        </section>
+      )}
+    </Dialog>
   );
 }
 
@@ -227,9 +275,10 @@ type Shared = {
   onChange: (video: Video) => void;
 };
 
-// ---------- 1. Idea ----------
+// ---------- What it is about ----------
 
-function IdeaTab({ video, busy, save, ideas, posts, series, onNext }: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series; onNext: () => void }) {
+/** Where the video comes from and what it is about: the idea, and what the creator added for the script. */
+function AboutVideo({ video, busy, save, ideas, posts, series }: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series }) {
   const [brief, setBrief] = useState(video.brief);
   const written = video.scenes.length > 0;
   const idea = ideas.find((i) => i.id === video.ideaIds[0]);
@@ -237,100 +286,82 @@ function IdeaTab({ video, busy, save, ideas, posts, series, onNext }: Shared & {
   const source = [
     series && `Episode ${video.episode ?? ""} of ${series.title}`,
     video.source === "remake" && "Your own version of a saved post",
-    inspired.length > 0 && `Inspired by ${inspired.length === 1 ? "a saved post" : `${inspired.length} saved posts`}: ${inspired.join(" · ")}`,
+    inspired.length > 0 && `Inspired by ${inspired.join(" · ")}`,
   ].filter(Boolean);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {idea && (
-        <section className={`${card} space-y-4`}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className={label}>The idea this video comes from</p>
-            <span className="flex flex-wrap gap-1.5">
-              <Chip>{productionLabel(video.production)}</Chip>
-              {video.production !== "me" && (video.style || series?.style) && <Chip>{styleLabel(video.style || series?.style || "")}</Chip>}
-              {idea.pillar && <Chip>{idea.pillar}</Chip>}
-            </span>
-          </div>
-          <h3 className="font-display text-xl font-semibold leading-snug">{idea.title}</h3>
+        <div className="space-y-3">
           <p className="border-l-4 border-[var(--accent)] pl-3 font-display text-lg font-medium leading-snug">“{idea.hook}”</p>
-          <div className="grid gap-x-8 gap-y-4 text-sm lg:grid-cols-2">
-            <dl className="space-y-3">
+          <div className="grid gap-x-8 gap-y-3 text-sm lg:grid-cols-2">
+            <dl className="space-y-2">
               {idea.viewer && (
                 <div>
                   <dt className={label}>Who it is for</dt>
-                  <dd className="mt-1">{idea.viewer}</dd>
+                  <dd className="mt-0.5">{idea.viewer}</dd>
                 </div>
               )}
               {idea.takeaway && (
                 <div>
                   <dt className={label}>What they leave with</dt>
-                  <dd className="mt-1">{idea.takeaway}</dd>
-                </div>
-              )}
-              {idea.cta && (
-                <div>
-                  <dt className={label}>Closing ask</dt>
-                  <dd className="mt-1">{idea.cta}</dd>
+                  <dd className="mt-0.5">{idea.takeaway}</dd>
                 </div>
               )}
             </dl>
-            <div>
-              <p className={label}>Outline</p>
-              <ol className="mt-1 list-decimal space-y-1 pl-5 leading-relaxed">
-                {idea.outline.map((beat, i) => (
-                  <li key={i}>{beat}</li>
-                ))}
-              </ol>
-            </div>
+            {idea.outline.length > 0 && (
+              <div>
+                <p className={label}>Outline</p>
+                <ol className="mt-0.5 list-decimal space-y-0.5 pl-5 leading-relaxed">
+                  {idea.outline.map((beat, i) => (
+                    <li key={i}>{beat}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </div>
-        </section>
+        </div>
       )}
-
-      <section className={`${card} space-y-3`}>
-        <h3 className="font-display text-lg font-semibold">{idea ? "Anything to add for the script?" : "What this video is about"}</h3>
+      <label className="block text-sm">
+        <span className="font-medium">{idea ? "Anything to add for the script" : "What this video is about"}</span>
         <textarea
-          className={fieldClass}
-          rows={3}
-          aria-label={idea ? "Anything to add for the script" : "What the video is about"}
+          className={`${fieldClass} mt-1.5`}
+          rows={2}
           placeholder={idea ? "Optional. For example: keep it under 40 seconds, or let me say the closing line myself." : "The topic, who it is for, and anything it must include."}
           value={brief}
           disabled={busy !== ""}
           onChange={(e) => setBrief(e.target.value)}
           onBlur={() => brief.trim() !== video.brief && void save({ brief }, true)}
         />
-        {(source.length > 0 || !idea) && <p className="text-sm opacity-60">{[...source, !idea && `Made: ${productionLabel(video.production).toLowerCase()}`].filter(Boolean).join(" · ")}</p>}
-        {written && <p className="text-sm opacity-60">The script is already written. What you change here is used the next time you ask for a rewrite.</p>}
-        <div className="border-t border-[var(--line)] pt-4">
-          <button type="button" className={`${primaryButton} flex items-center gap-2`} onClick={onNext}>
-            {written ? "Go to the script" : "On to the script"}
-            <Icon d={ICONS.arrow} />
-          </button>
-        </div>
+      </label>
+      {(source.length > 0 || written) && <p className="text-xs opacity-60">{[...source, written && "A change here is used the next time you ask for a rewrite."].filter(Boolean).join(" · ")}</p>}
+    </div>
+  );
+}
+
+/** The Script step before there is a script: what it is about, and writing it is the one thing to do. */
+function WriteScript(props: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series }) {
+  const { video, busy, run } = props;
+  return (
+    <div className="space-y-5">
+      <NextBar
+        title={busy === "Writing the script" ? "Writing the script… about 40 seconds" : "Write the script"}
+        note="Every scene with its lines, the claim and its evidence, and a check against your rules. You approve it before anything costly is made."
+        action={`Write it (${SCRIPT_COST})`}
+        busy={busy !== ""}
+        onAction={() => void run("Writing the script", () => api.writeVideo(video.id, ""))}
+      />
+      <section className={card}>
+        <AboutVideo {...props} />
       </section>
     </div>
   );
 }
 
-/** The Script tab before there is a script: the idea is settled, and writing it is the one thing to do. */
-function WriteScript({ video, busy, run }: Shared) {
-  return (
-    <section className={`${card} mx-auto flex max-w-2xl flex-col items-center px-6 py-10 text-center`}>
-      <h3 className="font-display text-xl font-semibold">Write the script</h3>
-      <p className="mt-2 text-sm leading-relaxed opacity-70">{video.ideaIds.length > 0 ? `From your idea “${video.title}”.` : "From what is written on the Idea tab."}</p>
-      <button type="button" className={`${primaryButton} mt-5`} disabled={busy !== ""} onClick={() => void run("Writing the script", () => api.writeVideo(video.id, ""))}>
-        {busy === "Writing the script" ? "Writing the script… about 40 seconds" : `Write the script (${SCRIPT_COST})`}
-      </button>
-      <p className="mt-4 max-w-md text-xs leading-relaxed opacity-60">
-        You get the claim and its evidence, three opening lines, every scene with its lines, and a check against your rules. You read and approve it before anything else is made.
-      </p>
-    </section>
-  );
-}
-
 // ---------- 2. Script ----------
 
-function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onApproved: () => void }) {
+function ScriptTab(props: Shared & { ideas: Idea[]; posts: ResearchItem[]; series?: Series; onApproved: () => void }) {
+  const { video, cast, busy, run, save, onApproved } = props;
   const [note, setNote] = useState("");
   const [source, setSource] = useState(video.claim?.source ?? "");
   const [copied, setCopied] = useState(false);
@@ -346,6 +377,33 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
   const seconds = video.scenes.reduce((n, s) => n + s.seconds, 0);
   const editScene = (id: string, change: (scene: Scene) => Scene) => save({ scenes: video.scenes.map((s) => (s.id === id ? change(s) : s)) });
 
+  const fixContinuity = () =>
+    run("Fixing", () =>
+      api.writeVideo(video.id, [`Fix these continuity problems and change nothing else:`, ...contradictions.map((p) => `- ${p.scene > 0 ? `Scene ${p.scene}: ` : ""}${p.problem}`), video.scriptReview?.fix ?? ""].filter(Boolean).join("\n")),
+    );
+  async function approve() {
+    let done = false;
+    await run("Approving", async () => {
+      // Approving reads the script for continuity first; if that finds something, the problems show instead.
+      if (continuity !== "passed") {
+        const checked = await api.checkScript(video.id);
+        if (!checked.ok || !checked.value.scriptReview?.ok) return checked;
+      }
+      const result = await api.approveVideo(video.id);
+      done = result.ok;
+      return result;
+    });
+    if (done) onApproved();
+  }
+  const working = busy === "Approving" ? (continuity === "passed" ? "Approving…" : "Checking continuity… about 30 seconds") : busy === "Fixing" ? "Rewriting and checking again… about a minute" : busy === "Rewriting" ? "Rewriting… about 40 seconds" : "";
+  const next = approved
+    ? { title: "Script approved", note: "Editing a line or asking for a rewrite takes the approval back.", action: "Go on", act: onApproved }
+    : continuity === "failed"
+      ? { title: `Fix ${plural(contradictions.length, "continuity problem")}`, note: "The script says different things from one scene to the next. The rewrite changes only those parts and is checked again.", action: `Fix with a rewrite (${SCRIPT_COST})`, act: () => void fixContinuity() }
+      : problem
+        ? { title: "Check the claim's source", note: "Claude cannot look things up. Confirm the source in the claim box, tick it, then approve.", action: undefined, act: undefined }
+        : { title: "Read it through, then approve", note: continuity === "passed" ? "Every check passes. Nothing costly has been made yet." : "Approving first checks that no scene contradicts another (a few cents).", action: continuity === "passed" ? "Approve script" : "Check and approve", act: () => void approve() };
+
   const tick = (ok: boolean, text: ReactNode) => (
     <li className="flex items-start gap-2.5">
       <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${ok ? "bg-emerald-500/20 text-emerald-400" : "border border-[var(--accent)] text-[var(--accent)]"}`}>
@@ -356,8 +414,19 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
   );
 
   return (
+    <div className="space-y-5">
+    <NextBar title={working || next.title} note={working ? undefined : next.note} action={working ? undefined : next.action} busy={busy !== ""} onAction={next.act} />
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="min-w-0 space-y-5">
+        <details className={`${card} group`}>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <span className={label}>What it is about</span>
+            <span className="text-xs opacity-60 group-open:hidden">Show</span>
+          </summary>
+          <div className="mt-4">
+            <AboutVideo {...props} />
+          </div>
+        </details>
         <section className={card}>
           <p className={label}>Opening line</p>
           <p className="mt-2 border-l-4 border-[var(--accent)] pl-4 font-display text-xl font-semibold leading-snug">“{video.hooks[0]}”</p>
@@ -421,60 +490,16 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
       </div>
 
       <aside className="space-y-5 lg:sticky lg:top-36 lg:max-h-[calc(100vh-11rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
-        <section className={`${card} ${approved ? "" : "border-[var(--primary)]"}`}>
-          {approved ? (
-            <>
-              <h3 className="flex items-center gap-2 font-display text-lg font-semibold">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--primary)] text-white">
-                  <Icon d={ICONS.check} className="h-3.5 w-3.5" />
-                </span>
-                Script approved
-              </h3>
-              <p className="mt-2 text-sm opacity-70">Editing a line or asking for a rewrite takes the approval back.</p>
-              <button type="button" className={`${primaryButton} mt-4 flex w-full items-center justify-center gap-2`} onClick={onApproved}>
-                Go to the cast
-                <Icon d={ICONS.arrow} />
-              </button>
-            </>
-          ) : (
-            <>
-              <h3 className="font-display text-lg font-semibold">Your decision</h3>
-              <ul className="mt-3 space-y-2 text-sm">
-                {tick(!needsSource || video.claim!.checked, needsSource ? (video.claim!.checked ? "You checked the claim's source" : "Check the claim's source, below") : "No factual claim to check")}
-                {tick(failed.length === 0, failed.length === 0 ? `All ${plural(video.checks.length, "rule")} pass` : `${plural(failed.length, "rule")} failed, below`)}
-                {tick(
-                  continuity === "passed",
-                  continuity === "passed"
-                    ? "Nothing contradicts itself from scene to scene"
-                    : continuity === "failed"
-                      ? `${plural(contradictions.length, "continuity problem")} to fix, below`
-                      : "Continuity is checked when you approve",
-                )}
-              </ul>
-              <button
-                type="button"
-                className={`${primaryButton} mt-4 w-full`}
-                disabled={busy !== "" || problem !== ""}
-                onClick={async () => {
-                  let done = false;
-                  await run("Approving", async () => {
-                    // Approving reads the script for continuity first; if that finds something, the problems show instead.
-                    if (continuity !== "passed") {
-                      const checked = await api.checkScript(video.id);
-                      if (!checked.ok || !checked.value.scriptReview?.ok) return checked;
-                    }
-                    const result = await api.approveVideo(video.id);
-                    done = result.ok;
-                    return result;
-                  });
-                  if (done) onApproved();
-                }}
-              >
-                {busy === "Approving" ? (continuity === "passed" ? "Approving…" : "Checking continuity… about 30 seconds") : continuity === "passed" ? "Approve script" : "Check and approve"}
-              </button>
-              <p className="mt-2 text-center text-xs opacity-60">Nothing costly has been made yet.</p>
-            </>
-          )}
+        <section className={card}>
+          <h3 className={label}>{approved ? "Approved" : "Ready to approve?"}</h3>
+          <ul className="mt-3 space-y-2 text-sm">
+            {tick(!needsSource || video.claim!.checked, needsSource ? (video.claim!.checked ? "You checked the claim's source" : "Check the claim's source, below") : "No factual claim to check")}
+            {tick(failed.length === 0, failed.length === 0 ? `All ${plural(video.checks.length, "rule")} pass` : `${plural(failed.length, "rule")} failed, below`)}
+            {tick(
+              continuity === "passed",
+              continuity === "passed" ? "No scene contradicts another" : continuity === "failed" ? `${plural(contradictions.length, "continuity problem")}, below` : "Continuity is checked when you approve",
+            )}
+          </ul>
         </section>
 
         {video.scenes.length > 0 && (
@@ -482,7 +507,7 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
             <p className={label}>Continuity</p>
             {continuity === "failed" ? (
               <>
-                <p className="mt-2 text-sm opacity-70">Claude read the whole script like a film set's continuity checker. These would show as mistakes between shots:</p>
+                <p className="mt-2 text-sm opacity-70">These would show as mistakes between shots:</p>
                 <ul className="mt-3 space-y-2.5 text-sm">
                   {contradictions.map((p, i) => (
                     <li key={i} className="flex gap-2.5">
@@ -494,28 +519,12 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
                     </li>
                   ))}
                 </ul>
-                <button
-                  type="button"
-                  className={`${primaryButton} mt-4 w-full`}
-                  disabled={busy !== ""}
-                  onClick={() =>
-                    void run("Fixing", () =>
-                      api.writeVideo(
-                        video.id,
-                        [`Fix these continuity problems and change nothing else:`, ...contradictions.map((p) => `- ${p.scene > 0 ? `Scene ${p.scene}: ` : ""}${p.problem}`), video.scriptReview?.fix ?? ""].filter(Boolean).join("\n"),
-                      ),
-                    )
-                  }
-                >
-                  {busy === "Fixing" ? "Rewriting and checking again… about a minute" : `Fix them with a rewrite (${SCRIPT_COST})`}
-                </button>
-                <p className="mt-2 text-xs opacity-60">The rewrite is checked again as soon as it is written.</p>
               </>
             ) : continuity === "stale" ? (
               <p className="mt-2 text-sm opacity-70">The script changed since it was last checked.{approved ? "" : " It is checked again when you approve."}</p>
             ) : continuity === "unchecked" ? (
               <p className="mt-2 text-sm opacity-70">
-                Not checked yet. Claude reads every scene for things that contradict each other, like a stool that turns into a table, and writes out each place in detail so every storyboard shows the same set.
+                Not checked yet. Claude looks for anything that changes between scenes, like a stool that becomes a table, and describes each place so every storyboard shows the same set.
                 {approved ? " A problem it finds takes the approval back." : ""}
               </p>
             ) : (
@@ -631,6 +640,7 @@ function ScriptTab({ video, cast, busy, run, save, onApproved }: Shared & { onAp
           {approved && <p className="mt-2 text-xs opacity-60">A rewrite needs your approval again, and changed lines need new voices.</p>}
         </section>
       </aside>
+    </div>
     </div>
   );
 }
@@ -802,229 +812,13 @@ function LineText({ text, disabled, onSave }: { text: string; disabled: boolean;
   );
 }
 
-// ---------- Preview ----------
-
 type Progress = ReturnType<typeof videoProgress>;
 
-/**
- * Plays the script the way the video will run: one scene at a time, each line
- * in its voice where one has been made, with the on-screen text and captions.
- * A scene shows its picture once it has one.
- */
-function PreviewTab({
-  video,
-  cast,
-  busy,
-  setError,
-  setNotice,
-  onChange,
-  progress,
-  onOpenCast,
-  onOpenSettings,
-  onStoryboard,
-  onNext,
-}: Shared & { progress: Progress; onOpenCast: () => void; onOpenSettings: () => void; onStoryboard: () => void; onNext: () => void }) {
-  // One step per spoken line, or one for a scene nobody speaks in.
-  const steps = useMemo(
-    () =>
-      video.scenes.flatMap((scene, sceneIndex): { scene: Scene; sceneIndex: number; line: SceneLine | null }[] =>
-        scene.lines.length ? scene.lines.map((line) => ({ scene, sceneIndex, line })) : [{ scene, sceneIndex, line: null }],
-      ),
-    [video],
-  );
-  const [at, setAt] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [voicing, setVoicing] = useState(false);
-  const step = steps[Math.min(at, steps.length - 1)];
+// ---------- Clips of a motion graphics video ----------
 
-  // A storyboard is a sheet of four frames. Each line of a scene gets its share of them, in order,
-  // and while it plays the frames in that share are stepped through.
-  const inScene = steps.filter((s) => s.scene.id === step?.scene.id);
-  const place = step ? inScene.indexOf(step) : 0;
-  const firstFrame = Math.floor((place * FRAMES) / Math.max(inScene.length, 1));
-  const lastFrame = Math.max(firstFrame, Math.floor(((place + 1) * FRAMES) / Math.max(inScene.length, 1)) - 1);
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    setFrame(firstFrame);
-    if (!playing || !step || lastFrame === firstFrame) return;
-    const seconds = step.line ? Math.max(countWords(step.line.text) / WORDS_PER_SECOND, 1.2) : step.scene.seconds;
-    const timer = setInterval(() => setFrame((f) => Math.min(f + 1, lastFrame)), (seconds * 1000) / (lastFrame - firstFrame + 1));
-    return () => clearInterval(timer);
-  }, [at, playing, firstFrame, lastFrame]);
-
-  useEffect(() => {
-    if (!playing) return;
-    const current = steps[at];
-    if (!current) return setPlaying(false);
-    const next = () => (at + 1 < steps.length ? setAt(at + 1) : setPlaying(false));
-    if (current.line?.audioFile) {
-      const audio = new Audio(api.audioFileUrl(current.line.audioFile));
-      audio.addEventListener("ended", next);
-      audio.addEventListener("error", next);
-      audio.play().catch(next);
-      return () => {
-        audio.removeEventListener("ended", next);
-        audio.removeEventListener("error", next);
-        audio.pause();
-      };
-    }
-    // No recording (your own line, or a voice not made yet): hold it for as long as it takes to say.
-    const words = current.line ? countWords(current.line.text) : 0;
-    const timer = setTimeout(next, (current.line ? Math.max(words / WORDS_PER_SECOND, 1.2) : current.scene.seconds) * 1000);
-    return () => clearTimeout(timer);
-  }, [playing, at, steps]);
-
-  async function makeVoices() {
-    setVoicing(true);
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.voiceVideo(video.id);
-      if (!result.ok) return setError(result.error);
-      onChange(result.video);
-      setNotice(`${plural(result.made, "line")} spoken.${result.skipped.length ? ` Not done: ${result.skipped.join(", ")}.` : ""}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "The voices could not be made.");
-    } finally {
-      setVoicing(false);
-    }
-  }
-
-  if (!step) return null;
-  const picture = pickedPicture(step.scene);
-  const voiced = progress.aiLines - progress.unvoiced;
-  const round = "flex h-10 w-10 items-center justify-center rounded-full border border-[var(--line)] hover:border-[var(--ink)] disabled:opacity-35";
-
-  return (
-    <div className="grid gap-6 lg:grid-cols-[auto_minmax(0,1fr)]">
-      <div className="mx-auto w-72">
-        <div className="relative flex aspect-[9/16] w-full flex-col overflow-hidden rounded-[2rem] border border-[var(--line)] bg-black p-5 text-white shadow-xl">
-          {step.scene.animation && <MotionPlayer key={step.scene.animation.id} video={video} scene={step.scene} className="absolute inset-0 h-full w-full" />}
-          {picture && !step.scene.animation && (
-            // The sheet is shown at twice the size and moved so that only the current frame fills the screen.
-            <img
-              src={api.studioFileUrl(picture.file)}
-              alt={`Storyboard frame ${frame + 1} of scene ${step.sceneIndex + 1}`}
-              className="absolute h-[200%] w-[200%] max-w-none object-fill"
-              style={{ left: `${-(frame % 2) * 100}%`, top: `${-Math.floor(frame / 2) * 100}%` }}
-            />
-          )}
-          <p className="relative w-fit rounded-full bg-black/55 px-2 py-0.5 text-xs">
-            Scene {step.sceneIndex + 1} of {video.scenes.length} · {step.scene.madeBy === "me" ? "you film this" : step.scene.animation ? "animation" : picture ? `frame ${frame + 1} of ${FRAMES}` : "no storyboard"}
-          </p>
-          {step.scene.text && <p className="relative mt-4 text-center text-xl font-bold leading-tight [text-shadow:0_1px_4px_#000]">{step.scene.text}</p>}
-          <p className="relative my-auto text-center text-sm italic leading-relaxed opacity-70">{picture || step.scene.animation ? "" : step.scene.action}</p>
-          {step.line && (
-            <p className="relative rounded-xl bg-black/65 px-3 py-2 text-center text-sm font-medium leading-snug">
-              <span className="block text-[0.7rem] font-normal uppercase tracking-wide opacity-70">{speakerName(step.line.speaker, cast)}</span>
-              {step.line.text}
-            </p>
-          )}
-        </div>
-
-        <div className="mt-3 flex gap-1" aria-hidden>
-          {steps.map((_, i) => (
-            <span key={i} className={`h-1 flex-1 rounded-full ${i <= at ? "bg-[var(--primary)]" : "bg-[var(--tint)]"}`} />
-          ))}
-        </div>
-        <div className="mt-3 flex items-center justify-center gap-3">
-          <button type="button" aria-label="Previous line" className={round} disabled={at === 0} onClick={() => setAt(at - 1)}>
-            <Icon d={ICONS.back} />
-          </button>
-          <button
-            type="button"
-            aria-label={playing ? "Pause" : "Play"}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--primary)] text-white hover:opacity-90"
-            onClick={() => {
-              if (!playing && at >= steps.length - 1) setAt(0);
-              setPlaying(!playing);
-            }}
-          >
-            <Icon d={playing ? ICONS.pause : ICONS.play} className="h-5 w-5" />
-          </button>
-          <button type="button" aria-label="Next line" className={round} disabled={at >= steps.length - 1} onClick={() => setAt(at + 1)}>
-            <Icon d="M9 5l7 7-7 7" />
-          </button>
-        </div>
-      </div>
-
-      <div className="min-w-0 space-y-5">
-        <section className={card}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="font-display text-lg font-semibold">Voices</h3>
-              <p className="mt-0.5 text-sm opacity-60">
-                {progress.aiLines === 0 ? "No AI lines: you say everything on camera." : `${voiced} of ${plural(progress.aiLines, "AI line")} recorded.`}
-              </p>
-            </div>
-            {progress.unvoiced > 0 ? (
-              <button type="button" className={primaryButton} disabled={busy !== "" || voicing} onClick={makeVoices}>
-                {voicing ? "Making the voices…" : `Make ${plural(progress.unvoiced, "voice line")}`}
-              </button>
-            ) : (
-              <button type="button" className={`${primaryButton} flex items-center gap-2`} onClick={onNext}>
-                On to the clips
-                <Icon d={ICONS.arrow} />
-              </button>
-            )}
-          </div>
-          {progress.unvoiced > 0 && (
-            <p className="mt-2 text-xs opacity-60">
-              Uses your ElevenLabs credits.{" "}
-              <button type="button" className="underline" onClick={onOpenSettings}>
-                Key in Settings
-              </button>
-            </p>
-          )}
-          {progress.voiceless.length > 0 && (
-            <p className="mt-3 rounded-lg border border-[var(--accent)] px-3 py-2 text-sm">
-              No voice chosen for {progress.voiceless.join(", ")}, so their lines cannot be spoken.{" "}
-              <button type="button" className="font-medium underline" onClick={onOpenCast}>
-                Go to the Cast tab
-              </button>
-            </p>
-          )}
-        </section>
-
-        <section className={`${card} !p-0`}>
-          <p className={`${label} px-5 pt-4`}>Line by line</p>
-          <ol className="mt-2 divide-y divide-[var(--line)]">
-            {steps.map((s, i) => (
-              <li key={i} className={`flex items-center gap-3 px-5 py-2.5 text-sm ${i === at ? "bg-[var(--tint)]" : ""}`}>
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setAt(i)} title="Show this line in the preview">
-                  <span className="text-xs opacity-55">
-                    Scene {s.sceneIndex + 1}
-                    {s.line && ` · ${speakerName(s.line.speaker, cast)}`}
-                  </span>
-                  <span className="block truncate">{s.line ? s.line.text : <span className="italic opacity-70">{s.scene.action}</span>}</span>
-                </button>
-                {s.line?.audioFile ? (
-                  <PlayLine file={s.line.audioFile} label={`line ${i + 1}`} />
-                ) : (
-                  <span className="shrink-0 text-xs opacity-55">{!s.line ? "no words" : s.line.speaker === SPEAKER_ME ? "you say this" : "no voice yet"}</span>
-                )}
-              </li>
-            ))}
-          </ol>
-        </section>
-
-        <p className="text-sm leading-relaxed opacity-60">
-          This is the video as it stands: the storyboard, frame by frame, with the voices. Would the right viewer stop in the first two seconds, and does it leave them
-          one thing to do? If a picture is off,{" "}
-          <button type="button" className="underline" onClick={onStoryboard}>
-            redo it on the Storyboard tab
-          </button>
-          ; if the words are off, go back to Script. It costs far less to fix now than after the clips are made.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ---------- Make ----------
-
-/** The clips: one for each scene, made to follow its storyboard or filmed by the creator. */
-function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStoryboard, onNext }: Shared & { progress: Progress; onStoryboard: () => void; onNext: () => void }) {
+/** The clips of a motion graphics video: each approved animation rendered on this computer, or filmed by the creator. */
+function MakeTab({ video, busy, setError, setNotice, onChange, progress, onNext }: Shared & { progress: Progress; onNext: () => void }) {
+  const onStoryboard = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const [making, setMaking] = useState("");
   const keys = useMediaKeys();
   const [choices, setChoice] = useMediaChoices();
@@ -1183,90 +977,39 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onStory
   );
 }
 
-// ---------- Finish ----------
+// ---------- Preview ----------
 
-function FinishTab({ video, busy, run }: Shared) {
+/** The last step: the whole video played in the page from the top, to watch it through as a viewer would. */
+function PreviewTab({ video, cast, progress, onClips }: Shared & { progress: Progress; onClips: () => void }) {
   const [copied, setCopied] = useState(false);
-  const withClip = video.scenes.filter((s) => pickedClip(s)).length;
+  const withClip = video.scenes.filter((s, i) => pickedClip(s) && joinState(video.scenes, i) !== "stale").length;
+  const all = withClip === video.scenes.length;
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-      <div className="space-y-5">
-        <section className={card}>
-          <h3 className="font-display text-lg font-semibold">Put it together</h3>
-          <p className="mt-2 text-sm leading-relaxed opacity-70">
-            {withClip} of {plural(video.scenes.length, "scene")} {withClip === 1 ? "has" : "have"} a clip. Joining them into one finished video is not built yet: for now, open each clip from the Make tab and
-            join them in your editor.
-          </p>
-        </section>
-        {video.caption && (
-          <section className={card}>
-            <div className="flex items-center justify-between gap-3">
-              <p className={label}>Caption to post with it</p>
-              <CopyButton text={video.caption} copied={copied} onCopied={setCopied} />
-            </div>
-            <p className="mt-2 whitespace-pre-wrap leading-relaxed">{video.caption}</p>
-          </section>
-        )}
+    <div className="space-y-5">
+      {all ? (
+        <NextBar title="Every scene has its clip" note="Watch it through from the start. Joining the clips into one file is not built yet: download them from Assets and join them in your editor." />
+      ) : (
+        <NextBar
+          title={`${withClip} of ${plural(video.scenes.length, "scene")} have a clip`}
+          note={`The rest play from their storyboard, with the voices. Next: ${progress.next.charAt(0).toLowerCase()}${progress.next.slice(1)}.`}
+          action="Go to clips"
+          onAction={onClips}
+        />
+      )}
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <Player video={video} cast={cast} inline />
+        <div className="space-y-5">
+          {video.caption && (
+            <section className={card}>
+              <div className="flex items-center justify-between gap-3">
+                <p className={label}>Caption to post with it</p>
+                <CopyButton text={video.caption} copied={copied} onCopied={setCopied} />
+              </div>
+              <p className="mt-2 whitespace-pre-wrap leading-relaxed">{video.caption}</p>
+            </section>
+          )}
+        </div>
       </div>
-      <ResultsForm results={video.results} disabled={busy !== ""} onSave={(results) => run("Saving the results", () => api.recordVideoResults(video.id, results))} />
     </div>
-  );
-}
-
-/** How a posted video did, typed in a few days later. These numbers shape the hooks of later scripts. */
-function ResultsForm({ results, disabled, onSave }: { results: VideoResults | null; disabled: boolean; onSave: (results: VideoResults) => Promise<boolean> }) {
-  const blank = { postedOn: "", url: "", views: "", saves: "", shares: "", follows: "", comments: "", note: "" };
-  const [draft, setDraft] = useState(() =>
-    results
-      ? { ...blank, postedOn: results.postedOn, url: results.url, note: results.note, ...Object.fromEntries(RESULT_COUNTS.map((k) => [k, results[k]?.toString() ?? ""])) }
-      : blank,
-  );
-  const [saved, setSaved] = useState(false);
-  const set = (key: keyof typeof blank, value: string) => {
-    setSaved(false);
-    setDraft({ ...draft, [key]: value });
-  };
-
-  return (
-    <form
-      className={`${card} h-fit`}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        // Empty boxes are saved as "not recorded", never as zero.
-        const ok = await onSave({ ...draft, ...Object.fromEntries(RESULT_COUNTS.map((k) => [k, draft[k].trim() === "" ? null : Number(draft[k])])) } as unknown as VideoResults);
-        setSaved(ok);
-      }}
-    >
-      <h3 className="font-display text-lg font-semibold">How did it do?</h3>
-      <p className="mt-1 text-sm opacity-60">Fill this in a few days after posting. Later scripts learn from the openings that found your kind of viewer.</p>
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        <label className="block text-sm">
-          <span className="font-medium">Posted on</span>
-          <input type="date" className={`${fieldClass} mt-1`} value={draft.postedOn} onChange={(e) => set("postedOn", e.target.value)} />
-        </label>
-        <label className="block text-sm">
-          <span className="font-medium">Link</span>
-          <input className={`${fieldClass} mt-1`} placeholder="https://…" value={draft.url} onChange={(e) => set("url", e.target.value)} />
-        </label>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-        {RESULT_COUNTS.map((key) => (
-          <label key={key} className="block text-sm">
-            <span className="font-medium capitalize">{key}</span>
-            <input type="number" min={0} inputMode="numeric" className={`${fieldClass} mt-1`} value={draft[key]} onChange={(e) => set(key, e.target.value)} />
-          </label>
-        ))}
-      </div>
-      <label className="mt-4 block text-sm">
-        <span className="font-medium">Where did people stop watching? Anything else to remember?</span>
-        <textarea className={`${fieldClass} mt-1`} rows={2} value={draft.note} onChange={(e) => set("note", e.target.value)} />
-      </label>
-      <div className="mt-4 flex items-center gap-3">
-        <button type="submit" className={primaryButton} disabled={disabled}>
-          Save results
-        </button>
-        {saved && <span className="text-sm font-medium text-emerald-400">Saved.</span>}
-      </div>
-    </form>
   );
 }

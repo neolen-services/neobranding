@@ -8,6 +8,11 @@ import { createHandlers } from "./handlers";
 import { researchFilePath } from "./research";
 import type { Secrets } from "./store";
 
+// The app was first called Personal Brand. Electron's own folder for it (which holds the key the operating system
+// uses to encrypt saved API keys, and the downloaded tools) keeps that name, so the rename to AI Shorts loses neither.
+// This is not user data: that lives in the data folder.
+app.setPath("userData", join(app.getPath("appData"), "Personal Brand"));
+
 // Saved posts are served to the UI as media://research/<id>/<file>.
 protocol.registerSchemesAsPrivileged([
   { scheme: "media", privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
@@ -43,6 +48,8 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#0A0908",
+    title: "AI Shorts",
+    icon: join(__dirname, "../../resources/icon.png"),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
     },

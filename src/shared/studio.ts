@@ -387,18 +387,17 @@ export type Series = {
 };
 
 /** The stages of a video as the agent names them. */
-export const VIDEO_STAGES = ["Idea", "Script", "Storyboard", "Preview", "Make", "Finish"] as const;
+export const VIDEO_STAGES = ["Script", "Cast", "Storyboard", "Clips", "Preview"] as const;
 
 /** What comes back from making or adding a picture or clip. */
 export type TakeResult = { ok: true; video: Video } | { ok: false; error: string };
 
 /** How far a video has got: an index into VIDEO_STAGES. */
 export function videoStage(video: Video): number {
-  if (video.scenes.length === 0) return 0;
-  if (!video.approvedAt) return 1;
-  if (video.results) return 5;
-  if (video.scenes.some((s) => s.clips.length > 0)) return 4;
-  return video.scenes.some((s) => s.pictures.length > 0) ? 3 : 2;
+  if (video.scenes.length === 0 || !video.approvedAt) return 0;
+  if (video.results) return 4;
+  if (video.scenes.some((s) => s.clips.length > 0)) return 3;
+  return video.scenes.some((s) => s.pictures.length > 0 || s.animation) ? 2 : 1;
 }
 
 /** Whether the script can be approved, or why not. */

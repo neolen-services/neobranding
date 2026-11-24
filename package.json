@@ -1,10 +1,10 @@
 {
   "name": "personal-brand",
-  "productName": "Personal Brand",
+  "productName": "AI Shorts",
   "version": "0.1.0",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
-  "description": "Desktop app for building a personal brand on social media.",
+  "description": "AI Shorts: a desktop app for building a personal brand with short videos made with AI.",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

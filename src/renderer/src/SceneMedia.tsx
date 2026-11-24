@@ -10,7 +10,7 @@ const MAX_UPLOAD = 300 * 1024 * 1024;
 const TAKE_SOURCE: Record<string, string> = { lipsync: "Lip-synced", filmed: "Filmed by you" };
 
 /**
- * One scene on the Make tab: its clip, made to follow the storyboard settled on the Storyboard tab.
+ * One scene's clip, made to follow its approved storyboard.
  * A scene that carries on from the one before opens on the last frame of that scene's clip, so the
  * two play as one take. Every attempt is kept as a take to switch between.
  */
@@ -22,6 +22,9 @@ export function SceneMedia({
   disabled,
   onVideo,
   onStoryboard,
+  bare,
+  tile,
+  making,
 }: {
   video: Video;
   scene: Scene;
@@ -30,8 +33,14 @@ export function SceneMedia({
   choices: MediaSettings;
   disabled: boolean;
   onVideo: (video: Video) => void;
-  /** Opens the Storyboard tab, where a scene's storyboard is made. */
-  onStoryboard: () => void;
+  /** Shows where the scene's storyboard is made. */
+  onStoryboard?: () => void;
+  /** Shown inside a scene's own view, which already names the scene and shows its words. */
+  bare?: boolean;
+  /** One card in the Clips step's grid: the clip large, with the scene's number, place and words above and below it. */
+  tile?: boolean;
+  /** A batch started from the top of the page is making this scene's clip right now. */
+  making?: boolean;
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -92,48 +101,64 @@ export function SceneMedia({
         .filter(Boolean)
         .join(" ");
 
+  const header = (
+    <div className="flex flex-wrap items-center gap-2">
+      {tile ? <span className="font-display text-xl font-semibold tabular-nums">{index + 1}</span> : <h4 className="font-display text-base font-semibold">Scene {index + 1}</h4>}
+      <span className="min-w-0 flex-1 truncate text-xs opacity-55" title={scene.place}>
+        {scene.seconds}s{scene.place && ` · ${scene.place}`}
+      </span>
+      <span className="flex gap-1.5">
+        {filmed ? (
+          <Chip tone={clip ? "good" : "warn"}>{clip ? "Clip added" : "You film this"}</Chip>
+        ) : join === "stale" ? (
+          <Chip tone="warn">Not joined</Chip>
+        ) : (
+          <Chip tone={clip ? "good" : "plain"}>{clip ? (join === "joined" ? "Joined clip" : "Clip") : "No clip"}</Chip>
+        )}
+      </span>
+    </div>
+  );
+
   return (
-    <article className={`${card} flex gap-4 !p-4`}>
-      <div className="flex aspect-[9/16] w-32 shrink-0 items-center justify-center self-start overflow-hidden rounded-xl border border-[var(--line)] bg-black text-center text-xs text-white/60">
+    <article className={bare ? "flex flex-col gap-3" : tile ? `${card} flex flex-col gap-3 !p-3 ${clip && join !== "stale" ? "border-[var(--primary)]/60" : ""}` : `${card} flex gap-4 !p-4`}>
+      {tile && header}
+      <div className={`relative flex aspect-[9/16] ${bare || tile ? "w-full" : "w-32"} shrink-0 items-center justify-center self-start overflow-hidden rounded-xl border border-[var(--line)] bg-black text-center text-xs text-white/60`}>
         {clip ? (
           <video controls preload="metadata" src={api.studioFileUrl(clip.file)} poster={picture ? api.studioFileUrl(picture.file) : undefined} className="h-full w-full object-cover" />
         ) : animation ? (
           <MotionPlayer key={animation.id} video={video} scene={scene} className="h-full w-full" />
-        ) : picture ? (
+        ) : picture && tile ? (
+          <>
+            {/* Until the clip is made, its storyboard shows faintly, so the grid still reads as the whole video. */}
+            <img src={api.studioFileUrl(picture.file)} alt={`Storyboard: ${scene.action}`} className="h-full w-full object-cover opacity-35" />
+            <span className="absolute inset-x-3 rounded-lg bg-black/70 px-2 py-1.5 text-white/85">{storyboardApproved(scene) ? "No clip yet" : "Storyboard not approved"}</span>
+          </>
+        ) : picture && !bare ? (
           <img src={api.studioFileUrl(picture.file)} alt={`Storyboard: ${scene.action}`} className="h-full w-full object-cover" />
         ) : (
           <span className="flex flex-col items-center gap-2 px-3">
             <Icon d={filmed ? ICONS.camera : ICONS.ai} className="h-6 w-6 opacity-60" />
-            {filmed ? "Your clip goes here" : "No storyboard"}
+            {filmed ? "Your clip goes here" : bare ? (storyboardApproved(scene) ? "No clip yet" : "Made once its storyboard is approved") : "No storyboard"}
           </span>
+        )}
+        {(making || busy === "Making the clip" || busy === "Lip-syncing") && (
+          <span className="absolute inset-0 flex items-center justify-center bg-black/70 px-4 text-sm text-white">{busy === "Lip-syncing" ? "Lip-syncing…" : "Making the clip…"}</span>
         )}
       </div>
 
-      <div className="min-w-0 flex-1 space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h4 className="font-display text-base font-semibold">Scene {index + 1}</h4>
-          <span className="text-xs opacity-55">
-            {scene.seconds}s{scene.place && ` · ${scene.place}`}
-          </span>
-          <span className="ml-auto flex gap-1.5">
-            {filmed ? (
-              <Chip tone={clip ? "good" : "warn"}>{clip ? "Clip added" : "You film this"}</Chip>
-            ) : join === "stale" ? (
-              <Chip tone="warn">Not joined</Chip>
-            ) : (
-              <Chip tone={clip ? "good" : "plain"}>{clip ? (join === "joined" ? "Joined clip" : "Clip") : "No clip"}</Chip>
-            )}
-          </span>
-        </div>
+      <div className={`min-w-0 flex-1 space-y-3 ${tile ? "flex flex-col" : ""}`}>
+        {!bare && !tile && header}
 
         {flow && <p className={`text-xs ${join === "stale" ? "text-[var(--accent)]" : "opacity-60"}`}>{flow}</p>}
-        <p className="line-clamp-2 text-sm leading-relaxed">{scene.action}</p>
-        {scene.lines[0] && <p className="line-clamp-2 text-sm italic opacity-60">“{scene.lines[0].text}”</p>}
+        {!bare && <p className="line-clamp-2 text-sm leading-relaxed" title={scene.action}>{scene.action}</p>}
+        {!bare && scene.lines[0] && <p className="line-clamp-2 text-sm italic opacity-60">“{scene.lines[0].text}”</p>}
 
-        {!filmed && (!boardId(scene) || (animation && !storyboardApproved(scene))) ? (
-          <button type="button" className={smallButton} disabled={off} onClick={onStoryboard}>
-            {animation ? "Approve its animation first" : "Make its storyboard first"}
-          </button>
+        {!filmed && (!boardId(scene) || !storyboardApproved(scene)) ? (
+          onStoryboard ? (
+            <button type="button" className={smallButton} disabled={off} onClick={onStoryboard}>
+              {animation ? "Approve its animation first" : boardId(scene) ? "Approve its storyboard first" : "Make its storyboard first"}
+            </button>
+          ) : null
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             {filmed ? (
@@ -162,7 +187,7 @@ export function SceneMedia({
                     type="button"
                     className={smallButton}
                     disabled={off || !hasVoice}
-                    title={hasVoice ? "Makes the speaking character's reference picture say the scene's first recorded line." : "Make the voices first (Preview tab): lip-sync needs a recorded line."}
+                    title={hasVoice ? "Makes the speaking character's reference picture say the scene's first recorded line." : "Make the voices first: lip-sync needs a recorded line."}
                     onClick={() => void lipSync()}
                   >
                     {busy === "Lip-syncing" ? "Lip-syncing… this can take minutes" : "Lip-sync"}

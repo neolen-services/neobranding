@@ -256,8 +256,8 @@ export function studioOps(ctx: StudioContext) {
     if (!video.approvedAt) return { ok: false, error: "Approve the script first. Clips are made for an approved script, so none are wasted on words that change." };
     const index = video.scenes.indexOf(scene);
     const board = pickedPicture(scene);
-    if (!board) return { ok: false, error: `Scene ${index + 1} has no storyboard yet. Make it on the Storyboard tab first: the clip follows it.` };
-    if (!storyboardApproved(scene)) return { ok: false, error: `Scene ${index + 1}'s storyboard is not approved yet. Approve it on the Storyboard tab first.` };
+    if (!board) return { ok: false, error: `Scene ${index + 1} has no storyboard yet. Draw it first, on the Storyboard step: the clip follows it.` };
+    if (!storyboardApproved(scene)) return { ok: false, error: `Scene ${index + 1}'s storyboard is not approved yet. Approve it first, on the Storyboard step.` };
     const before = scene.continues && scene.madeBy === "ai" ? video.scenes[index - 1] : undefined;
     const beforeClip = before && pickedClip(before);
     // Without FFmpeg, or if the frame cannot be read, the clip opens on the storyboard's first frame instead.
@@ -966,7 +966,7 @@ export function studioOps(ctx: StudioContext) {
           const take = { ...(await saveTake(ctx.dataDir(), "videos", video.id, { bytes, mime: "video/mp4" }, "ai", "Rendered on this computer")), from: animation.id };
           return change(video.id, scene.id, (s) => ({ ...s, clips: [...s.clips, take], clip: take.id }));
         }
-        if (isMotion(asked.video) && asked.scene.madeBy === "ai") return { ok: false, error: `Scene ${asked.video.scenes.indexOf(asked.scene) + 1} is not animated yet. Animate it on the Storyboard tab first.` };
+        if (isMotion(asked.video) && asked.scene.madeBy === "ai") return { ok: false, error: `Scene ${asked.video.scenes.indexOf(asked.scene) + 1} is not animated yet. Animate it first, on the Storyboard step.` };
         const choice = choose("clip", override);
         // The start and end frames are drawn with the picture service in Settings.
         const source = await clipSource(videoId, sceneId, choose("picture", undefined));

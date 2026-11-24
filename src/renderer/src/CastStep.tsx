@@ -7,7 +7,7 @@ import { isMotion, styleLabel, suitsStyle, type Character, type StudioResult, ty
 import { api } from "./api";
 import { CharacterLooks } from "./CharacterLooks";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
-import { card, Chip, fieldClass, Icon, ICONS, primaryButton, quietButton, videoCast, type CastMember } from "./studioUi";
+import { card, Chip, fieldClass, Icon, ICONS, NextBar, primaryButton, quietButton, smallButton, videoCast, type CastMember } from "./studioUi";
 import { VoiceChooser } from "./VoicePicker";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -40,28 +40,17 @@ export function CastStep({
 
   return (
     <div className="space-y-5">
-      <section className={`${card} space-y-4`}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h3 className="font-display text-lg font-semibold">The cast of this video</h3>
-            <p className="mt-0.5 max-w-2xl text-sm opacity-60">
-              {nobody
-                ? "No characters and no narrator: you say every line yourself, so there is nothing to set up."
-                : info.unready === 0
-                  ? "Everyone in this script has what they need."
-                  : "Each role needs a voice to speak and pictures to look the same in every scene. Give a role to a character you already have and theirs are reused."}
-            </p>
-          </div>
-          <div className="text-right">
-            <button type="button" className={`${info.unready === 0 ? primaryButton : quietButton} inline-flex items-center gap-2`} onClick={onNext}>
-              On to the storyboard
-              <Icon d={ICONS.arrow} />
-            </button>
-            {info.unready > 0 && <p className="mt-1.5 text-xs opacity-55">{plural(info.unready, "cast member")} still to set up</p>}
-          </div>
-        </div>
-
-        {!nobody && (
+      {info.unready === 0 ? (
+        <NextBar title={nobody ? "Nobody to set up" : "Everyone is ready"} note={nobody ? "You say every line yourself." : "Each role has a voice and pictures, so they look and sound the same in every scene."} action="Go to storyboards" onAction={onNext} />
+      ) : (
+        <NextBar title={`Set up ${plural(info.unready, "cast member")}`} note="Each role needs a voice and a portrait, so it looks and sounds the same in every scene. Give a role to a character you already have and theirs are reused.">
+          <button type="button" className={smallButton} onClick={onNext} title="Storyboards can be drawn now; lines without a voice wait.">
+            Skip for now
+          </button>
+        </NextBar>
+      )}
+      {!nobody && <section className={`${card} space-y-4`}>
+        {(
           <ul className="flex flex-wrap gap-2" aria-label="Who is in this video">
             {info.members.map((m) => (
               <li key={m.character.id}>
@@ -96,16 +85,7 @@ export function CastStep({
             )}
           </ul>
         )}
-
-        {info.members.length > 0 && choices && (
-          <details className="border-t border-[var(--line)] pt-3 text-sm">
-            <summary className="cursor-pointer text-xs opacity-60 hover:opacity-100">Picture service</summary>
-            <div className="mt-3 max-w-sm">
-              <ServicePicker task="picture" label="Character pictures made with" value={choices.picture} keys={keys} onChange={(c) => setChoice("picture", c)} stacked />
-            </div>
-          </details>
-        )}
-      </section>
+      </section>}
 
       {info.members.map((member) => (
         <MemberCard

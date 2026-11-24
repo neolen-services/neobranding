@@ -1,6 +1,8 @@
-# Personal Brand
+<p align="center"><img src="docs/logo.png" alt="AI Shorts" width="240"></p>
 
-A desktop app that helps one creator build a personal brand with short videos (Reels, Shorts, TikTok). You define your brand, save posts that worked for other creators, let Claude break down why they worked, turn that into your own ideas, and make those ideas into videos scripted scene by scene. An in-app agent can do all of it for you from a chat.
+# AI Shorts
+
+AI Shorts is a desktop app that helps one creator build a personal brand with short videos (Reels, Shorts, TikTok). You define your brand, save posts that worked for other creators, let Claude break down why they worked, turn that into your own ideas, and make those ideas into videos scripted scene by scene. An in-app agent can do all of it for you from a chat.
 
 Everything runs on your own computer with your own API keys. There are no accounts and no server.
 
@@ -100,7 +102,7 @@ The app shows the estimated cost on each button before you press it. Saving post
 
 ## Your data
 
-Everything you create is kept in **one folder** on your computer, by default `Documents/Personal Brand`:
+Everything you create is kept in **one folder** on your computer, by default `Documents/Personal Brand` (the app's first name, kept so existing folders still open):
 
 - `personal-brand.db`: your brand, ideas, cast, series, videos and their scripts, agent chats and saved keys
 - `videos/` and `cast/`: the pictures and clips made for scenes, and characters' reference pictures

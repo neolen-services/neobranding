@@ -157,7 +157,7 @@ export function VideoAssets({ video, onBack }: { video: Video; onBack: () => voi
           );
         })
       )}
-      <p className="text-xs opacity-55">The one each scene uses now has a coloured edge. Earlier attempts are kept until you remove them on the Storyboard or Make tab.</p>
+      <p className="text-xs opacity-55">The one each scene uses now has a coloured edge. Earlier attempts are kept until you remove them on the scene's card, on the Storyboard or Clips step.</p>
     </div>
   );
 }

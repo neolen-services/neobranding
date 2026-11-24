@@ -14,6 +14,7 @@ import { AssetsView } from "./AssetsView";
 import { CastView } from "./CastView";
 import { OpenVideoContext, StudioView } from "./StudioView";
 import { brandVars } from "./theme";
+import logoMark from "./assets/logo-mark.png";
 
 type Page = "dashboard" | "agent" | "brand" | "cast" | "assets" | "ideas" | "edit" | "research" | "studio" | "usage" | "settings";
 
@@ -147,9 +148,14 @@ export function App() {
       {/* The menu is either full width or minimised to a strip of icons. */}
       {
         <aside className={`flex shrink-0 flex-col text-white ${sidebarOpen ? "w-60 p-3" : "w-14 px-2 py-3"}`}>
-          <div className={`flex items-center gap-2.5 py-3 ${sidebarOpen ? "px-3" : "justify-center"}`} title={brand.name}>
-            <span className="h-3 w-3 shrink-0 rounded-full bg-[var(--accent)]" />
-            {sidebarOpen && <span className="truncate font-display font-semibold">{brand.name}</span>}
+          <div className={`flex items-center gap-2.5 py-2 ${sidebarOpen ? "px-2" : "justify-center"}`} title={`AI Shorts · ${brand.name}`}>
+            <img src={logoMark} alt="AI Shorts" className="h-9 w-9 shrink-0" />
+            {sidebarOpen && (
+              <span className="min-w-0 leading-tight">
+                <span className="block font-display font-semibold">AI Shorts</span>
+                <span className="block truncate text-xs opacity-60">{brand.name}</span>
+              </span>
+            )}
           </div>
 
           <button

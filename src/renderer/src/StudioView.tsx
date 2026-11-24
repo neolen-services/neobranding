@@ -164,7 +164,7 @@ export function StudioView({
   ];
   const withProgress = videos.map((video) => ({ video, progress: videoProgress(video, cast, brand) }));
   const active = withProgress.filter((v) => v.progress.done < STAGES.length);
-  const posted = withProgress.filter((v) => v.progress.done === STAGES.length);
+  const finished = withProgress.filter((v) => v.progress.done === STAGES.length);
   const empty = videos.length === 0 && series.length === 0;
 
   return (
@@ -216,11 +216,11 @@ export function StudioView({
                   ))}
                 </ul>
               )}
-              {posted.length > 0 && (
+              {finished.length > 0 && (
                 <section>
-                  <h2 className={`${label} mb-3`}>Posted</h2>
+                  <h2 className={`${label} mb-3`}>Finished</h2>
                   <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {posted.map(({ video, progress }) => (
+                    {finished.map(({ video, progress }) => (
                       <VideoCard key={video.id} video={video} progress={progress} series={series.find((s) => s.id === video.seriesId)} onOpen={() => setOpen({ kind: "video", id: video.id })} />
                     ))}
                   </ul>
@@ -281,7 +281,10 @@ function VideoCard({ video, progress, series, onOpen }: { video: Video; progress
           <span className="line-clamp-2 font-medium leading-snug">{series ? `Episode ${video.episode ?? ""}` : video.title}</span>
           <span className="mt-1 truncate text-xs opacity-60">{(series ? meta.slice(1) : meta).join(" · ")}</span>
           <span className="mt-auto block pt-3">
-            <ProgressBars done={progress.done} />
+            <span className="flex items-center gap-2">
+              <ProgressBars done={progress.done} />
+              <span className="truncate text-xs opacity-60">{progress.summary}</span>
+            </span>
             <span className={`mt-2 flex items-center gap-1.5 text-sm ${progress.waiting ? "font-medium text-[var(--accent)]" : "opacity-60"}`}>
               <span className="truncate">{progress.next}</span>
               {progress.waiting && <Icon d={ICONS.arrow} className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100" />}

@@ -44,6 +44,7 @@ export const ICONS = {
   copy: "M9 9h10v11H9zM5 15V4h10",
   search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4",
   filter: "M4 6h16M7 12h10M10 18h4",
+  gear: "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4",
 } as const;
 
 export const Chip = ({ children, tone = "plain" }: { children: ReactNode; tone?: "plain" | "strong" | "warn" | "good" }) => (
@@ -581,8 +582,29 @@ export function StylePicker({ value, onChange, disabled }: { value: string; onCh
   );
 }
 
-/** The tabs of a video's page, in the order the work is done. */
-export const STAGES = ["Idea", "Script", "Cast", "Storyboard", "Preview", "Make", "Finish"] as const;
+/** The steps of a video's page, in the order the work is done. Storyboard and Clips each show every scene at once. */
+export const STAGES = ["Script", "Cast", "Storyboard", "Clips", "Preview"] as const;
+
+/**
+ * The one thing to do next on a step, with the one main button for it. Every step of a video's page starts with one,
+ * so there is never more than one main button in view. `note` is a single short line: cost, time or what happens.
+ */
+export function NextBar({ title, note, action, busy, onAction, children }: { title: string; note?: string; action?: string; busy?: boolean; onAction?: () => void; children?: ReactNode }) {
+  return (
+    <section className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-[var(--primary)]/50 bg-[var(--primary)]/10 px-5 py-3.5">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium leading-snug">{title}</p>
+        {note && <p className="mt-0.5 text-xs opacity-65">{note}</p>}
+      </div>
+      {children}
+      {action && onAction && (
+        <button type="button" className={`${primaryButton} flex items-center gap-2`} disabled={busy} onClick={onAction}>
+          {action}
+        </button>
+      )}
+    </section>
+  );
+}
 
 /** One character in a video's script, and what the video still needs from them. */
 export type CastMember = { character: Character; /** How many lines they speak. */ lines: number; /** How many scenes they are seen or heard in. */ scenes: number; needs: string[] };
@@ -615,6 +637,8 @@ export type VideoProgress = {
   tab: number;
   /** The next thing to do, as a short instruction. */
   next: string;
+  /** How far the video has got, in a few words, e.g. "2 of 3 clips". */
+  summary: string;
   /** Whether that next thing is the creator's to do now (as opposed to finished). */
   waiting: boolean;
   aiLines: number;
@@ -649,23 +673,35 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
   const needPicture = ai.filter((s) => !boardId(s)).length;
   const needClip = video.scenes.filter((s, i) => s.madeBy === "ai" && (!pickedClip(s) || joinState(video.scenes, i) === "stale")).length;
   const needFilming = video.scenes.filter((s) => s.madeBy === "me" && !pickedClip(s)).length;
-  const base = { aiLines: lines.length, unvoiced, voiceless, needPicture, needClip, needFilming };
+  const unapproved = ai.filter((s) => !storyboardApproved(s)).length;
+  const withClip = video.scenes.filter((s, i) => pickedClip(s) && joinState(video.scenes, i) !== "stale").length;
+  // Where it stands overall, so a list shows real progress even while an earlier step still wants something.
+  const summary =
+    video.scenes.length === 0
+      ? "No script yet"
+      : !video.approvedAt
+        ? `Script of ${plural(video.scenes.length, "scene")}`
+        : withClip > 0 || (ai.length > 0 && unapproved === 0)
+          ? `${withClip} of ${plural(video.scenes.length, "clip")}`
+          : ai.length > 0
+            ? `${ai.length - unapproved} of ${plural(ai.length, board)} approved`
+            : `${plural(video.scenes.length, "scene")} to film`;
+  const base = { aiLines: lines.length, unvoiced, voiceless, needPicture, needClip, needFilming, summary };
 
-  if (video.scenes.length === 0) return { ...base, done: 1, tab: 1, next: "Write the script", waiting: true };
-  if (!video.approvedAt) return { ...base, done: 1, tab: 1, next: "Review and approve the script", waiting: true };
+  if (video.scenes.length === 0) return { ...base, done: 0, tab: 0, next: "Write the script", waiting: true };
+  if (!video.approvedAt) return { ...base, done: 0, tab: 0, next: "Review and approve the script", waiting: true };
   if (video.results) {
     const views = video.results.views;
-    return { ...base, done: 7, tab: 6, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
+    return { ...base, done: 5, tab: 4, next: views !== null ? `Posted · ${compact(views)} views` : "Posted", waiting: false };
   }
   const unready = videoCast(video, cast, brand).unready;
-  if (unready > 0) return { ...base, done: 2, tab: 2, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
-  if (needPicture > 0) return { ...base, done: 3, tab: 3, next: motion ? `Animate ${plural(needPicture, "scene")}` : `Make ${plural(needPicture, "storyboard")}`, waiting: true };
-  const unapproved = ai.filter((s) => !storyboardApproved(s)).length;
-  if (unapproved > 0) return { ...base, done: 3, tab: 3, next: `Approve ${plural(unapproved, board)}`, waiting: true };
-  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 4, tab: 4, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
-  if (needClip > 0) return { ...base, done: 5, tab: 5, next: motion ? `Render ${plural(needClip, "clip")}` : `Make ${plural(needClip, "clip")} from the storyboard`, waiting: true };
-  if (needFilming > 0) return { ...base, done: 5, tab: 5, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
-  return { ...base, done: 6, tab: 6, next: "Post it, then record how it did", waiting: true };
+  if (unready > 0) return { ...base, done: 1, tab: 1, next: `Set up ${plural(unready, "cast member")}`, waiting: true };
+  if (needPicture > 0) return { ...base, done: 2, tab: 2, next: motion ? `Animate ${plural(needPicture, "scene")}` : `Draw ${plural(needPicture, "storyboard")}`, waiting: true };
+  if (unapproved > 0) return { ...base, done: 2, tab: 2, next: `Approve ${plural(unapproved, board)}`, waiting: true };
+  if (needClip > 0) return { ...base, done: 3, tab: 3, next: motion ? `Render ${plural(needClip, "clip")}` : `Make ${plural(needClip, "clip")}`, waiting: true };
+  if (needFilming > 0) return { ...base, done: 3, tab: 3, next: `Film ${plural(needFilming, "scene")} and add ${needFilming === 1 ? "it" : "them"}`, waiting: true };
+  if (unvoiced > 0 && voiceless.length === 0) return { ...base, done: 3, tab: 3, next: `Make ${plural(unvoiced, "voice line")}`, waiting: true };
+  return { ...base, done: 5, tab: 4, next: "Ready: watch it through", waiting: false };
 }
 
 /** One short bar for each stage, filled for those already behind a video. */

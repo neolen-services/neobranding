@@ -1,6 +1,6 @@
-// The Storyboard tab of a motion graphics video. There are no pictures to draw: Claude writes
+// The Storyboard step of a motion graphics video. There are no pictures to draw: Claude writes
 // each scene as an animation, which plays right here. Animate them, watch, ask for changes,
-// approve. The Make tab then renders the approved animations to clips on this computer.
+// approve. The clips below then render the approved animations on this computer.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { animationPage, STAGE } from "@shared/motion";
 import { storyboardApproved, type Scene, type TakeResult, type Video } from "@shared/studio";
@@ -70,7 +70,7 @@ export function MotionBoard({
   setError: (message: string) => void;
   setNotice: (message: string) => void;
   onChange: (video: Video) => void;
-  /** Opens the Preview tab. */
+  /** Shows the clips, made from the approved animations. */
   onNext: () => void;
 }) {
   const [look, setLook] = useState(video.look);
@@ -149,7 +149,7 @@ export function MotionBoard({
   const next = [
     { text: `Animate ${plural(missing.length, "scene")}`, act: () => void animate(missing), note: "Claude designs the look of the whole video once, then animates each scene. Uses your Claude credits; a scene takes about a minute." },
     { text: `Approve all ${unapproved}`, act: () => void approveAll(), note: "Or approve them one at a time below, after watching each." },
-    { text: "Next: preview it", act: onNext, note: "Watch the animations play in order with the voices." },
+    { text: "Next: render the clips", act: onNext, note: "Every animation is approved." },
   ][stage];
 
   return (
@@ -283,7 +283,7 @@ function Panel({ video, scene, index, disabled, animating, onVideo }: { video: V
         ) : (
           <span className="flex flex-col items-center gap-2 px-4">
             <Icon d={filmed ? ICONS.camera : ICONS.ai} className="h-6 w-6 opacity-60" />
-            {filmed ? "You film this scene. Add your clip on the Make tab." : "Not animated yet"}
+            {filmed ? "You film this scene. Add your clip below." : "Not animated yet"}
           </span>
         )}
         {making && <span className="absolute inset-0 flex items-center justify-center bg-black/70 px-4 text-sm text-white">Animating… about a minute</span>}
