@@ -13,10 +13,11 @@ import { UsageView } from "./UsageView";
 import { AssetsView } from "./AssetsView";
 import { CastView } from "./CastView";
 import { OpenVideoContext, StudioView } from "./StudioView";
+import { EditorView, OpenEditorContext } from "./EditorView";
 import { brandVars } from "./theme";
 import logoMark from "./assets/logo-mark.png";
 
-type Page = "dashboard" | "agent" | "brand" | "cast" | "assets" | "ideas" | "edit" | "research" | "studio" | "usage" | "settings";
+type Page = "dashboard" | "agent" | "brand" | "cast" | "assets" | "ideas" | "edit" | "research" | "studio" | "editor" | "usage" | "settings";
 
 type Screen =
   | { name: "loading" }
@@ -32,6 +33,7 @@ const PAGE_TITLES: Record<Page, string> = {
   edit: "Edit brand",
   research: "Research",
   studio: "Studio",
+  editor: "Editor",
   cast: "Characters",
   assets: "Assets",
   usage: "Usage",
@@ -177,6 +179,7 @@ export function App() {
             {navItem("ideas", "Ideas", <Icon d="M4 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4zM17 10l4-2.5v9L17 14" />)}
             {navItem("research", "Research", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4" />)}
             {navItem("studio", "Studio", <Icon d="M4 9h16v10H4zM4 9l1.500-4 3 4 2-4 3 4 2-4 3 4" />)}
+            {navItem("editor", "Editor", <Icon d="M6 4v16M18 4v16M3 8h3M3 16h3M18 8h3M18 16h3M10 9l5 3-5 3z" />)}
             {navItem("cast", "Characters", <Icon d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 2.700-5 6-5s6 2 6 5M16 11a3 3 0 1 0 0-6M21 20c0-2.500-1.700-4.200-4-4.800" />)}
             {navItem("assets", "Assets", <Icon d="M4 6h7v7H4zM13 6h7v4h-7zM13 12h7v7h-7zM4 15h7v4H4z" />)}
           </nav>
@@ -294,7 +297,8 @@ export function App() {
         </header>
 
         <OpenVideoContext.Provider value={(id) => setScreen({ name: "studio", brand, focus: id })}>
-        <main className={`min-h-0 flex-1 ${page === "agent" ? "overflow-hidden" : "overflow-y-auto"}`}>
+        <OpenEditorContext.Provider value={(id) => setScreen({ name: "editor", brand, focus: id })}>
+        <main className={`min-h-0 flex-1 ${page === "agent" || page === "editor" ? "overflow-hidden" : "overflow-y-auto"}`}>
           {onAgentPage && (
             <AgentChatPanel
               chat={agent}
@@ -340,6 +344,7 @@ export function App() {
           {page === "studio" && (
             <StudioView key={screen.focus} brand={brand} focusId={screen.focus} onOpenSettings={openKeys} onOpenCast={() => go("cast")} onOpenBrand={() => go("brand")} />
           )}
+          {page === "editor" && <EditorView key={screen.focus} focusId={screen.focus} onOpenSettings={openKeys} />}
           {page === "cast" && <CastView brand={brand} onOpenSettings={openKeys} onOpenBrand={() => go("brand")} />}
           {page === "assets" && <AssetsView />}
           {page === "usage" && <UsageView />}
@@ -353,6 +358,7 @@ export function App() {
             />
           )}
         </main>
+        </OpenEditorContext.Provider>
         </OpenVideoContext.Provider>
       </div>
 

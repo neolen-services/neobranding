@@ -19,7 +19,7 @@ export type Secrets = { encrypt(plain: string): string; decrypt(stored: string):
 export type Store = ReturnType<typeof openStore>;
 
 /** Tables that each hold one kind of Studio record. The name is never taken from outside this code. */
-export type StudioTable = "characters" | "series" | "videos";
+export type StudioTable = "characters" | "series" | "videos" | "edits";
 
 export function openStore(dataDir: string, secrets: Secrets) {
   mkdirSync(dataDir, { recursive: true });
@@ -52,6 +52,11 @@ export function openStore(dataDir: string, secrets: Secrets) {
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS videos (
+      id         TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS edits (
       id         TEXT PRIMARY KEY,
       data       TEXT NOT NULL,
       created_at TEXT NOT NULL

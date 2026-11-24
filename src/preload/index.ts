@@ -3,6 +3,7 @@ import type { AgentChat, AgentChatSummary, AgentPermissions, AgentProgress, Agen
 import type { GeneratedAudio, VoicePreviewResult, VoicesResult } from "@shared/audio";
 import type { BrandKit, SaveResult } from "@shared/brand";
 import type { DataFolderInfo, DataFolderResult } from "@shared/data";
+import type { EditAgentReply, EditChatView, EditProject, EditResult, EditSummary, OverlayFrame } from "@shared/edit";
 import type { GenerateOptions, GenerateResult, Idea, IdeaSuggestion } from "@shared/ideas";
 import type { GroupingResult, ResearchEdit, ResearchItem, ResearchResult } from "@shared/research";
 import type { UsageReport } from "@shared/usage";
@@ -153,7 +154,34 @@ const api = {
   dataFolder: (): Promise<DataFolderInfo> => ipcRenderer.invoke("data:info"),
   openDataFolder: (): Promise<void> => ipcRenderer.invoke("data:open"),
   /** Shows the folder of one video's or character's files, or of the voice lines, in the file manager. */
-  openAssetsFolder: (folder: "videos" | "cast" | "audio", id: string): Promise<void> => ipcRenderer.invoke("assets:open", folder, id),
+  openAssetsFolder: (folder: "videos" | "cast" | "audio" | "edits", id: string): Promise<void> => ipcRenderer.invoke("assets:open", folder, id),
+
+  // The video editor.
+  listEdits: (): Promise<EditSummary[]> => ipcRenderer.invoke("edits:list"),
+  getEdit: (id: string): Promise<EditProject | null> => ipcRenderer.invoke("edits:get", id),
+  createEdit: (title: string): Promise<EditResult> => ipcRenderer.invoke("edits:create", title),
+  /** Saves the creator's own change to the timeline. */
+  updateEdit: (project: EditProject): Promise<EditResult> => ipcRenderer.invoke("edits:update", project),
+  deleteEdit: (id: string): Promise<void> => ipcRenderer.invoke("edits:delete", id),
+  importToEdit: (id: string, files: { name: string; file: UploadedFile }[]): Promise<EditResult> => ipcRenderer.invoke("edits:import", id, files),
+  /** Starts a project from a Studio video. */
+  editFromVideo: (videoId: string): Promise<EditResult> => ipcRenderer.invoke("edits:fromVideo", videoId),
+  /** Hears the words in a file with Deepgram. Uses Deepgram credit. */
+  transcribeEditAsset: (id: string, assetId: string): Promise<EditResult> => ipcRenderer.invoke("edits:transcribe", id, assetId),
+  exportEdit: (id: string, overlays: OverlayFrame[]): Promise<EditResult> => ipcRenderer.invoke("edits:export", id, overlays),
+  editExportProgress: (id: string): Promise<number | null> => ipcRenderer.invoke("edits:exportProgress", id),
+  editChat: (id: string): Promise<EditChatView> => ipcRenderer.invoke("edits:chat", id),
+  /** Asks the editing agent to change the project. Uses Claude credit. */
+  sendToEditor: (id: string, text: string): Promise<EditAgentReply> => ipcRenderer.invoke("edits:send", id, text),
+  editorProgress: (id: string): Promise<string | null> => ipcRenderer.invoke("edits:agentProgress", id),
+  clearEditChat: (id: string): Promise<void> => ipcRenderer.invoke("edits:clearChat", id),
+  /** Puts the timeline back as it was before one of the AI editor's turns. */
+  undoEditorTurn: (id: string, checkpoint: string): Promise<EditResult> => ipcRenderer.invoke("edits:undoTurn", id, checkpoint),
+  /** Makes any frame strips and waveforms the project's files are missing. */
+  prepareEdit: (id: string): Promise<EditProject | null> => ipcRenderer.invoke("edits:prepare", id),
+  remakeEditCaptions: (id: string, maxWords: number): Promise<EditResult> => ipcRenderer.invoke("edits:captions", id, maxWords),
+  /** Makes music with ElevenLabs and puts it under the video. Uses ElevenLabs credits. */
+  makeEditMusic: (id: string, description: string): Promise<EditResult> => ipcRenderer.invoke("edits:music", id, description),
   /** Switches to another folder, using data already there or copying the current data into it. */
   changeDataFolder: (path: string): Promise<DataFolderResult> => ipcRenderer.invoke("data:change", path),
   /** Opens the system's folder chooser and returns the chosen path, or "" if cancelled. */

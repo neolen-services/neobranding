@@ -1,6 +1,6 @@
 // One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Preview. Storyboard and Clips each show every scene at once.
 // Each tab shows only what that stage needs, and the header always says what to do next.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import type { Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
@@ -30,6 +30,7 @@ import { inOrder } from "./inOrder";
 import { SceneMedia } from "./SceneMedia";
 import { Player } from "./Player";
 import { ClipsTab, StoryboardTab } from "./Scenes";
+import { OpenEditorContext } from "./EditorView";
 import { MotionBoard } from "./MotionBoard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
 import { card, Chip, Dialog, fieldClass, Icon, ICONS, label, NextBar, postName, primaryButton, quietButton, SCRIPT_COST, smallButton, STAGES, videoCast, videoProgress, WORDS_PER_SECOND } from "./studioUi";
@@ -982,6 +983,15 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onNext 
 /** The last step: the whole video played in the page from the top, to watch it through as a viewer would. */
 function PreviewTab({ video, cast, progress, onClips }: Shared & { progress: Progress; onClips: () => void }) {
   const [copied, setCopied] = useState(false);
+  const openEditor = useContext(OpenEditorContext);
+  const [toEditor, setToEditor] = useState("");
+  /** Brings the clips, voices and text into a new editor project, where captions, music and the export are done. */
+  async function edit() {
+    setToEditor("Bringing it into the editor…");
+    const made = await api.editFromVideo(video.id).catch((e) => ({ ok: false as const, error: String(e?.message ?? e) }));
+    if (made.ok) openEditor(made.project.id);
+    else setToEditor(made.error);
+  }
   const withClip = video.scenes.filter((s, i) => pickedClip(s) && joinState(video.scenes, i) !== "stale").length;
   const all = withClip === video.scenes.length;
   return (
@@ -999,6 +1009,14 @@ function PreviewTab({ video, cast, progress, onClips }: Shared & { progress: Pro
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
         <Player video={video} cast={cast} inline />
         <div className="space-y-5">
+          <section className={card}>
+            <p className="font-display text-lg font-semibold">Finish it in the editor</p>
+            <p className="mt-1 text-sm opacity-65">Captions, music, sound effects, trims and the finished MP4. The AI editor can do most of it for you.</p>
+            <button type="button" className={`${primaryButton} mt-3`} disabled={toEditor.endsWith("…")} onClick={() => void edit()}>
+              {toEditor.endsWith("…") ? toEditor : "Open in the editor"}
+            </button>
+            {toEditor && !toEditor.endsWith("…") && <p className="mt-2 text-sm text-red-400">{toEditor}</p>}
+          </section>
           {video.caption && (
             <section className={card}>
               <div className="flex items-center justify-between gap-3">

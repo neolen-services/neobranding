@@ -21,6 +21,8 @@ import {
   type AgentContext,
 } from "./agent";
 import { listAudio, listVoices, voicePreview } from "./audio";
+import { editOps, exportProgress } from "./edit";
+import { clearEditChat, editAgentProgress, getEditChat, sendToEditor, undoEditorTurn } from "./editAgent";
 import { generateIdeas } from "./generate";
 import { copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
 import {
@@ -119,6 +121,8 @@ export function createHandlers(options: HandlerOptions) {
 
   // The cast, series and videos. The agent uses the same operations.
   const studio = studioOps(agent);
+  // The video editor: projects made from files or Studio videos, edited by the creator and by its own agent.
+  const edits = editOps(agent);
 
   const handlers: Handlers = {
     "cast:list": () => studio.cast(),
@@ -165,6 +169,33 @@ export function createHandlers(options: HandlerOptions) {
     "scene:flow": (videoId: unknown, sceneId: unknown, continues: unknown) => studio.sceneFlow(videoId, sceneId, continues),
     "scene:addFile": (videoId: unknown, sceneId: unknown, file: UploadedFile) => studio.addSceneFile(videoId, sceneId, file),
     "scene:changeTake": (videoId: unknown, sceneId: unknown, takeId: unknown, action: unknown) => studio.changeTake(videoId, sceneId, takeId, action),
+
+    "edits:list": () => edits.list(),
+    "edits:get": (id: unknown) => edits.find(id) ?? null,
+    "edits:create": (title: unknown) => edits.create(title),
+    /** Saves the creator's own change to a project's timeline. */
+    "edits:update": (project: unknown) => edits.update(project),
+    "edits:delete": (id: unknown) => edits.remove(id),
+    /** Adds files ({ name, file }[]) to a project. */
+    "edits:import": (id: unknown, files: unknown) => edits.importFiles(id, files),
+    /** Starts a project from a Studio video's clips, voices and on-screen text. */
+    "edits:fromVideo": (videoId: unknown) => edits.fromVideo(videoId),
+    "edits:transcribe": (id: unknown, assetId: unknown) => edits.transcribe(id, assetId, key("deepgram")),
+    /** Makes the MP4. `overlays` are the captions and text drawn by the interface. */
+    "edits:export": (id: unknown, overlays: unknown) => edits.exportVideo(id, overlays),
+    "edits:exportProgress": (id: unknown) => exportProgress(String(id)),
+    "edits:chat": (id: unknown) => getEditChat(agent, String(id)),
+    /** Runs the editing agent on the creator's message until it has answered. */
+    "edits:send": (id: unknown, text: unknown) => sendToEditor(agent, String(id), String(text ?? "")),
+    "edits:agentProgress": (id: unknown) => editAgentProgress(String(id)),
+    "edits:clearChat": (id: unknown) => clearEditChat(agent, String(id)),
+    /** Puts the timeline back as it was before one of the AI editor's turns. */
+    "edits:undoTurn": (id: unknown, checkpoint: unknown) => undoEditorTurn(agent, String(id), String(checkpoint)),
+    /** Makes any frame strips and waveforms a project's files are missing. */
+    "edits:prepare": (id: unknown) => edits.prepare(id),
+    "edits:captions": (id: unknown, maxWords: unknown) => edits.remakeCaptions(id, maxWords),
+    /** Makes music with ElevenLabs and puts it under the video. Uses ElevenLabs credits. */
+    "edits:music": (id: unknown, description: unknown) => edits.makeMusic(id, description, key("elevenlabs")),
 
     "brand:get": () => db().getBrand(),
     "brand:save": (input: unknown): SaveResult => {
@@ -270,7 +301,7 @@ export function createHandlers(options: HandlerOptions) {
     "data:info": () => dataInfo(),
     /** Shows, in the file manager, the folder of one video's or one character's files, or the folder of voice lines. */
     "assets:open": (folder: unknown, id: unknown) => {
-      const inside = folder === "audio" ? ["audio"] : (folder === "videos" || folder === "cast") && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [folder, id] : null;
+      const inside = folder === "audio" ? ["audio"] : (folder === "videos" || folder === "cast" || folder === "edits") && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [folder, id] : null;
       if (!inside) return;
       const path = join(dataDir, ...inside);
       mkdirSync(path, { recursive: true });

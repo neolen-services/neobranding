@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { createFalClient } from "@fal-ai/client";
+import { EDIT_FILE } from "../shared/edit";
 import { choiceLabel, mediaCost, MEDIA_FILE, MEDIA_PROVIDERS, type MediaChoice, type MediaTask, type Take, type UploadedFile } from "../shared/media";
 import type { ApiProvider } from "../shared/settings";
 import { recordUsage } from "./usage";
@@ -377,7 +378,8 @@ export const deleteTake = (dataDir: string, take: Take) => {
 
 /** Resolves a stored media path, or null if it is not a plain stored file. */
 export function mediaFilePath(dataDir: string, file: string): string | null {
-  return MEDIA_FILE.test(file) ? join(dataDir, file) : null;
+  // The editor's files (edits/<project>/<file>) are served the same way as Studio's.
+  return MEDIA_FILE.test(file) || EDIT_FILE.test(file) ? join(dataDir, file) : null;
 }
 
 /** A file handed over from the interface, as bytes. */

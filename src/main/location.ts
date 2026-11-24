@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 
 export const DB_FILE = "personal-brand.db";
 /** The files and folders that make up the user's data. */
-export const DATA_ENTRIES = [DB_FILE, "research", "audio", "telegram.json", "usage.jsonl", "videos", "cast"];
+export const DATA_ENTRIES = [DB_FILE, "research", "audio", "telegram.json", "usage.jsonl", "videos", "cast", "edits"];
 
 const POINTER_FILE = join(homedir(), ".personal-brand.json");
 
