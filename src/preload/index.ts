@@ -9,7 +9,7 @@ import type { GroupingResult, ResearchEdit, ResearchItem, ResearchResult } from 
 import type { UsageReport } from "@shared/usage";
 import type { MediaChoice, MediaSettings, UploadedFile } from "@shared/media";
 import type { TakeResult } from "@shared/studio";
-import type { Character, NewVideo, Series, SeriesStart, StudioResult, Video, VideoResults, VideoVoicesResult } from "@shared/studio";
+import type { Character, NewVideo, Series, SeriesStart, StudioResult, Video, VideoEffects, VideoResults, VideoVoicesResult } from "@shared/studio";
 import type { ApiProvider } from "@shared/settings";
 import type { TelegramStatus } from "@shared/telegram";
 
@@ -118,6 +118,15 @@ const api = {
   /** true approves the music, false takes the approval back, "none" chooses no music. */
   approveVideoMusic: (id: string, approved: boolean | "none"): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approveMusic", id, approved),
 
+  /** Has Claude plan the effects, or change them as the feedback says, and makes the sound effects. Uses Claude and ElevenLabs credits. */
+  effectsForVideo: (id: string, feedback: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:effects", id, feedback),
+  /** Makes any sound effects still missing. Uses ElevenLabs credits. */
+  makeVideoEffects: (id: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:makeEffects", id),
+  /** The creator's own change to the effects: a section's switch, the captions' look, one scene's transition, motion or look. */
+  changeVideoEffects: (id: string, changes: Partial<VideoEffects>): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:changeEffects", id, changes),
+  /** true approves the effects, false takes the approval back, "none" chooses no effects. */
+  approveVideoEffects: (id: string, approved: boolean | "none"): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approveEffects", id, approved),
+
   /** Saves how a posted video did. */
   recordVideoResults: (id: string, results: VideoResults): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:results", id, results),
 
@@ -171,6 +180,16 @@ const api = {
   updateEdit: (project: EditProject): Promise<EditResult> => ipcRenderer.invoke("edits:update", project),
   deleteEdit: (id: string): Promise<void> => ipcRenderer.invoke("edits:delete", id),
   importToEdit: (id: string, files: { name: string; file: UploadedFile }[]): Promise<EditResult> => ipcRenderer.invoke("edits:import", id, files),
+  /** The render behind a Studio video's Export step, with its last export, or null. */
+  videoExportProject: (videoId: string): Promise<EditProject | null> => ipcRenderer.invoke("videos:exportProject", videoId),
+  /** Builds that render afresh from everything Studio has, ready to export. */
+  buildVideoExport: (videoId: string): Promise<EditResult> => ipcRenderer.invoke("videos:buildExport", videoId),
+  /** Has Claude look at the exported video and say what a viewer would notice. Uses Claude credit. */
+  checkVideoExport: (videoId: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:finalCheck", videoId),
+  /** Has Claude write the caption, hashtags, title and description for each platform. Uses Claude credit. */
+  writePostKit: (videoId: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:postKit", videoId),
+  /** Makes the cover picture from the export's frame at `time`; `overlay` is the title drawn as a full-frame PNG. */
+  makeVideoCover: (videoId: string, time: number, title: string, overlay: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:cover", videoId, time, title, overlay),
   /** Starts a project from a Studio video. */
   editFromVideo: (videoId: string): Promise<EditResult> => ipcRenderer.invoke("edits:fromVideo", videoId),
   /** Hears the words in a file with Deepgram. Uses Deepgram credit. */

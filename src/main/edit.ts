@@ -28,6 +28,8 @@ import {
   type Look,
   type Motion,
   type OverlayFrame,
+  type Transition,
+  TRANSITION_SECONDS,
 } from "../shared/edit";
 import type { UploadedFile } from "../shared/media";
 import { parseCharacter, parseVideo, pickedClip, pickedPicture, speakerName, type Video } from "../shared/studio";
@@ -35,9 +37,12 @@ import { audioFilePath, generateMusic, generateSoundEffect } from "./audio";
 import { fromUpload, mediaFilePath } from "./media";
 import { ensureFfmpeg } from "./research";
 import type { Store } from "./store";
+import type { ApiProvider } from "../shared/settings";
 import { recordUsage } from "./usage";
 
 const EXE = process.platform === "win32" ? ".exe" : "";
+// Overridable so the calls can be tested against a stand-in server.
+const DEEPGRAM_API = process.env.DEEPGRAM_API_BASE?.trim() || "https://api.deepgram.com";
 const run = promisify(execFile);
 
 const EXTENSION_OF: Record<string, string> = {
@@ -64,7 +69,14 @@ const MAX_UPLOAD = 500 * 1024 * 1024;
 /** How long a picture is shown when it is put on the timeline. */
 const PICTURE_SECONDS = 3;
 
-export type EditContext = { dataDir: () => string; store: () => Store };
+export type EditContext = { dataDir: () => string; store: () => Store; /** Saved keys; Deepgram's times the words of Studio lines. */ key?: (provider: ApiProvider) => string };
+
+/** Room kept before a line's first word and after its last, and between one line and the next, in seconds. */
+const LEAD = 0.06;
+const TAIL = 0.18;
+const BREATH = 0.12;
+/** How long a scene runs on after its last word, so the cut does not clip it. */
+const SETTLE = 0.3;
 
 /** What is happening in an export right now, by project id: a share from 0 to 1. */
 const exporting = new Map<string, number>();
@@ -192,7 +204,23 @@ export function editOps(ctx: EditContext) {
       if (captions.length === 0) return { ok: false, error: "Nothing heard in this video has been transcribed yet. Transcribe its voice or video files first (in Media)." };
       return { ok: true, project: save({ ...project, captions, showCaptions: true }) };
     },
-    list: (): EditSummary[] => projects().map(summary).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    // The renders behind Studio's Export step are not the creator's own projects, so they are not listed.
+    list: (): EditSummary[] => projects().filter((p) => !p.forStudio).map(summary).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+
+    /** The render behind a Studio video's Export step, with its last export, or null when it was never exported. */
+    studioExport: (videoId: unknown) => projects().find((p) => p.forStudio === String(videoId)) ?? null,
+
+    /**
+     * Builds the render for a Studio video's Export step afresh from everything Studio has (clips, voices, music,
+     * captions and effects), in place of the one before (its files and its last export go with it).
+     */
+    async rebuildForStudio(videoId: unknown): Promise<EditResult> {
+      for (const old of projects().filter((p) => p.forStudio === String(videoId))) {
+        db().deleteDoc("edits", old.id);
+        await rm(folder(old.id), { recursive: true, force: true });
+      }
+      return this.fromVideo(videoId, true);
+    },
 
     create(title: unknown): EditResult {
       const name = String(title ?? "").trim().slice(0, 120) || "Untitled edit";
@@ -247,7 +275,45 @@ export function editOps(ctx: EditContext) {
      * each recorded line placed where its scene starts, the script's on-screen text, and captions from the words
      * of the script timed to the recordings.
      */
-    async fromVideo(videoId: unknown): Promise<EditResult> {
+    /**
+     * Hears each recorded line of a Studio video with Deepgram, once per recording, so captions follow the exact words
+     * and the silence around each line can be trimmed. Without a Deepgram key, nothing happens and times are estimated.
+     */
+    async timeLines(videoId: unknown): Promise<number> {
+      const key = ctx.key?.("deepgram") ?? "";
+      const video = db().listDocs<unknown>("videos").map(parseVideo).find((v) => v.id === String(videoId));
+      if (!key || !video) return 0;
+      let heard = 0;
+      const scenes: Video["scenes"] = [];
+      for (const scene of video.scenes) {
+        const lines: Video["scenes"][number]["lines"] = [];
+        for (const line of scene.lines) {
+          const path = line.audioFile && line.audioId && line.wordsFor !== line.audioId ? audioFilePath(ctx.dataDir(), line.audioFile) : null;
+          if (!path) {
+            lines.push(line);
+            continue;
+          }
+          try {
+            const got = await hearWords(path, key);
+            recordUsage({ feature: "transcript", detail: `Timing lines: ${video.title}`, seconds: got.seconds });
+            lines.push({ ...line, words: got.words, wordsFor: line.audioId });
+            heard++;
+          } catch {
+            // The line keeps estimated times.
+            lines.push(line);
+          }
+        }
+        scenes.push({ ...scene, lines });
+      }
+      if (heard) {
+        const now = db().listDocs<unknown>("videos").map(parseVideo).find((v) => v.id === video.id) ?? video;
+        db().saveDoc("videos", { ...now, scenes: now.scenes.map((s) => scenes.find((x) => x.id === s.id) ?? s) });
+      }
+      return heard;
+    },
+
+    async fromVideo(videoId: unknown, forStudio = false): Promise<EditResult> {
+      await this.timeLines(videoId).catch(() => 0);
       const raw = db().listDocs<unknown>("videos").map(parseVideo).find((v) => v.id === String(videoId));
       if (!raw) return { ok: false, error: "That Studio video is gone." };
       const video: Video = raw;
@@ -255,6 +321,7 @@ export function editOps(ctx: EditContext) {
       const cast = db().listDocs<unknown>("characters").map(parseCharacter);
       let project = emptyProject(randomUUID(), video.title);
       project.fromVideoId = video.id;
+      if (forStudio) project.forStudio = video.id;
       try {
         let t = 0;
         const sceneStart: number[] = [];
@@ -264,43 +331,75 @@ export function editOps(ctx: EditContext) {
           const picture = pickedPicture(scene);
           const take = clip ?? picture;
           const source = take ? mediaFilePath(ctx.dataDir(), take.file) : null;
-          // Lines are said one after another from where the scene starts, a little apart.
-          const lines: { asset: EditAsset; at: number }[] = [];
-          let said = 0.15;
+          // Lines are said one after another from where the scene starts, a breath apart, each trimmed to its words.
+          const lines: { asset: EditAsset; at: number; in: number; out: number }[] = [];
+          let said = 0.1;
           const ownSound = clip && (clip.source === "lipsync" || clip.source === "filmed");
           for (const [j, line] of scene.lines.entries()) {
             const path = line.audioFile ? audioFilePath(ctx.dataDir(), line.audioFile) : null;
             if (!path || ownSound) continue;
             const asset = await copyIn(project, path, `Scene ${i + 1}, line ${j + 1}: ${speakerName(line.speaker, cast)}`, "studio");
-            asset.words = estimateWords(line.text, asset.seconds);
-            asset.wordsEstimated = true;
-            lines.push({ asset, at: said });
-            said += asset.seconds + 0.12;
+            const heard = line.words?.length && line.wordsFor === line.audioId ? line.words : null;
+            asset.words = heard ?? estimateWords(line.text, asset.seconds);
+            asset.wordsEstimated = heard ? undefined : true;
+            const from = heard ? Math.max(heard[0].start - LEAD, 0) : 0;
+            const to = heard ? Math.min(heard[heard.length - 1].end + TAIL, asset.seconds) : asset.seconds;
+            lines.push({ asset, at: said, in: from, out: Math.max(to, from + 0.1) });
+            said += Math.max(to - from, 0.1) + BREATH;
             project.assets.push(asset);
           }
           if (source && existsSync(source)) {
             const asset = await copyIn(project, source, `Scene ${i + 1} ${clip ? "clip" : "storyboard"}`, "studio");
+            // A clip with its own speech (filmed, or lip-synced) is heard with Deepgram for exact captions and trimming.
             if (ownSound && scene.lines.length) {
-              asset.words = estimateWords(scene.lines.map((l) => l.text).join(" "), asset.seconds);
-              asset.wordsEstimated = true;
+              const key = ctx.key?.("deepgram") ?? "";
+              const heard = key && asset.hasAudio ? await hearWords(join(ctx.dataDir(), asset.file), key).catch(() => null) : null;
+              if (heard?.words.length) {
+                recordUsage({ feature: "transcript", detail: `Timing a clip: ${video.title}`, seconds: heard.seconds });
+                asset.words = heard.words;
+              } else {
+                asset.words = estimateWords(scene.lines.map((l) => l.text).join(" "), asset.seconds);
+                asset.wordsEstimated = true;
+              }
             }
             project.assets.push(asset);
             const c = newClip(asset);
-            if (!clip) c.out = Math.max(scene.seconds, said);
+            const spoken = said - BREATH;
+            if (!clip) c.out = Math.max(lines.length ? spoken + SETTLE : scene.seconds, 1);
+            else if (ownSound && asset.words?.length && !asset.wordsEstimated) {
+              // Its own speech decides where it starts and stops: no dead air either side.
+              c.in = Math.max(asset.words[0].start - 0.1, 0);
+              c.out = Math.min(asset.words[asset.words.length - 1].end + SETTLE, asset.seconds);
+            } else if (lines.length) {
+              // Cut a moment after the last word, so the scene never sits in silence.
+              c.out = Math.min(asset.seconds, Math.max(spoken + SETTLE, 1));
+            } else c.out = Math.min(asset.seconds, Math.max(scene.seconds, 1));
             // When the lines run longer than the clip, the clip is slowed to fit them (to half speed at most).
             const length = c.out - c.in;
-            if (clip && said > length + 0.2) c.speed = Math.max(length / said, 0.5);
+            if (clip && !ownSound && spoken + SETTLE > length + 0.05) c.speed = Math.max(length / (spoken + SETTLE), 0.5);
             if (asset.kind === "image") c.motion = "zoom-in";
+            // The effects planned in Studio: how the scene comes in, the camera, and the look.
+            const fx = video.effects;
+            const move = fx?.moves.on ? fx.moves.scenes.find((m) => m.scene === i + 1) : undefined;
+            if (move) {
+              c.transition = move.transition;
+              if (move.motion !== "none" || asset.kind !== "image") c.motion = move.motion;
+            }
+            const look = move?.look || (fx?.look.on ? fx.look.look : "");
+            if (look) c.look = look;
             project.clips.push(c);
           }
           // A scene with nothing to show yet (still to be filmed) takes only as long as its recorded lines.
           const shown = Boolean(source && existsSync(source));
           const sceneLength = shown ? clipLength(project.clips[project.clips.length - 1]) : lines.length ? said : 0;
-          for (const l of lines) project.audio.push(newAudio(l.asset, "voice", t + l.at));
-          if (scene.text && sceneLength > 0) project.texts.push({ id: randomUUID(), text: scene.text, start: t, end: t + Math.min(sceneLength, 3.5), position: "top", style: "title" });
+          for (const l of lines) project.audio.push({ ...newAudio(l.asset, "voice", t + l.at), in: l.in, out: l.out });
+          if (scene.text && sceneLength > 0) project.texts.push({ id: randomUUID(), text: scene.text, start: t, end: t + Math.min(sceneLength, 3.5), position: "top", style: "title", ...(video.effects?.textPop && { pop: true }) });
           t += sceneLength;
         }
         sceneStart.push(t);
+        // The end card: a call to action over the last seconds, popping in.
+        const card = video.effects?.endCard;
+        if (card?.on && card.text && t > 0) project.texts.push({ id: randomUUID(), text: card.text, start: Math.max(t - card.seconds, 0), end: t, position: "middle", style: "label", pop: true });
         // The video's music, each piece under the scenes it was chosen for. Music is kept low under speech by the export.
         for (const cue of video.music?.cues ?? []) {
           const path = cue.audioFile && cue.madeFrom === cue.prompt ? audioFilePath(ctx.dataDir(), cue.audioFile) : null;
@@ -311,11 +410,27 @@ export function editOps(ctx: EditContext) {
           const end = sceneStart[Math.min(cue.toScene, video.scenes.length)] ?? t;
           project.audio.push({ ...newAudio(asset, "music", start), out: Math.min(asset.seconds, Math.max(end - start, 0.5)), volume: cue.volume, fadeIn: 0.4, fadeOut: 0.8 });
         }
+        // The sound effects, each at its moment in its scene.
+        if (video.effects?.sounds.on) {
+          for (const sound of video.effects.sounds.items) {
+            const path = sound.audioFile && sound.madeFrom === sound.prompt ? audioFilePath(ctx.dataDir(), sound.audioFile) : null;
+            if (!path || sceneStart[sound.scene - 1] === undefined) continue;
+            const asset = await copyIn(project, path, `Sound: ${sound.label}`, "studio");
+            project.assets.push(asset);
+            project.audio.push({ ...newAudio(asset, "sfx", sceneStart[sound.scene - 1] + sound.at), volume: sound.volume });
+          }
+        }
       } catch (e) {
         await rm(folder(project.id), { recursive: true, force: true });
         return failed(e, "The video could not be brought in.");
       }
-      project.captions = captionsFromSpeech(project);
+      // Captions as planned in Studio's Effects step; without a plan, made from the words and shown.
+      const captionsFx = video.effects?.captions;
+      project.captions = captionsFromSpeech(project, captionsFx?.wordsAtATime ?? 3);
+      if (captionsFx) {
+        project.captionStyle = captionsFx.style;
+        project.showCaptions = captionsFx.on;
+      }
       project = save(project);
       return { ok: true, project };
     },
@@ -410,7 +525,13 @@ export function editOps(ctx: EditContext) {
         const srt = `edits/${project.id}/${name}.srt`;
         if (project.captions.length) await writeFile(join(ctx.dataDir(), srt), captionsToSrt(project.captions), "utf8");
         const latest = find(project.id) ?? project;
-        return { ok: true, project: save({ ...latest, exports: [{ file, srt: project.captions.length ? srt : "", seconds: total, createdAt: new Date().toISOString() }, ...latest.exports].slice(0, 10) }) };
+        const done = save({ ...latest, exports: [{ file, srt: project.captions.length ? srt : "", seconds: total, createdAt: new Date().toISOString() }, ...latest.exports].slice(0, 10) });
+        // A Studio video exported from its Export step is finished.
+        if (done.forStudio) {
+          const video = db().listDocs<unknown>("videos").map(parseVideo).find((v) => v.id === done.forStudio);
+          if (video) db().saveDoc("videos", { ...video, exportedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+        }
+        return { ok: true, project: done };
       } catch (e) {
         return failed(e, "The video could not be exported.");
       } finally {
@@ -450,10 +571,10 @@ export function captionsFromSpeech(project: EditProject, maxWords = 3) {
 }
 
 /** Sends a file to Deepgram and returns each word with its time. */
-async function hearWords(path: string, key: string): Promise<{ words: EditWord[]; seconds: number }> {
+export async function hearWords(path: string, key: string): Promise<{ words: EditWord[]; seconds: number }> {
   let response: Response;
   try {
-    response = await fetch("https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&language=multi", {
+    response = await fetch(`${DEEPGRAM_API}/v1/listen?model=nova-3&smart_format=true&punctuate=true&language=multi`, {
       method: "POST",
       headers: { Authorization: `Token ${key}`, "Content-Type": AUDIO_MIME[path.split(".").pop()!.toLowerCase()] ?? "application/octet-stream" },
       body: await readFile(path),
@@ -505,7 +626,7 @@ async function timelinePictures(dataDir: string, projectId: string, asset: EditA
 
 // ---------- Export ----------
 
-const LOOK_FILTERS: Record<Look, string> = {
+export const LOOK_FILTERS: Record<Look, string> = {
   none: "",
   warm: "colorbalance=rs=0.06:gs=0.01:bs=-0.06:rm=0.05:bm=-0.05",
   cool: "colorbalance=rs=-0.05:bs=0.07:rm=-0.04:bm=0.06",
@@ -520,6 +641,11 @@ function motionFilter(motion: Motion, frames: number, w: number, h: number, fps:
   if (motion === "none") return "";
   const n = Math.max(frames - 1, 1);
   const centre = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
+  if (motion === "shake") {
+    // A short shake as the clip starts, dying away over half a second.
+    const left = `max(0,1-on/${(fps * 0.5).toFixed(1)})`;
+    return `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+sin(on*2.3)*iw*0.022*${left}':y='ih/2-(ih/zoom/2)+cos(on*1.9)*ih*0.016*${left}':d=1:s=${w}x${h}:fps=${fps}`;
+  }
   const z =
     motion === "zoom-in" ? `z='1+0.12*on/${n}':${centre}` :
     motion === "zoom-out" ? `z='1.12-0.12*on/${n}':${centre}` :
@@ -527,6 +653,25 @@ function motionFilter(motion: Motion, frames: number, w: number, h: number, fps:
     motion === "pan-left" ? `z='1.15':x='(iw-iw/zoom)*(1-on/${n})':y='ih/2-(ih/zoom/2)'` :
     `z='1.15':x='(iw-iw/zoom)*on/${n}':y='ih/2-(ih/zoom/2)'`;
   return `zoompan=${z}:d=1:s=${w}x${h}:fps=${fps}`;
+}
+
+/** How a clip comes in, over its own first moments, as FFmpeg filters. */
+function transitionFilters(kind: Transition, d: number, w: number, h: number, fps: number): string[] {
+  const s = d.toFixed(2);
+  switch (kind) {
+    case "fade":
+      return [`fade=t=in:st=0:d=${s}`];
+    case "flash":
+      return [`fade=t=in:st=0:d=${s}:color=white`];
+    case "zoom": {
+      const frames = Math.max(Math.round(d * fps), 1);
+      return [`zoompan=z='if(lt(on,${frames}),1+0.3*(1-on/${frames}),1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${fps}`];
+    }
+    case "whip":
+      return [`gblur=sigma=40:steps=2:enable='lt(t,${(d / 2).toFixed(2)})'`, `gblur=sigma=14:enable='between(t,${(d / 2).toFixed(2)},${s})'`];
+    default:
+      return [];
+  }
 }
 
 /** FFmpeg changes speed in steps of half to double; other speeds are made from several steps. */
@@ -577,7 +722,7 @@ async function exportArgs(dataDir: string, p: EditProject, overlays: OverlayFram
       `fps=${fps}`,
       motionFilter(c.motion, frames, W, H, fps),
       LOOK_FILTERS[c.look],
-      c.transition === "fade" ? `fade=t=in:st=0:d=${Math.min(0.35, length / 2).toFixed(2)}` : "",
+      ...transitionFilters(c.transition, Math.min(TRANSITION_SECONDS, length / 2), W, H, fps),
       `trim=duration=${length.toFixed(3)}`,
       "setpts=PTS-STARTPTS",
       "format=yuv420p",

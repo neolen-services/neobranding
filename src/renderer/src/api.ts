@@ -90,6 +90,10 @@ const browserApi: Api = {
   musicForVideo: (id, feedback) => call("videos:music", id, feedback),
   makeVideoMusic: (id) => call("videos:makeMusic", id),
   approveVideoMusic: (id, approved) => call("videos:approveMusic", id, approved),
+  effectsForVideo: (id, feedback) => call("videos:effects", id, feedback),
+  makeVideoEffects: (id) => call("videos:makeEffects", id),
+  changeVideoEffects: (id, changes) => call("videos:changeEffects", id, changes),
+  approveVideoEffects: (id, approved) => call("videos:approveEffects", id, approved),
 
   usage: (since) => call("usage:get", since),
 
@@ -124,6 +128,11 @@ const browserApi: Api = {
   deleteEdit: (id) => call("edits:delete", id),
   importToEdit: (id, files) => call("edits:import", id, files.map((f) => ({ name: f.name, file: asJson(f.file) }))),
   editFromVideo: (videoId) => call("edits:fromVideo", videoId),
+  videoExportProject: (videoId) => call("videos:exportProject", videoId),
+  buildVideoExport: (videoId) => call("videos:buildExport", videoId),
+  checkVideoExport: (videoId) => call("videos:finalCheck", videoId),
+  writePostKit: (videoId) => call("videos:postKit", videoId),
+  makeVideoCover: (videoId, time, title, overlay) => call("videos:cover", videoId, time, title, overlay),
   transcribeEditAsset: (id, assetId) => call("edits:transcribe", id, assetId),
   exportEdit: (id, overlays) => call("edits:export", id, overlays),
   editExportProgress: (id) => call("edits:exportProgress", id),

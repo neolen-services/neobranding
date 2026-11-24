@@ -1,7 +1,7 @@
 // The editor's tool rail and the panel it opens beside the preview: Media, Captions, Text, Music and sound, Looks.
 // Each choice is shown as a picture (caption styles drawn, looks on a frame of your own clip) so it is picked by eye.
 import { useEffect, useRef, useState } from "react";
-import { CAPTION_STYLES, clipAt, LOOK_LABELS, LOOKS, MOTION_LABELS, MOTIONS, projectLength, type CaptionStyle, type EditAsset, type EditProject, type Look } from "@shared/edit";
+import { CAPTION_STYLES, clipAt, LOOK_LABELS, LOOKS, MOTION_LABELS, MOTIONS, projectLength, TRANSITION_LABELS, TRANSITIONS, type CaptionStyle, type EditAsset, type EditProject, type Look } from "@shared/edit";
 import { api } from "./api";
 import { drawCaptionSample, fontsReady } from "./EditDraw";
 import { LOOK_CSS } from "./EditPreview";
@@ -137,7 +137,7 @@ function MediaPanel({ project, working, onAddFiles, onTranscribe, onPlace }: Pan
 
 const SWATCHES = ["#FFFFFF", "#FFD400", "#3DDC84", "#39D5FF", "#FF4D8D", "#FF8A00", "#111111"];
 
-function Swatches({ value, onChange, name }: { value: string; onChange: (v: string) => void; name: string }) {
+export function Swatches({ value, onChange, name }: { value: string; onChange: (v: string) => void; name: string }) {
   return (
     <div>
       <p className={`${label} mb-1.5`}>{name}</p>
@@ -154,7 +154,7 @@ function Swatches({ value, onChange, name }: { value: string; onChange: (v: stri
   );
 }
 
-function StyleCard({ style, active, onPick }: { style: CaptionStyle; active: boolean; onPick: () => void }) {
+export function StyleCard({ style, active, onPick }: { style: CaptionStyle; active: boolean; onPick: () => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     void fontsReady().then(() => canvas.current && drawCaptionSample(canvas.current, { ...style, size: 1.7 }, "This is it"));
@@ -360,10 +360,16 @@ function LooksPanel({ project, time, selected, onChange }: PanelProps) {
           ))}
         </div>
       </div>
-      <label className="flex items-center justify-between text-sm">
-        Fade in from black
-        <input type="checkbox" checked={clip.transition === "fade"} onChange={(e) => setClip({ transition: e.target.checked ? "fade" : "cut" })} />
-      </label>
+      <div>
+        <p className={`${label} mb-1.5`}>Comes in with</p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {TRANSITIONS.map((t) => (
+            <button key={t} type="button" aria-pressed={clip.transition === t} onClick={() => setClip({ transition: t })} className={`rounded-lg border px-2 py-1.5 text-xs ${clip.transition === t ? "border-[var(--primary)] bg-[var(--primary)]/15 font-medium" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+              {TRANSITION_LABELS[t]}
+            </button>
+          ))}
+        </div>
+      </div>
     </>
   );
 }

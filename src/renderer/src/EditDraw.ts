@@ -32,7 +32,7 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.fill();
 }
 
-function drawCaption(ctx: CanvasRenderingContext2D, caption: EditCaption, style: CaptionStyle, t: number, W: number, H: number) {
+export function drawCaption(ctx: CanvasRenderingContext2D, caption: EditCaption, style: CaptionStyle, t: number, W: number, H: number) {
   const words = caption.words.map((w) => (style.upper ? w.text.toUpperCase() : w.text));
   if (!words.length) return;
   const clean = style.name === "clean";
@@ -87,8 +87,24 @@ function drawCaption(ctx: CanvasRenderingContext2D, caption: EditCaption, style:
 
 const TEXT_Y: Record<EditText["position"], number> = { top: 0.15, middle: 0.45, bottom: 0.74 };
 
-function drawText(ctx: CanvasRenderingContext2D, item: EditText, W: number, H: number) {
+/** How big text that pops in is, `into` seconds after it appears: from small, past full size, then settling. */
+const popScale = (into: number) => (into >= 0.36 ? 1 : into < 0.25 ? 0.3 + (1.12 - 0.3) * (into / 0.25) : 1.12 - 0.12 * ((into - 0.25) / 0.11));
+
+function drawText(ctx: CanvasRenderingContext2D, item: EditText, W: number, H: number, t = Infinity) {
   const scale = W / 1080;
+  if (item.pop && t - item.start < 0.36) {
+    // Grows from the text's own centre.
+    const k = popScale(Math.max(t - item.start, 0));
+    const cy = TEXT_Y[item.position] * H;
+    ctx.save();
+    ctx.translate(W / 2, cy);
+    ctx.scale(k, k);
+    ctx.translate(-W / 2, -cy);
+    ctx.globalAlpha = Math.min(1, (t - item.start) / 0.15 + 0.2);
+    drawText(ctx, { ...item, pop: false }, W, H);
+    ctx.restore();
+    return;
+  }
   const px = Math.round((item.style === "title" ? 84 : item.style === "label" ? 50 : 56) * scale);
   ctx.font = `${item.style === "title" ? 700 : 600} ${px}px ${item.style === "title" ? DISPLAY : SANS}`;
   ctx.textAlign = "center";
@@ -124,7 +140,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, project: EditProject,
   const W = ctx.canvas.width;
   const H = ctx.canvas.height;
   ctx.clearRect(0, 0, W, H);
-  for (const item of project.texts) if (t >= item.start && t < item.end) drawText(ctx, item, W, H);
+  for (const item of project.texts) if (t >= item.start && t < item.end) drawText(ctx, item, W, H, t);
   if (project.showCaptions) {
     const caption = project.captions.find((c) => t >= c.start && t < c.end);
     if (caption) drawCaption(ctx, caption, project.captionStyle, t, W, H);
@@ -154,7 +170,11 @@ export async function overlayFrames(project: EditProject): Promise<OverlayFrame[
   await fontsReady();
   const total = projectLength(project);
   const times = new Set<number>([0, total]);
-  for (const t of project.texts) times.add(t.start).add(t.end);
+  for (const t of project.texts) {
+    times.add(t.start).add(t.end);
+    // A text that pops in gets a picture for each moment of its growing.
+    if (t.pop) for (let k = 1; k <= 6; k++) times.add(Math.min(t.start + k * 0.06, t.end));
+  }
   if (project.showCaptions) {
     for (const c of project.captions) {
       times.add(c.start).add(c.end);

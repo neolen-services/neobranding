@@ -22,6 +22,7 @@ import {
 } from "./agent";
 import { listAudio, listVoices, voicePreview } from "./audio";
 import { editOps, exportProgress } from "./edit";
+import { finishOps } from "./finish";
 import { clearEditChat, editAgentProgress, getEditChat, sendToEditor, undoEditorTurn } from "./editAgent";
 import { generateIdeas } from "./generate";
 import { copyData, DB_FILE, defaultDataDir, readDataDir, writeDataDir } from "./location";
@@ -123,6 +124,8 @@ export function createHandlers(options: HandlerOptions) {
   const studio = studioOps(agent);
   // The video editor: projects made from files or Studio videos, edited by the creator and by its own agent.
   const edits = editOps(agent);
+  // After a Studio video is exported: the final check, the posting kit and the cover.
+  const finish = finishOps(agent);
 
   const handlers: Handlers = {
     "cast:list": () => studio.cast(),
@@ -153,6 +156,14 @@ export function createHandlers(options: HandlerOptions) {
     "videos:makeMusic": (id: unknown) => studio.makeMusic(id),
     /** true approves the music, false takes it back, "none" chooses no music. */
     "videos:approveMusic": (id: unknown, approved: unknown) => studio.approveMusic(id, approved),
+    /** Has Claude plan the effects (or change them as the feedback says) and makes the sound effects. Uses Claude and ElevenLabs credits. */
+    "videos:effects": (id: unknown, feedback: unknown) => studio.effects(id, feedback),
+    /** Makes any sound effects still missing. Uses ElevenLabs credits. */
+    "videos:makeEffects": (id: unknown) => studio.makeEffects(id),
+    /** The creator's own change to the effects. */
+    "videos:changeEffects": (id: unknown, changes: unknown) => studio.changeEffects(id, changes),
+    /** true approves the effects, false takes it back, "none" chooses no effects. */
+    "videos:approveEffects": (id: unknown, approved: unknown) => studio.approveEffects(id, approved),
     "videos:results": (id: unknown, results: unknown) => studio.recordResults(id, results),
     // Pictures, clips and lip-sync. `choice` picks the service for this one request; without it the Settings default is used.
     "media:settings": () => studio.mediaSettings(),
@@ -186,6 +197,16 @@ export function createHandlers(options: HandlerOptions) {
     "edits:import": (id: unknown, files: unknown) => edits.importFiles(id, files),
     /** Starts a project from a Studio video's clips, voices and on-screen text. */
     "edits:fromVideo": (videoId: unknown) => edits.fromVideo(videoId),
+    /** The render behind a Studio video's Export step, or null when it was never exported. */
+    "videos:exportProject": (videoId: unknown) => edits.studioExport(videoId),
+    /** Builds that render afresh from Studio, ready to export. */
+    "videos:buildExport": (videoId: unknown) => edits.rebuildForStudio(videoId),
+    /** Has Claude look at the exported video and say what a viewer would notice. Uses Claude credit. */
+    "videos:finalCheck": (videoId: unknown) => finish.check(videoId),
+    /** Has Claude write the caption, hashtags, title and description for each platform. Uses Claude credit. */
+    "videos:postKit": (videoId: unknown) => finish.postKit(videoId),
+    /** Makes the cover picture from a frame of the export, with the title drawn over it. */
+    "videos:cover": (videoId: unknown, time: unknown, title: unknown, overlay: unknown) => finish.cover(videoId, time, title, overlay),
     "edits:transcribe": (id: unknown, assetId: unknown) => edits.transcribe(id, assetId, key("deepgram")),
     /** Makes the MP4. `overlays` are the captions and text drawn by the interface. */
     "edits:export": (id: unknown, overlays: unknown) => edits.exportVideo(id, overlays),

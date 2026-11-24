@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   CAPTION_STYLES,
+  TRANSITIONS,
   clipLength,
   clipStarts,
   LOOKS,
@@ -81,7 +82,7 @@ const CLIP_PROPS = {
   speed: { type: "number", description: "0.25 to 4. 1 is normal." },
   look: { type: "string", enum: [...LOOKS] },
   motion: { type: "string", enum: [...MOTIONS] },
-  transition: { type: "string", enum: ["cut", "fade"], description: "How the clip starts." },
+  transition: { type: "string", enum: [...TRANSITIONS], description: "How the clip comes in: cut, fade (from black), flash (white, for a reveal), zoom (a jump into a detail), whip (fast energy). Mostly cut." },
   volume: { type: "number", description: "Its own sound, 0 (muted) to 2." },
 } as const;
 
@@ -193,7 +194,7 @@ const TOOLS: Tool[] = [
           type: "array",
           items: {
             type: "object",
-            properties: { text: { type: "string" }, start: { type: "number" }, end: { type: "number" }, position: { type: "string", enum: ["top", "middle", "bottom"] }, style: { type: "string", enum: ["title", "label", "plain"] } },
+            properties: { text: { type: "string" }, start: { type: "number" }, end: { type: "number" }, position: { type: "string", enum: ["top", "middle", "bottom"] }, style: { type: "string", enum: ["title", "label", "plain"] }, pop: { type: "boolean", description: "Pops in as it appears." } },
             required: ["text", "start", "end"],
           },
         },
@@ -227,7 +228,7 @@ export function describeProject(p: EditProject): string {
     "",
     "Picture track:",
     ...(p.clips.length
-      ? p.clips.map((c, i) => `${i + 1}. ${showTime(starts[i])} to ${showTime(starts[i] + clipLength(c))}: ${name(c.assetId)} from ${c.in.toFixed(2)} to ${c.out.toFixed(2)}${c.speed !== 1 ? `, speed ${c.speed}` : ""}${c.look !== "none" ? `, look ${c.look}` : ""}${c.motion !== "none" ? `, ${c.motion}` : ""}${c.transition === "fade" ? ", fades in" : ""}${c.volume !== 1 ? `, own sound ${c.volume}` : ""}`)
+      ? p.clips.map((c, i) => `${i + 1}. ${showTime(starts[i])} to ${showTime(starts[i] + clipLength(c))}: ${name(c.assetId)} from ${c.in.toFixed(2)} to ${c.out.toFixed(2)}${c.speed !== 1 ? `, speed ${c.speed}` : ""}${c.look !== "none" ? `, look ${c.look}` : ""}${c.motion !== "none" ? `, ${c.motion}` : ""}${c.transition !== "cut" ? `, comes in with ${c.transition}` : ""}${c.volume !== 1 ? `, own sound ${c.volume}` : ""}`)
       : ["(empty)"]),
     "",
     "Sound:",
@@ -406,7 +407,7 @@ async function runTool(ctx: EditAgentContext, projectId: string, name: string, i
       speed: Math.min(Math.max(num(i.speed, base.speed), 0.25), 4),
       look: LOOKS.includes(i.look as never) ? (i.look as EditClip["look"]) : base.look,
       motion: MOTIONS.includes(i.motion as never) ? (i.motion as EditClip["motion"]) : base.motion,
-      transition: i.transition === "fade" || i.transition === "cut" ? i.transition : base.transition,
+      transition: TRANSITIONS.includes(i.transition as never) ? (i.transition as EditClip["transition"]) : base.transition,
       volume: Math.min(Math.max(num(i.volume, base.volume), 0), 2),
     };
   };
@@ -547,6 +548,7 @@ async function runTool(ctx: EditAgentContext, projectId: string, name: string, i
             end: Math.max(num(t.end, start + 2), start + 0.2),
             position: t.position === "middle" || t.position === "bottom" ? t.position : "top",
             style: t.style === "label" || t.style === "plain" ? t.style : "title",
+            ...(t.pop === true && { pop: true }),
           };
         });
       return commit({ ...project, texts }, texts.length ? `Set ${texts.length} text${texts.length === 1 ? "" : "s"} over the picture` : "Removed the text over the picture");

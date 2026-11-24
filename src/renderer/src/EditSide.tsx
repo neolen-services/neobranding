@@ -1,7 +1,7 @@
 // The editor's right-hand panel. "AI" is the conversation with the AI editor, one card per turn with what it
 // changed and a way to undo that turn. "Selected" holds the controls for whatever is picked on the timeline.
 import { useEffect, useRef, type ReactNode } from "react";
-import { clipLength, clipStarts, LOOK_LABELS, LOOKS, MOTION_LABELS, MOTIONS, showTime, type EditChatView, type EditClip, type EditProject, type EditText } from "@shared/edit";
+import { clipLength, clipStarts, LOOK_LABELS, LOOKS, MOTION_LABELS, MOTIONS, showTime, TRANSITION_LABELS, TRANSITIONS, type EditChatView, type EditClip, type EditProject, type EditText } from "@shared/edit";
 import type { Change, Selection } from "./EditTimeline";
 import { fieldClass, Icon, ICONS, label, smallButton } from "./studioUi";
 
@@ -195,8 +195,8 @@ export function SelectedControls({ project, selected, time, onChange, onSelect, 
           <Chips value={c.look} options={LOOKS} labels={LOOK_LABELS} onChange={(v) => set({ look: v })} />
         </div>
         <div>
-          <p className={`${label} mb-1.5`}>Starts with</p>
-          <Chips value={c.transition} options={["cut", "fade"] as const} labels={{ cut: "A cut", fade: "A fade from black" }} onChange={(v) => set({ transition: v })} />
+          <p className={`${label} mb-1.5`}>Comes in with</p>
+          <Chips value={c.transition} options={TRANSITIONS} labels={TRANSITION_LABELS} onChange={(v) => set({ transition: v })} />
         </div>
         <button type="button" className={smallButton} disabled={!inside} onClick={onSplit} title="S">
           Split at the playhead (S)
@@ -237,6 +237,10 @@ export function SelectedControls({ project, selected, time, onChange, onSelect, 
           <p className={`${label} mb-1.5`}>Style</p>
           <Chips value={text.style} options={["title", "label", "plain"] as const} labels={{ title: "Title", label: "Label", plain: "Plain" }} onChange={(v) => set({ style: v })} />
         </div>
+        <label className="flex items-center justify-between text-sm">
+          Pops in
+          <input type="checkbox" checked={text.pop === true} onChange={(e) => set({ pop: e.target.checked || undefined })} />
+        </label>
       </div>
     );
   }

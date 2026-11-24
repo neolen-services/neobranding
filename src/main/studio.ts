@@ -30,8 +30,12 @@ import {
   musicScenesKey,
   platformLabel,
   type MusicCue,
+  type SceneEffect,
+  type SceneSound,
+  type VideoEffects,
   type VideoMusic,
 } from "../shared/studio";
+import { CAPTION_STYLES, DEFAULT_CAPTION_STYLE, LOOKS, MOTIONS, TRANSITIONS } from "../shared/edit";
 import { describeClaudeError } from "./analyze";
 import { generateSpeech } from "./audio";
 import { describeBrand } from "./generate";
@@ -856,6 +860,184 @@ export async function planMusic(
       costUsd: (before?.costUsd ?? 0) + costUsd,
     };
     return { ok: true, value: { music, reply: out.reply.trim(), costUsd } };
+  } catch (e) {
+    return { ok: false, error: describeClaudeError(e) };
+  }
+}
+
+// ---------- Effects ----------
+
+const EFFECTS_SYSTEM = `You choose the effects for a short vertical video (Reels, Shorts, TikTok) from its script: captions, how each scene comes in, how the camera moves, sound effects, and the colour look. The creator watches the result and tells you what to change.
+
+The first rule: effects serve the story and stay out of its way. A short with an effect on every cut feels cheap. Most cuts are plain cuts.
+
+Captions: almost every short needs them, so they are on unless the creator says otherwise. Pick a style that suits the video: "karaoke" (the word being said lights up in the accent colour) for fast talking videos, "bold" (big white words with an outline) for punchy ones, "clean" (smaller, soft shadow) for calm or aesthetic ones, "boxed" (on a solid band) for busy pictures. Two or three words at a time read best. Keep them at a height of about 0.62 to 0.7 so the platform's buttons do not cover them.
+
+Transitions, one for each scene after the first: "cut" by default, and always for a scene that carries straight on from the one before. "fade" (from black) for a change of time or a calm new beat; "flash" (white) for a reveal or a punchline; "zoom" for a jump into a detail or a sudden realisation; "whip" for fast energy between places. Use at most one transition for every three cuts that is not a cut.
+
+Motion: "none" by default. "punch-in" on the scene with the key line, to give it weight. "zoom-in" or "zoom-out" on calm or still shots. "pan-left" or "pan-right" to show a wide place. "shake" only for a real impact (a hit, a crash, a shock). Scenes made by the creator's own camera can still get a punch-in.
+
+Look: one colour look for the whole video, or "none" when the footage is fine as it is: "warm" for cosy or nostalgic, "cool" for calm or clinical, "vivid" for energetic, "contrast" for drama, "bw" for serious or memory, "faded" for retro. Give one scene its own look only when it means something (a flashback, a dream); otherwise leave the scene's look empty.
+
+Sound effects, made by an AI sound service from your description: a soft whoosh with a whip, a pop or click when on-screen text appears, a riser before a reveal, an impact with a shake, or the sound of the place under a scene (a quiet café, rain, a street). Put each at its moment: seconds from the start of its scene. Keep them few: about one for every two or three scenes. Volume 0.3 to 0.7, under the voices. Describe each plainly in English, with no real brand or film named; give its length in seconds (0.5 to 10).
+
+textPop: whether on-screen text pops in. Yes for energetic videos, no for calm ones.
+
+End card: a short call to action shown over the last seconds, e.g. "Follow for more" with the creator's handle when one is given, or a question that invites comments. Under 40 characters, in the video's language. On for most videos; off when the video ends on a punchline that a card would spoil.
+
+Each section has a switch (on). Turn a section off only when the video is better without it or the creator asks.
+
+When the creator gives feedback on your plan: change exactly what they asked for and nothing else. A sound you leave as it was keeps its prompt word for word and is marked keep: true. In reply, tell the creator in one or two plain sentences what you changed.`;
+
+const EffectsSchema = z.object({
+  summary: z.string(),
+  reply: z.string(),
+  captions: z.object({ on: z.boolean(), style: z.enum(CAPTION_STYLES), color: z.string(), accent: z.string(), upper: z.boolean(), size: z.number(), height: z.number(), words_at_a_time: z.number() }),
+  moves: z.object({
+    on: z.boolean(),
+    scenes: z.array(z.object({ scene: z.number(), transition: z.enum(TRANSITIONS), motion: z.enum(MOTIONS), look: z.string(), why: z.string() })),
+  }),
+  sounds: z.object({
+    on: z.boolean(),
+    items: z.array(z.object({ scene: z.number(), at_seconds: z.number(), label: z.string(), prompt: z.string(), seconds: z.number(), volume: z.number(), keep: z.boolean() })),
+  }),
+  look: z.object({ on: z.boolean(), look: z.enum(LOOKS) }),
+  text_pop: z.boolean(),
+  end_card: z.object({ on: z.boolean(), text: z.string() }),
+});
+
+const colourOr = (v: string, fallback: string) => (/^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toUpperCase() : fallback);
+
+/** Plans a video's effects, or changes an earlier plan as the creator's feedback asks. Sounds kept as they were keep their files. */
+export async function planEffects(
+  apiKey: string,
+  video: Video,
+  characters: Character[],
+  feedback: string,
+  brand: BrandKit | null = null,
+): Promise<StudioResult<{ effects: VideoEffects; costUsd: number }>> {
+  if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+  if (video.scenes.length === 0) return { ok: false, error: "Write the script first." };
+  let t = 0;
+  const scenes = video.scenes
+    .map((s, i) => {
+      const at = t;
+      t += s.seconds;
+      return [
+        `Scene ${i + 1} (${at}s to ${t}s, ${s.madeBy === "me" ? "filmed by the creator" : "made with AI"}, ${i > 0 && s.continues ? "carries straight on from the scene before" : i === 0 ? "the opening" : "a new shot"}${s.place ? `, at: ${s.place}` : ""})`,
+        `What happens: ${s.action}`,
+        s.camera ? `Camera: ${s.camera}` : "",
+        s.sound ? `Sound: ${s.sound}` : "",
+        s.text ? `On screen: ${s.text}` : "",
+        s.lines.length ? `Said: ${s.lines.map((l) => `${speakerName(l.speaker, characters)}: ${l.text}`).join(" / ")}` : "Nobody speaks.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const music = video.music?.cues.length ? `THE MUSIC\n${video.music.cues.map((c) => `Scenes ${c.fromScene} to ${c.toScene}: ${c.label}`).join("\n")}` : "THE MUSIC\nNone.";
+  const before = video.effects;
+  const earlier = before
+    ? `YOUR PLAN SO FAR\n${JSON.stringify({
+        summary: before.summary,
+        captions: { on: before.captions.on, ...before.captions.style, words_at_a_time: before.captions.wordsAtATime },
+        moves: before.moves,
+        sounds: { on: before.sounds.on, items: before.sounds.items.map((s) => ({ scene: s.scene, at_seconds: s.at, label: s.label, prompt: s.prompt, seconds: s.seconds, volume: s.volume })) },
+        look: before.look,
+        text_pop: before.textPop,
+        end_card: before.endCard,
+      })}`
+    : "";
+  const rounds = before?.rounds.length ? `EARLIER FEEDBACK\n${before.rounds.map((r) => `- ${r.feedback}`).join("\n")}` : "";
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.beta.messages
+      .stream({
+        model: "claude-opus-5-5",
+        max_tokens: 12000,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default" as const,
+        system: EFFECTS_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: [
+              `THE VIDEO\n${video.title}${video.brief ? `\nAbout: ${video.brief}` : ""}${platformLabel(video.platform) ? `\nPosted on: ${platformLabel(video.platform)}` : ""}`,
+              `THE SCRIPT\n${scenes}`,
+              music,
+              brand?.platforms.some((p) => p.handle.trim()) ? `THE CREATOR'S HANDLES\n${brand.platforms.filter((p) => p.handle.trim()).map((p) => `${p.platform}: ${p.handle.trim()}`).join("\n")}` : "",
+              earlier,
+              rounds,
+              feedback ? `THE CREATOR'S FEEDBACK NOW\n${feedback}` : "Plan the effects.",
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          },
+        ],
+        output_config: { format: betaZodOutputFormat(EffectsSchema) },
+      })
+      .finalMessage();
+    recordClaude("effects_plan", response.usage, video.title);
+    if (response.stop_reason === "refusal") return { ok: false, error: "Claude declined to plan effects for this video." };
+    const out = response.parsed_output;
+    if (response.stop_reason === "max_tokens" || !out) return { ok: false, error: "The plan came back incomplete. Try again." };
+    const count = video.scenes.length;
+    const scene = (n: number) => Math.min(Math.max(Math.round(n), 1), count);
+    const looks = new Set<string>(LOOKS);
+    const moves: SceneEffect[] = video.scenes.map((s, i) => {
+      const told = out.moves.scenes.find((m) => scene(m.scene) === i + 1);
+      // A scene that carries straight on is never broken by a transition.
+      const forced = i === 0 || (s.continues && i > 0);
+      const transition = forced ? "cut" : (told?.transition ?? "cut");
+      // A reason written for a transition that was not kept would describe something the scene does not do.
+      const why = forced && told && told.transition !== "cut" ? (i === 0 ? "" : "It carries straight on from the scene before, so it stays a cut.") : (told?.why.trim() ?? "");
+      return { scene: i + 1, transition, motion: told?.motion ?? "none", look: told && looks.has(told.look) ? (told.look as SceneEffect["look"]) : "", why };
+    });
+    const sounds: SceneSound[] = out.sounds.items
+      .filter((x) => x.prompt.trim())
+      .map((x) => {
+        const prompt = x.prompt.trim();
+        const same = x.keep ? before?.sounds.items.find((s) => s.prompt === prompt) : undefined;
+        const n = scene(x.scene);
+        return {
+          id: same?.id ?? randomUUID(),
+          scene: n,
+          at: Math.min(Math.max(x.at_seconds, 0), video.scenes[n - 1].seconds),
+          label: x.label.trim() || "Sound",
+          prompt,
+          seconds: Math.min(Math.max(x.seconds, 0.5), 10),
+          volume: Math.min(Math.max(x.volume, 0.05), 1),
+          audioId: same?.audioId ?? "",
+          audioFile: same?.audioFile ?? "",
+          madeFrom: same?.madeFrom ?? "",
+        };
+      });
+    const costUsd = estimateCostUsd(response.usage);
+    const effects: VideoEffects = {
+      summary: out.summary.trim(),
+      captions: {
+        on: out.captions.on,
+        style: {
+          name: out.captions.style,
+          y: Math.min(Math.max(out.captions.height, 0.2), 0.8),
+          color: colourOr(out.captions.color, DEFAULT_CAPTION_STYLE.color),
+          accent: colourOr(out.captions.accent, DEFAULT_CAPTION_STYLE.accent),
+          upper: out.captions.upper,
+          size: Math.min(Math.max(out.captions.size, 0.6), 1.6),
+        },
+        wordsAtATime: Math.min(Math.max(Math.round(out.captions.words_at_a_time), 1), 5),
+      },
+      moves: { on: out.moves.on, scenes: moves },
+      sounds: { on: out.sounds.on, items: sounds },
+      look: { on: out.look.on, look: out.look.look },
+      textPop: out.text_pop,
+      endCard: { on: out.end_card.on && out.end_card.text.trim() !== "", text: out.end_card.text.trim().slice(0, 120), seconds: before?.endCard.seconds ?? 2.5 },
+      rounds: [...(before?.rounds ?? []), ...(feedback ? [{ feedback, reply: out.reply.trim(), at: new Date().toISOString() }] : [])],
+      scenesKey: musicScenesKey(video),
+      approvedAt: "",
+      costUsd: (before?.costUsd ?? 0) + costUsd,
+    };
+    return { ok: true, value: { effects, costUsd } };
   } catch (e) {
     return { ok: false, error: describeClaudeError(e) };
   }

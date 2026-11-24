@@ -1,4 +1,4 @@
-// One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Music, Preview. Storyboard and Clips each show every scene at once.
+// One video, worked on a step at a time: Script, Cast, Storyboard, Clips, Music, Effects, Export. Storyboard and Clips each show every scene at once.
 // Each tab shows only what that stage needs, and the header always says what to do next.
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
@@ -7,7 +7,7 @@ import type { ResearchItem } from "@shared/research";
 import {
   approvalProblem,
   EVIDENCE_LABELS,
-  joinState, pickedClip,
+  effectsState, joinState, musicState, pickedClip, pickedPicture, POST_LIMITS, type FixStep,
   boardId,
   isMotion,
   storyboardApproved,
@@ -22,7 +22,9 @@ import {
   type Series,
   type Video,
 } from "@shared/studio";
+import { emptyProject, type EditProject } from "@shared/edit";
 import { api } from "./api";
+import { drawOverlay, fontsReady, overlayFrames } from "./EditDraw";
 import { VideoAssets } from "./AssetsView";
 import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
@@ -31,6 +33,7 @@ import { SceneMedia } from "./SceneMedia";
 import { Player } from "./Player";
 import { ClipsTab, StoryboardTab } from "./Scenes";
 import { MusicStep } from "./MusicStep";
+import { EffectsStep } from "./EffectsStep";
 import { OpenEditorContext } from "./EditorView";
 import { MotionBoard } from "./MotionBoard";
 import { ServicePicker, useMediaChoices, useMediaKeys } from "./ServicePicker";
@@ -127,7 +130,7 @@ export function VideoPage({
   const shared = { video, cast, brand, busy, run, save, setError, setNotice, onChange };
   /** A short note beside a step's name: what it still wants. */
   const badge = (i: number) =>
-    i === 1 && approved && castInfo.unready > 0 ? `${castInfo.unready} to set up` : (i === 2 || i === 3 || i === 4) && approved && progress.tab === i && progress.waiting ? progress.next.toLowerCase() : "";
+    i === 1 && approved && castInfo.unready > 0 ? `${castInfo.unready} to set up` : i >= 2 && i <= 5 && approved && progress.tab === i && progress.waiting ? progress.next.toLowerCase() : "";
 
   if (assets) return <VideoAssets video={video} onBack={() => setAssets(false)} />;
 
@@ -209,7 +212,8 @@ export function VideoPage({
         {tab === 3 && approved && !isMotion(video) && <ClipsTab {...shared} progress={progress} onOpenCast={() => setTab(1)} onStoryboards={() => setTab(2)} onNext={() => setTab(4)} />}
         {tab === 3 && approved && isMotion(video) && <MakeTab {...shared} progress={progress} onNext={() => setTab(4)} />}
         {tab === 4 && approved && <MusicStep video={video} setError={setError} setNotice={setNotice} onChange={onChange} onPlay={() => setPlaying(true)} onNext={() => setTab(5)} />}
-        {tab === 5 && approved && <PreviewTab {...shared} progress={progress} onClips={() => setTab(3)} />}
+        {tab === 5 && approved && <EffectsStep video={video} setError={setError} setNotice={setNotice} onChange={onChange} onPlay={() => setPlaying(true)} onNext={() => setTab(6)} />}
+        {tab === 6 && approved && <ExportTab {...shared} onGoTo={setTab} />}
       </div>
 
       {playing && <Player video={video} cast={cast} onClose={() => setPlaying(false)} />}
@@ -980,56 +984,375 @@ function MakeTab({ video, busy, setError, setNotice, onChange, progress, onNext 
   );
 }
 
-// ---------- Preview ----------
+// ---------- Export ----------
 
-/** The last step: the whole video played in the page from the top, to watch it through as a viewer would. */
-function PreviewTab({ video, cast, progress, onClips }: Shared & { progress: Progress; onClips: () => void }) {
-  const [copied, setCopied] = useState(false);
+const FIX_TAB: Record<FixStep, number> = { script: 0, cast: 1, storyboard: 2, clips: 3, music: 4, effects: 5, export: 6 };
+const FIX_LABEL: Record<FixStep, string> = { script: "Script", cast: "Cast", storyboard: "Storyboard", clips: "Clips", music: "Music", effects: "Effects", export: "Export" };
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+/**
+ * The last step: watch the whole video, export it, and get it ready to post. The export is built afresh from everything
+ * Studio has (clips, voices, music, captions, effects and the end card) into one 1080×1920 MP4. After each export,
+ * Claude checks the finished video and writes the posting kit; the creator picks a cover.
+ */
+function ExportTab({ video, cast, onChange, onGoTo }: Shared & { onGoTo: (tab: number) => void }) {
   const openEditor = useContext(OpenEditorContext);
   const [toEditor, setToEditor] = useState("");
-  /** Brings the clips, voices and text into a new editor project, where captions, music and the export are done. */
+  const [render, setRender] = useState<EditProject | null>(null);
+  const [stage, setStage] = useState<"" | "building" | "drawing" | "making">("");
+  const [share, setShare] = useState(0);
+  const [failed, setFailed] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [writing, setWriting] = useState(false);
+  useEffect(() => {
+    api.videoExportProject(video.id).then(setRender).catch(() => setRender(null));
+  }, [video.id]);
+
+  const refresh = async () => {
+    const fresh = (await api.listVideos().catch(() => [])).find((v) => v.id === video.id);
+    if (fresh) onChange(fresh);
+  };
+
   async function edit() {
     setToEditor("Bringing it into the editor…");
     const made = await api.editFromVideo(video.id).catch((e) => ({ ok: false as const, error: String(e?.message ?? e) }));
     if (made.ok) openEditor(made.project.id);
     else setToEditor(made.error);
   }
-  const withClip = video.scenes.filter((s, i) => pickedClip(s) && joinState(video.scenes, i) !== "stale").length;
-  const all = withClip === video.scenes.length;
+
+  async function check() {
+    setChecking(true);
+    try {
+      const result = await api.checkVideoExport(video.id);
+      if (result.ok) onChange(result.value);
+      else setFailed(result.error);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function writeKit() {
+    setWriting(true);
+    try {
+      const result = await api.writePostKit(video.id);
+      if (result.ok) onChange(result.value);
+      else setFailed(result.error);
+    } finally {
+      setWriting(false);
+    }
+  }
+
+  async function exportIt() {
+    setFailed("");
+    setShare(0);
+    try {
+      setStage("building");
+      const built = await api.buildVideoExport(video.id);
+      if (!built.ok) return setFailed(built.error);
+      setStage("drawing");
+      // Captions and text are drawn here exactly as the player shows them, then laid over the video by FFmpeg.
+      const frames = await overlayFrames(built.project);
+      setStage("making");
+      const timer = window.setInterval(async () => {
+        const s = await api.editExportProgress(built.project.id);
+        if (s !== null) setShare(s);
+      }, 600);
+      const made = await api.exportEdit(built.project.id, frames).finally(() => window.clearInterval(timer));
+      if (!made.ok) return setFailed(made.error);
+      setRender(made.project);
+      await refresh();
+    } catch (e) {
+      return setFailed(e instanceof Error ? e.message : "The video could not be exported.");
+    } finally {
+      setStage("");
+    }
+    // Every export is checked, and the first one gets its posting kit.
+    await Promise.all([check(), video.postKit ? Promise.resolve() : writeKit()]);
+  }
+
+  const last = render?.exports[0];
+  const running = stage !== "";
+  const stills = video.scenes.filter((s) => !pickedClip(s) && pickedPicture(s)).length;
+  const empty = video.scenes.filter((s) => !pickedClip(s) && !pickedPicture(s)).length;
+  const notes = [
+    stills > 0 && `${plural(stills, "scene")} ${stills === 1 ? "has" : "have"} no clip yet, so ${stills === 1 ? "its" : "their"} storyboard is shown.`,
+    empty > 0 && `${plural(empty, "scene")} ${empty === 1 ? "has" : "have"} nothing to show yet (to be filmed), so ${empty === 1 ? "it is" : "they are"} left out.`,
+    musicState(video) !== "approved" && "The music is not approved yet: what is planned is used, or none.",
+    effectsState(video) !== "approved" && "The effects are not approved yet: what is planned is used, or none.",
+  ].filter((n): n is string => Boolean(n));
+  const fc = video.finalCheck;
+  const fcCurrent = Boolean(fc && last && fc.exportFile === last.file);
+
   return (
     <div className="space-y-5">
-      {all ? (
-        <NextBar title="Every scene has its clip" note="Watch it through from the start. Joining the clips into one file is not built yet: download them from Assets and join them in your editor." />
-      ) : (
-        <NextBar
-          title={`${withClip} of ${plural(video.scenes.length, "scene")} have a clip`}
-          note={`The rest play from their storyboard, with the voices. Next: ${progress.next.charAt(0).toLowerCase()}${progress.next.slice(1)}.`}
-          action="Go to clips"
-          onAction={onClips}
-        />
+      <NextBar
+        title={running ? (stage === "building" ? "Gathering the clips, voices, music and effects, and timing every word…" : stage === "drawing" ? "Drawing the captions and text…" : `Making the video… ${Math.round(share * 100)}%`) : last ? "Your video is exported" : "Export the video"}
+        note={
+          running
+            ? "The video is made on your computer at no cost. Timing new voice lines uses a little Deepgram."
+            : last
+              ? `Exported ${new Date(last.createdAt).toLocaleString()}. Export again after any change; it replaces this one.`
+              : "One 1080×1920 MP4: captions timed to every word and burned in, pauses tightened, music under the voices, sound levelled for the platforms. Then Claude checks it and writes your posting kit (a few cents)."
+        }
+        action={running ? undefined : last ? "Export again" : "Export"}
+        busy={running || checking || writing}
+        onAction={() => void exportIt()}
+      >
+        {!running && stills + empty > 0 && (
+          <button type="button" className={smallButton} onClick={() => onGoTo(3)}>
+            Go to clips
+          </button>
+        )}
+      </NextBar>
+      {running && (
+        <div className="h-2 overflow-hidden rounded-full bg-[var(--tint)]" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+          <div className="h-full rounded-full bg-[var(--primary)] transition-[width]" style={{ width: `${stage === "making" ? Math.max(share * 100, 5) : 3}%` }} />
+        </div>
       )}
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-        <Player video={video} cast={cast} inline />
+      {failed && (
+        <p role="alert" className="rounded-xl border border-red-400/50 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-300">
+          {failed}
+        </p>
+      )}
+
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <div className="space-y-5">
+          <div className="space-y-2">
+            <p className={label}>Watch it through</p>
+            <Player video={video} cast={cast} inline />
+          </div>
+          {notes.length > 0 && (
+            <section className={card}>
+              <p className="font-display text-lg font-semibold">Before you export</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm opacity-75">
+                {notes.map((n) => (
+                  <li key={n}>{n}</li>
+                ))}
+              </ul>
+            </section>
+          )}
           <section className={card}>
-            <p className="font-display text-lg font-semibold">Finish it in the editor</p>
-            <p className="mt-1 text-sm opacity-65">Captions, music, sound effects, trims and the finished MP4. The AI editor can do most of it for you.</p>
-            <button type="button" className={`${primaryButton} mt-3`} disabled={toEditor.endsWith("…")} onClick={() => void edit()}>
+            <p className="font-display text-lg font-semibold">Fine-tune in the editor</p>
+            <p className="mt-1 text-sm opacity-65">Trim, reorder and change anything by hand or with the AI editor, then export from there. This export stays as it is.</p>
+            <button type="button" className={`${quietButton} mt-3`} disabled={toEditor.endsWith("…")} onClick={() => void edit()}>
               {toEditor.endsWith("…") ? toEditor : "Open in the editor"}
             </button>
             {toEditor && !toEditor.endsWith("…") && <p className="mt-2 text-sm text-red-400">{toEditor}</p>}
           </section>
-          {video.caption && (
-            <section className={card}>
-              <div className="flex items-center justify-between gap-3">
-                <p className={label}>Caption to post with it</p>
-                <CopyButton text={video.caption} copied={copied} onCopied={setCopied} />
+        </div>
+
+        <div className="space-y-5">
+          {last && render && (
+            <section className={`${card} flex flex-wrap gap-4`}>
+              <video key={last.file} controls src={api.studioFileUrl(last.file)} className="aspect-[9/16] w-36 rounded-xl bg-black object-cover" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <p className="font-display text-lg font-semibold">The exported video</p>
+                <p className="text-sm opacity-65">{Math.round(last.seconds)}s · 1080×1920 MP4</p>
+                <div className="flex flex-col gap-2">
+                  <a className={`${primaryButton} text-center`} href={api.studioFileUrl(last.file)} download={`${video.title}.mp4`}>
+                    Save a copy
+                  </a>
+                  {last.srt && (
+                    <a className={`${quietButton} text-center`} href={api.studioFileUrl(last.srt)} download={`${video.title}.srt`}>
+                      Captions file (.srt)
+                    </a>
+                  )}
+                  <button type="button" className={quietButton} onClick={() => void api.openAssetsFolder("edits", render.id)}>
+                    Show in folder
+                  </button>
+                </div>
               </div>
-              <p className="mt-2 whitespace-pre-wrap leading-relaxed">{video.caption}</p>
             </section>
           )}
+
+          {last && (
+            <section className={`${card} space-y-3`}>
+              <div className="flex items-center gap-3">
+                <p className="flex-1 font-display text-lg font-semibold">Final check</p>
+                <button type="button" className={smallButton} disabled={checking || running} onClick={() => void check()}>
+                  {checking ? "Checking…" : fc ? "Check again" : "Check it"}
+                </button>
+              </div>
+              {checking ? (
+                <p className="text-sm opacity-70">Claude is watching frames of the exported video and reading its captions…</p>
+              ) : !fc ? (
+                <p className="text-sm opacity-65">Claude looks at the finished video for what a viewer would notice: AI faults, a character who changes, captions over a face, a slow opening. A few cents.</p>
+              ) : (
+                <>
+                  {!fcCurrent && <p className="text-xs font-medium text-[var(--accent)]">This check is of an earlier export. Check again.</p>}
+                  <p className={`text-sm ${fc.ok ? "text-emerald-400" : "font-medium text-[var(--accent)]"}`}>{fc.ok ? "Ready to post. " : "Worth fixing before you post. "}<span className="font-normal text-[var(--ink)] opacity-80">{fc.summary}</span></p>
+                  {fc.issues.length > 0 && (
+                    <ul className="space-y-2">
+                      {fc.issues.map((x, i) => (
+                        <li key={i} className={`rounded-xl border px-3 py-2 text-sm ${x.serious ? "border-[var(--accent)]/50 bg-[var(--accent)]/10" : "border-[var(--line)]"}`}>
+                          <p className="text-xs opacity-60">
+                            {clock(x.time)}
+                            {x.scene ? ` · scene ${x.scene}` : ""}
+                            {x.serious ? " · would put viewers off" : ""}
+                          </p>
+                          <p className="leading-snug">{x.problem}</p>
+                          {x.fix && <p className="mt-1 text-xs opacity-70">Fix: {x.fix}</p>}
+                          {x.step !== "export" && (
+                            <button type="button" className={`${smallButton} mt-2`} onClick={() => onGoTo(FIX_TAB[x.step])}>
+                              Go to {FIX_LABEL[x.step]}
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {last && <CoverCard video={video} exportFile={last.file} seconds={last.seconds} onChange={onChange} />}
+
+          <PostKitCard video={video} writing={writing} onWrite={() => void writeKit()} />
         </div>
       </div>
     </div>
+  );
+}
+
+/** The cover: a frame of the export, picked with a slider, with an optional title over it. */
+function CoverCard({ video, exportFile, seconds, onChange }: { video: Video; exportFile: string; seconds: number; onChange: (v: Video) => void }) {
+  const [time, setTime] = useState(video.cover?.time ?? Math.min(1, seconds / 2));
+  const [title, setTitle] = useState(video.cover?.title ?? video.overlay ?? "");
+  const [making, setMaking] = useState(false);
+  const [error, setError] = useState("");
+  const preview = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (preview.current) preview.current.currentTime = time;
+  }, [time]);
+
+  async function make() {
+    setMaking(true);
+    setError("");
+    try {
+      let overlay = "";
+      if (title.trim()) {
+        await fontsReady();
+        const canvas = document.createElement("canvas");
+        canvas.width = 1080;
+        canvas.height = 1920;
+        const p = { ...emptyProject("cover", "cover"), showCaptions: false, texts: [{ id: "t", text: title.trim(), start: 0, end: 1, position: "middle" as const, style: "title" as const }] };
+        drawOverlay(canvas.getContext("2d")!, p, 0.5);
+        overlay = canvas.toDataURL("image/png");
+      }
+      const result = await api.makeVideoCover(video.id, time, title.trim(), overlay);
+      if (result.ok) onChange(result.value);
+      else setError(result.error);
+    } finally {
+      setMaking(false);
+    }
+  }
+
+  return (
+    <section className={`${card} space-y-3`}>
+      <p className="font-display text-lg font-semibold">Cover</p>
+      <p className="text-sm opacity-65">The picture in your profile grid. Pick the moment, add a few words if you like, and upload it as the cover when you post.</p>
+      <div className="flex flex-wrap gap-4">
+        <div className="relative aspect-[9/16] w-32 overflow-hidden rounded-xl bg-black">
+          <video ref={preview} src={api.studioFileUrl(exportFile)} muted preload="auto" className="h-full w-full object-cover" onLoadedData={(e) => (e.currentTarget.currentTime = time)} />
+          {title.trim() && <p className="absolute inset-x-1 top-1/2 -translate-y-1/2 text-center font-display text-sm font-bold leading-tight text-white [text-shadow:0_1px_3px_#000,0_0_2px_#000]">{title}</p>}
+        </div>
+        <div className="min-w-0 flex-1 space-y-3">
+          <label className="block text-xs">
+            <span className="mb-1 flex justify-between">
+              <span className="opacity-60">Moment</span>
+              <span className="tabular-nums opacity-60">{time.toFixed(1)}s</span>
+            </span>
+            <input type="range" className="w-full accent-[var(--primary)]" min={0} max={Math.max(seconds - 0.05, 0)} step={0.1} value={time} onChange={(e) => setTime(Number(e.target.value))} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block opacity-60">Title on the cover (optional)</span>
+            <input className={fieldClass} maxLength={60} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="A few words that make people tap" />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={smallButton} disabled={making} onClick={() => void make()}>
+              {making ? "Making…" : video.cover ? "Make it again" : "Make the cover"}
+            </button>
+            {video.cover && (
+              <a className={smallButton} href={api.studioFileUrl(video.cover.file)} download={`${video.title} cover.jpg`}>
+                Save the cover
+              </a>
+            )}
+          </div>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+        </div>
+        {video.cover && <img src={api.studioFileUrl(video.cover.file)} alt="The cover" className="aspect-[9/16] w-24 rounded-xl object-cover" />}
+      </div>
+    </section>
+  );
+}
+
+const PLATFORM_TABS = [
+  { id: "tiktok", name: "TikTok", label: "Turn on “AI-generated content” in the post's settings (under More options) before you post." },
+  { id: "instagram", name: "Instagram", label: "Turn on “AI label” under Advanced settings before you share the reel." },
+  { id: "youtube", name: "YouTube", label: "In the upload details, answer Yes to “Altered or synthetic content”." },
+] as const;
+
+/** What to post with the video on each platform, ready to copy. */
+function PostKitCard({ video, writing, onWrite }: { video: Video; writing: boolean; onWrite: () => void }) {
+  const [tab, setTab] = useState<(typeof PLATFORM_TABS)[number]["id"]>("tiktok");
+  const [copied, setCopied] = useState("");
+  const kit = video.postKit;
+  const usesAi = video.scenes.some((s) => s.madeBy === "ai");
+  const copy = (key: string, text: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      window.setTimeout(() => setCopied(""), 1500);
+    });
+  };
+  const tags = (list: string[]) => list.map((t) => `#${t}`).join(" ");
+  const field = (key: string, name: string, text: string, limit: number) => (
+    <div key={key} className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium opacity-70">{name}</span>
+        <span className={`tabular-nums ${text.length > limit ? "text-red-400" : "opacity-50"}`}>
+          {text.length}/{limit}
+        </span>
+      </div>
+      <div className="flex items-start gap-2">
+        <p className="min-w-0 flex-1 whitespace-pre-wrap rounded-lg bg-[var(--tint)] px-3 py-2 text-sm leading-relaxed">{text}</p>
+        <button type="button" className={smallButton} onClick={() => copy(key, text)}>
+          {copied === key ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+  const platform = PLATFORM_TABS.find((p) => p.id === tab)!;
+
+  return (
+    <section className={`${card} space-y-3`}>
+      <div className="flex items-center gap-3">
+        <p className="flex-1 font-display text-lg font-semibold">Posting kit</p>
+        <button type="button" className={smallButton} disabled={writing} onClick={onWrite}>
+          {writing ? "Writing…" : kit ? "Write it again" : "Write it"}
+        </button>
+      </div>
+      {!kit ? (
+        <p className="text-sm opacity-65">{writing ? "Claude is writing the caption, hashtags and titles for each platform…" : "The caption and hashtags for TikTok and Instagram, and the title and description for YouTube, each within that platform's limits. A few cents."}</p>
+      ) : (
+        <>
+          <div role="tablist" className="flex gap-1 border-b border-[var(--line)]">
+            {PLATFORM_TABS.map((p) => (
+              <button key={p.id} type="button" role="tab" aria-selected={tab === p.id} onClick={() => setTab(p.id)} className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${tab === p.id ? "border-[var(--primary)] font-medium" : "border-transparent opacity-60 hover:opacity-100"}`}>
+                {p.name}
+              </button>
+            ))}
+          </div>
+          {tab === "tiktok" && [field("tt", "Caption with hashtags", `${kit.tiktok.caption}\n\n${tags(kit.tiktok.hashtags)}`, POST_LIMITS.tiktokCaption)]}
+          {tab === "instagram" && [field("ig", "Caption with hashtags", `${kit.instagram.caption}\n\n${tags(kit.instagram.hashtags)}`, POST_LIMITS.instagramCaption)]}
+          {tab === "youtube" && [field("yt-title", "Title", kit.youtube.title, POST_LIMITS.youtubeTitle), field("yt-desc", "Description", `${kit.youtube.description}\n\n${tags(kit.youtube.hashtags)}`, POST_LIMITS.youtubeDescription)]}
+          {usesAi && (
+            <p className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs leading-relaxed">
+              <span className="font-medium">Label it as AI-made.</span> This video has scenes made with AI, and {platform.name} asks for realistic AI content to be labelled. {platform.label} The setting's name can differ in your version of the app.
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }

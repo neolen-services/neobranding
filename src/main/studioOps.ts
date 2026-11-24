@@ -26,14 +26,14 @@ import type { ApiProvider } from "../shared/settings";
 import { ensureFfmpeg, listResearch } from "./research";
 import type { ResearchItem } from "../shared/research";
 import type { Store } from "./store";
-import { planMusic, planSeries, reviewScript, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
+import { planEffects, planMusic, planSeries, reviewScript, reviewStoryboards, voiceVideo, writeVideo } from "./studio";
 import { animateScene, designMotion } from "./motion";
 import { animationPage } from "../shared/motion";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { choiceLabel, MEDIA_MODELS, parseChoice, parseMediaSettings, type MediaChoice, type MediaSettings, type MediaTask, type Take, type UploadedFile } from "../shared/media";
-import { boardId, characterReference, cueNeedsTrack, cueSeconds, DEFAULT_STYLE, isMotion, musicScenesKey, musicState, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
-import { audioFilePath, generateMusic } from "./audio";
+import { boardId, characterReference, cueNeedsTrack, cueSeconds, DEFAULT_STYLE, effectsState, isMotion, noEffects, parseEffects, soundNeedsMaking, musicScenesKey, musicState, stylePrompt, pickedClip, pickedPicture, speakerName, storyboardApproved, type Scene, type TakeResult } from "../shared/studio";
+import { audioFilePath, generateMusic, generateSoundEffect } from "./audio";
 import { deleteTake, forLooking, fromUpload, lastFrame, loadTake, makeClip, makeLipSync, makePicture, saveTake, type ClipReference, type Media } from "./media";
 
 const MEDIA_SETTING = "media_settings";
@@ -675,6 +675,81 @@ export function studioOps(ctx: StudioContext) {
       if (approved === true && state === "stale") return { ok: false, error: "The script changed after the music was planned. Plan it again first." };
       if (approved === true && state === "unmade") return { ok: false, error: "Make every track first, so you can hear what you approve." };
       const saved = { ...video, music: { ...video.music, approvedAt: approved === true ? at : "" }, updatedAt: at };
+      db().saveDoc("videos", saved);
+      return { ok: true, value: saved };
+    },
+
+    // ---------- Effects ----------
+
+    /**
+     * Has Claude plan the video's effects, or change them as the creator's feedback says, then makes the sound effects
+     * that are new or changed. Kept sounds keep their files. Any earlier approval is taken back.
+     */
+    async effects(id: unknown, feedback: unknown): Promise<StudioResult<Video>> {
+      const video = findVideo(id);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const said = typeof feedback === "string" ? feedback.trim().slice(0, 2000) : "";
+      const planned = await planEffects(ctx.key("anthropic"), video, cast(), said, db().getBrand());
+      if (!planned.ok) return planned;
+      const now = findVideo(video.id) ?? video;
+      const saved = { ...now, effects: planned.value.effects, updatedAt: new Date().toISOString() };
+      db().saveDoc("videos", saved);
+      return this.makeEffects(saved.id);
+    },
+
+    /** Makes every sound effect that has no file, or whose description changed. Uses ElevenLabs credits. */
+    async makeEffects(id: unknown): Promise<StudioResult<Video>> {
+      let video = findVideo(id);
+      if (!video?.effects) return { ok: false, error: "Plan the effects first." };
+      if (!video.effects.sounds.on) return { ok: true, value: video };
+      const due = video.effects.sounds.items.filter(soundNeedsMaking);
+      const key = ctx.key("elevenlabs");
+      if (due.length && !key) return { ok: false, error: "Add your ElevenLabs API key in Settings to make the sound effects." };
+      for (const sound of due) {
+        const made = await generateSoundEffect(ctx.dataDir(), key, { description: sound.prompt, seconds: sound.seconds, title: `${video.title}: ${sound.label}` });
+        if (!made.ok) return { ok: false, error: `"${sound.label}" could not be made: ${made.error}` };
+        const latest = findVideo(video.id);
+        if (!latest?.effects) return { ok: false, error: "That video no longer exists." };
+        video = {
+          ...latest,
+          effects: { ...latest.effects, sounds: { ...latest.effects.sounds, items: latest.effects.sounds.items.map((s) => (s.id === sound.id ? { ...s, audioId: made.audio.id, audioFile: made.audio.file, madeFrom: sound.prompt } : s)) } },
+          updatedAt: new Date().toISOString(),
+        };
+        db().saveDoc("videos", video);
+      }
+      return { ok: true, value: video };
+    },
+
+    /**
+     * The creator's own change to the effects: a section switched on or off, the captions' look, a scene's transition,
+     * motion or look, a sound removed. The rest is kept, and any approval is taken back.
+     */
+    changeEffects(id: unknown, changes: unknown): StudioResult<Video> {
+      const video = findVideo(id);
+      if (!video?.effects) return { ok: false, error: "Plan the effects first." };
+      const patch = (changes && typeof changes === "object" ? changes : {}) as Record<string, unknown>;
+      const merged = parseEffects({ ...video.effects, ...patch, rounds: video.effects.rounds, scenesKey: video.effects.scenesKey, costUsd: video.effects.costUsd, approvedAt: "" });
+      if (!merged) return { ok: false, error: "That change could not be read." };
+      const saved = { ...video, effects: merged, updatedAt: new Date().toISOString() };
+      db().saveDoc("videos", saved);
+      return { ok: true, value: saved };
+    },
+
+    /** The creator approves the effects (true), takes the approval back (false), or chooses no effects ("none"). */
+    approveEffects(id: unknown, approved: unknown): StudioResult<Video> {
+      const video = findVideo(id);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const at = new Date().toISOString();
+      if (approved === "none") {
+        const saved = { ...video, effects: noEffects(video), updatedAt: at };
+        db().saveDoc("videos", saved);
+        return { ok: true, value: saved };
+      }
+      if (!video.effects) return { ok: false, error: "Plan the effects first." };
+      const state = effectsState(video);
+      if (approved === true && state === "stale") return { ok: false, error: "The script changed after the effects were planned. Plan them again first." };
+      if (approved === true && state === "unmade") return { ok: false, error: "Make every sound effect first, so you can hear what you approve." };
+      const saved = { ...video, effects: { ...video.effects, approvedAt: approved === true ? at : "" }, updatedAt: at };
       db().saveDoc("videos", saved);
       return { ok: true, value: saved };
     },

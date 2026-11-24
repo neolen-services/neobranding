@@ -24,7 +24,7 @@ export function MusicStep({
   onChange: (video: Video) => void;
   /** Plays the whole video with its music. */
   onPlay: () => void;
-  /** Opens the Preview step. */
+  /** Opens the Effects step. */
   onNext: () => void;
 }) {
   const [doing, setDoing] = useState("");
@@ -75,7 +75,7 @@ export function MusicStep({
           ? { title: `Make ${toMake === 1 ? "1 piece" : `${toMake} pieces`} of music`, note: "Made by ElevenLabs, using your ElevenLabs credits.", action: "Make it", act: () => run("Making the music", () => api.makeVideoMusic(video.id)) }
           : state === "ready"
             ? { title: "Listen, then approve or say what to change", note: "Play the whole video to hear the music with the scenes and voices.", action: "Approve the music", act: () => approve(true) }
-            : { title: music?.cues.length ? "The music is approved" : "This video has no music", note: "Watch the whole video through on the last step.", action: "Go to preview", act: async () => onNext() };
+            : { title: music?.cues.length ? "The music is approved" : "This video has no music", note: "Next, the effects: captions, transitions, sound effects and the look.", action: "Go to effects", act: async () => onNext() };
 
   return (
     <div className="space-y-5">

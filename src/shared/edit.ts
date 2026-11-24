@@ -36,9 +36,16 @@ export const LOOKS = ["none", "warm", "cool", "bw", "vivid", "contrast", "faded"
 export type Look = (typeof LOOKS)[number];
 export const LOOK_LABELS: Record<Look, string> = { none: "None", warm: "Warm", cool: "Cool", bw: "Black and white", vivid: "Vivid", contrast: "Contrast", faded: "Faded film" };
 
-export const MOTIONS = ["none", "zoom-in", "zoom-out", "punch-in", "pan-left", "pan-right"] as const;
+export const MOTIONS = ["none", "zoom-in", "zoom-out", "punch-in", "pan-left", "pan-right", "shake"] as const;
 export type Motion = (typeof MOTIONS)[number];
-export const MOTION_LABELS: Record<Motion, string> = { none: "None", "zoom-in": "Slow zoom in", "zoom-out": "Slow zoom out", "punch-in": "Punch in", "pan-left": "Pan left", "pan-right": "Pan right" };
+export const MOTION_LABELS: Record<Motion, string> = { none: "None", "zoom-in": "Slow zoom in", "zoom-out": "Slow zoom out", "punch-in": "Punch in", "pan-left": "Pan left", "pan-right": "Pan right", shake: "Shake (an impact)" };
+
+/** How a clip comes in. Each plays over the clip's own first moments, so nothing moves in time. */
+export const TRANSITIONS = ["cut", "fade", "flash", "zoom", "whip"] as const;
+export type Transition = (typeof TRANSITIONS)[number];
+export const TRANSITION_LABELS: Record<Transition, string> = { cut: "Cut", fade: "Fade from black", flash: "White flash", zoom: "Zoom in", whip: "Whip blur" };
+/** How long a transition lasts, in seconds. */
+export const TRANSITION_SECONDS = 0.3;
 
 /** One piece of the main picture track. Pieces play one after another, in order. */
 export type EditClip = {
@@ -51,8 +58,8 @@ export type EditClip = {
   speed: number;
   look: Look;
   motion: Motion;
-  /** How this piece starts: a straight cut, or a quick fade up from black. */
-  transition: "cut" | "fade";
+  /** How this piece comes in. */
+  transition: Transition;
   /** Loudness of the clip's own sound, 0 (muted) to 2. */
   volume: number;
 };
@@ -102,7 +109,7 @@ export type TextPosition = "top" | "middle" | "bottom";
 export type TextStyleName = "title" | "label" | "plain";
 
 /** Text placed over the picture: a hook, a label, a call to action. */
-export type EditText = { id: string; text: string; start: number; end: number; position: TextPosition; style: TextStyleName };
+export type EditText = { id: string; text: string; start: number; end: number; position: TextPosition; style: TextStyleName; /** Pops in, growing from small with a little overshoot. */ pop?: boolean };
 
 export type EditExport = { file: string; srt: string; seconds: number; createdAt: string };
 
@@ -113,6 +120,11 @@ export type EditProject = {
   updatedAt: string;
   /** The Studio video it was started from, if any. */
   fromVideoId: string;
+  /**
+   * For the render behind a Studio video's Export step: that video's id. Such a project is rebuilt from Studio on each
+   * export and kept out of the Editor's list. "" for the creator's own projects.
+   */
+  forStudio: string;
   width: number;
   height: number;
   fps: number;
@@ -207,6 +219,7 @@ export function parseProject(input: unknown): EditProject {
     createdAt: str(p.createdAt, now),
     updatedAt: str(p.updatedAt, now),
     fromVideoId: str(p.fromVideoId),
+    forStudio: str(p.forStudio),
     width: num(p.width, 1080, 240, 4096),
     height: num(p.height, 1920, 240, 4096),
     fps: num(p.fps, 30, 12, 60),
@@ -221,7 +234,7 @@ export function parseProject(input: unknown): EditProject {
         speed: num(c.speed, 1, 0.25, 4),
         look: pick(c.look, LOOKS, "none"),
         motion: pick(c.motion, MOTIONS, "none"),
-        transition: pick(c.transition, ["cut", "fade"] as const, "cut"),
+        transition: pick(c.transition, TRANSITIONS, "cut"),
         volume: num(c.volume, 1, 0, 2),
       })),
     audio: list(p.audio)
@@ -254,6 +267,7 @@ export function parseProject(input: unknown): EditProject {
       end: num(t.end, 0, 0),
       position: pick(t.position, ["top", "middle", "bottom"] as const, "top"),
       style: pick(t.style, ["title", "label", "plain"] as const, "title"),
+      pop: t.pop === true || undefined,
     })),
     exports: list(p.exports)
       .filter((e) => EDIT_FILE.test(str(e.file)))
@@ -282,10 +296,10 @@ export function clipStarts(project: EditProject): number[] {
   return starts;
 }
 
-/** How long the whole video is: the picture track, or any sound or text that runs on past it. */
+/** How long the whole video is: the picture track, or a voice line that runs on past it. Music and sound effects are cut at the end. */
 export function projectLength(project: EditProject): number {
   const picture = project.clips.reduce((n, c) => n + clipLength(c), 0);
-  const sound = Math.max(0, ...project.audio.filter((a) => a.role !== "music").map((a) => a.start + Math.max(a.out - a.in, 0)));
+  const sound = Math.max(0, ...project.audio.filter((a) => a.role === "voice").map((a) => a.start + Math.max(a.out - a.in, 0)));
   return Math.max(picture, sound);
 }
 

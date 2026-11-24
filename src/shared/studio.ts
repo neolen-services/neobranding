@@ -3,6 +3,7 @@ import type { SpeakingVoice } from "./brand";
 import { VIDEO_FORMATS } from "./analysis";
 import { parseTakes, type Take } from "./media";
 import type { Animation } from "./motion";
+import { CAPTION_STYLES, DEFAULT_CAPTION_STYLE, LOOKS, MOTIONS, TRANSITIONS, type CaptionStyle, type Look, type Motion, type Transition } from "./edit";
 
 /** A recurring character. Made once and reused in any video or series. */
 export type Character = {
@@ -100,6 +101,10 @@ export type SceneLine = {
   /** The generated audio of this line (a file in the audio folder), once made. Never set for the creator's own lines. */
   audioId?: string;
   audioFile?: string;
+  /** Each word as heard in the recording, with its time in it; set once the recording is transcribed. */
+  words?: { text: string; start: number; end: number }[];
+  /** The recording those words were heard in (its audioId), so a new recording is transcribed again. */
+  wordsFor?: string;
 };
 
 /** One continuous shot of a few seconds: the unit a video is built from. */
@@ -317,6 +322,74 @@ export function musicState(video: Video): "none" | "stale" | "unmade" | "ready" 
   return m.approvedAt ? "approved" : "ready";
 }
 
+/** A sound effect on one scene: a whoosh, a pop, a riser, or the sound of the place. */
+export type SceneSound = {
+  id: string;
+  /** The scene it plays in, numbered from 1, and when, in seconds from that scene's start. */
+  scene: number;
+  at: number;
+  label: string;
+  /** What the sound service is asked for. */
+  prompt: string;
+  seconds: number;
+  volume: number;
+  audioId: string;
+  audioFile: string;
+  /** The prompt the sound was made from; a different prompt now means it is made again. */
+  madeFrom: string;
+};
+
+/** What one scene gets: how it comes in, how the camera moves, and its own look if it differs from the video's. */
+export type SceneEffect = { scene: number; transition: Transition; motion: Motion; look: Look | ""; why: string };
+
+/**
+ * The effects of a video, planned by Claude and changed with the creator's feedback until they approve them.
+ * Four sections, each with its own switch: captions, transitions and motion, sound effects, and the look.
+ */
+export type VideoEffects = {
+  summary: string;
+  captions: { on: boolean; style: CaptionStyle; wordsAtATime: number };
+  moves: { on: boolean; scenes: SceneEffect[] };
+  sounds: { on: boolean; items: SceneSound[] };
+  look: { on: boolean; look: Look };
+  /** On-screen text pops in. */
+  textPop: boolean;
+  /** A closing call to action over the last seconds: "Follow for more", the creator's handle. */
+  endCard: { on: boolean; text: string; seconds: number };
+  rounds: { feedback: string; reply: string; at: string }[];
+  scenesKey: string;
+  approvedAt: string;
+  costUsd: number;
+};
+
+export const soundNeedsMaking = (s: SceneSound) => !s.audioFile || s.madeFrom !== s.prompt;
+
+/** Where a video's effects stand. */
+export function effectsState(video: Video): "none" | "stale" | "unmade" | "ready" | "approved" {
+  const e = video.effects;
+  if (!e) return "none";
+  if (e.scenesKey !== musicScenesKey(video)) return "stale";
+  if (e.sounds.on && e.sounds.items.some(soundNeedsMaking)) return "unmade";
+  return e.approvedAt ? "approved" : "ready";
+}
+
+/** The effects for no effects at all, kept as a choice. */
+export function noEffects(video: Video): VideoEffects {
+  return {
+    summary: "No effects.",
+    captions: { on: false, style: DEFAULT_CAPTION_STYLE, wordsAtATime: 3 },
+    moves: { on: false, scenes: [] },
+    sounds: { on: false, items: [] },
+    look: { on: false, look: "none" },
+    textPop: false,
+    endCard: { on: false, text: "", seconds: 2.5 },
+    rounds: video.effects?.rounds ?? [],
+    scenesKey: musicScenesKey(video),
+    approvedAt: new Date().toISOString(),
+    costUsd: video.effects?.costUsd ?? 0,
+  };
+}
+
 export type Video = {
   id: string;
   title: string;
@@ -364,6 +437,8 @@ export type Video = {
   scriptReview: ScriptReview | null;
   /** The music, or null until it is planned. */
   music: VideoMusic | null;
+  /** The effects (captions, transitions and motion, sound effects, look), or null until they are planned. */
+  effects: VideoEffects | null;
   caption: string;
   /** For a remake: what was borrowed from the original and what is new. */
   kept: string[];
@@ -372,6 +447,14 @@ export type Video = {
   storyUpdate: string[];
   /** When the creator approved the script, or "". */
   approvedAt: string;
+  /** When the finished video was last exported from Studio, or "". */
+  exportedAt: string;
+  /** Claude's look at the exported video, or null until it has been checked. */
+  finalCheck: FinalCheck | null;
+  /** What to post with it on each platform, or null until it is written. */
+  postKit: PostKit | null;
+  /** The cover picture made from the export, or null. */
+  cover: { file: string; time: number; title: string } | null;
   /** How it did after posting, typed in by the creator. null until then. */
   results: VideoResults | null;
   /** Estimated Claude cost of writing it, in US dollars. */
@@ -441,7 +524,7 @@ export type Series = {
 };
 
 /** The stages of a video as the agent names them. */
-export const VIDEO_STAGES = ["Script", "Cast", "Storyboard", "Clips", "Music", "Preview"] as const;
+export const VIDEO_STAGES = ["Script", "Cast", "Storyboard", "Clips", "Music", "Effects", "Export"] as const;
 
 /** What comes back from making or adding a picture or clip. */
 export type TakeResult = { ok: true; video: Video } | { ok: false; error: string };
@@ -449,7 +532,8 @@ export type TakeResult = { ok: true; video: Video } | { ok: false; error: string
 /** How far a video has got: an index into VIDEO_STAGES. */
 export function videoStage(video: Video): number {
   if (video.scenes.length === 0 || !video.approvedAt) return 0;
-  if (video.results || video.music?.approvedAt) return 5;
+  if (video.results || video.exportedAt || video.effects?.approvedAt) return 6;
+  if (video.effects || video.music?.approvedAt) return 5;
   if (video.music) return 4;
   if (video.scenes.some((s) => s.clips.length > 0)) return 3;
   return video.scenes.some((s) => s.pictures.length > 0 || s.animation) ? 2 : 1;
@@ -590,6 +674,14 @@ function parseScene(input: Record<string, unknown>, index: number): Scene {
           delivery: str(l.delivery),
           // A stored file name is only ever a plain name inside the audio folder.
           ...(str(l.audioId) && /^[\w.-]+$/.test(file) ? { audioId: str(l.audioId), audioFile: file } : {}),
+          ...(Array.isArray(l.words) && str(l.wordsFor)
+            ? {
+                words: objs(l.words)
+                  .map((w) => ({ text: str(w.text), start: typeof w.start === "number" ? w.start : 0, end: typeof w.end === "number" ? w.end : 0 }))
+                  .filter((w) => w.text),
+                wordsFor: str(l.wordsFor),
+              }
+            : {}),
         };
       })
       .filter((l) => l.text),
@@ -663,15 +755,149 @@ export function parseVideo(input: unknown): Video {
       .filter((c) => c.rule),
     scriptReview: parseScriptReview(i.scriptReview),
     music: parseMusic(i.music),
+    effects: parseEffects(i.effects),
     caption: str(i.caption),
     kept: strs(i.kept),
     changed: strs(i.changed),
     storyUpdate: strs(i.storyUpdate),
     approvedAt: str(i.approvedAt),
+    exportedAt: str(i.exportedAt),
+    finalCheck: parseFinalCheck(i.finalCheck),
+    postKit: parsePostKit(i.postKit),
+    cover: (() => {
+      const c = i.cover && typeof i.cover === "object" ? (i.cover as Record<string, unknown>) : null;
+      return c && /^videos\/[\w-]{1,64}\/[\w-]{1,64}\.jpg$/.test(str(c.file)) ? { file: str(c.file), time: typeof c.time === "number" ? c.time : 0, title: str(c.title) } : null;
+    })(),
     results: i.results ? parseResults(i.results) : null,
     costUsd: typeof i.costUsd === "number" ? i.costUsd : 0,
     createdAt: str(i.createdAt) || now(),
     updatedAt: str(i.updatedAt) || now(),
+  };
+}
+
+/** Where in Studio a problem found in the finished video is put right. */
+export const FIX_STEPS = ["script", "cast", "storyboard", "clips", "music", "effects", "export"] as const;
+export type FixStep = (typeof FIX_STEPS)[number];
+
+/** Claude's look at the exported video: what a viewer would notice, and where each is fixed. */
+export type FinalCheck = {
+  /** The export it looked at, so a newer export shows the check is out of date. */
+  exportFile: string;
+  at: string;
+  ok: boolean;
+  summary: string;
+  issues: { time: number; scene: number; problem: string; fix: string; step: FixStep; serious: boolean }[];
+  costUsd: number;
+};
+
+/** What to post with the video on each platform, within each platform's limits. */
+export type PostKit = {
+  at: string;
+  tiktok: { caption: string; hashtags: string[] };
+  instagram: { caption: string; hashtags: string[] };
+  youtube: { title: string; description: string; hashtags: string[] };
+  costUsd: number;
+};
+
+/** The platforms' limits the posting kit is written to. */
+export const POST_LIMITS = { tiktokCaption: 2200, instagramCaption: 2200, instagramHashtags: 30, youtubeTitle: 100, youtubeDescription: 5000 };
+
+function parseFinalCheck(input: unknown): FinalCheck | null {
+  if (!input || typeof input !== "object") return null;
+  const c = input as Record<string, unknown>;
+  return {
+    exportFile: str(c.exportFile),
+    at: str(c.at),
+    ok: c.ok === true,
+    summary: str(c.summary),
+    issues: objs(c.issues).map((x) => ({
+      time: typeof x.time === "number" ? x.time : 0,
+      scene: typeof x.scene === "number" ? Math.max(0, Math.round(x.scene)) : 0,
+      problem: str(x.problem),
+      fix: str(x.fix),
+      step: (FIX_STEPS as readonly string[]).includes(str(x.step)) ? (str(x.step) as FixStep) : "export",
+      serious: x.serious === true,
+    })),
+    costUsd: typeof c.costUsd === "number" ? c.costUsd : 0,
+  };
+}
+
+function parsePostKit(input: unknown): PostKit | null {
+  if (!input || typeof input !== "object") return null;
+  const k = input as Record<string, unknown>;
+  const part = (v: unknown) => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+  const tags = (v: unknown) => strs(v).map((t) => t.replace(/^#*/, "").replace(/\s+/g, "")).filter(Boolean);
+  return {
+    at: str(k.at),
+    tiktok: { caption: str(part(k.tiktok).caption), hashtags: tags(part(k.tiktok).hashtags) },
+    instagram: { caption: str(part(k.instagram).caption), hashtags: tags(part(k.instagram).hashtags) },
+    youtube: { title: str(part(k.youtube).title), description: str(part(k.youtube).description), hashtags: tags(part(k.youtube).hashtags) },
+    costUsd: typeof k.costUsd === "number" ? k.costUsd : 0,
+  };
+}
+
+export function parseEffects(input: unknown): VideoEffects | null {
+  if (!input || typeof input !== "object") return null;
+  const e = input as Record<string, unknown>;
+  const num = (v: unknown, fallback: number, min = -Infinity, max = Infinity) => (typeof v === "number" && Number.isFinite(v) ? Math.min(Math.max(v, min), max) : fallback);
+  const part = (v: unknown) => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+  const on = (v: unknown) => part(v).on === true;
+  const pick = <T extends string>(v: unknown, options: readonly T[], fallback: T): T => (options.includes(v as T) ? (v as T) : fallback);
+  const caps = part(e.captions);
+  const st = part(caps.style);
+  const colour = (v: unknown, fallback: string) => (/^#[0-9a-f]{6}$/i.test(str(v)) ? str(v) : fallback);
+  return {
+    summary: str(e.summary),
+    captions: {
+      on: on(e.captions),
+      style: {
+        name: pick(st.name, CAPTION_STYLES, DEFAULT_CAPTION_STYLE.name),
+        y: num(st.y, DEFAULT_CAPTION_STYLE.y, 0.1, 0.9),
+        color: colour(st.color, DEFAULT_CAPTION_STYLE.color),
+        accent: colour(st.accent, DEFAULT_CAPTION_STYLE.accent),
+        upper: st.upper === true,
+        size: num(st.size, 1, 0.6, 1.6),
+      },
+      wordsAtATime: Math.round(num(caps.wordsAtATime, 3, 1, 5)),
+    },
+    moves: {
+      on: on(e.moves),
+      scenes: objs(part(e.moves).scenes).map((m) => ({
+        scene: Math.max(1, Math.round(num(m.scene, 1))),
+        transition: pick(m.transition, TRANSITIONS, "cut"),
+        motion: pick(m.motion, MOTIONS, "none"),
+        look: m.look === "" || m.look === undefined ? "" : pick(m.look, LOOKS, "none"),
+        why: str(m.why),
+      })),
+    },
+    sounds: {
+      on: on(e.sounds),
+      items: objs(part(e.sounds).items)
+        .map((x) => {
+          const file = str(x.audioFile);
+          const ok = /^[\w.-]+$/.test(file);
+          return {
+            id: str(x.id) || crypto.randomUUID(),
+            scene: Math.max(1, Math.round(num(x.scene, 1))),
+            at: num(x.at, 0, 0),
+            label: str(x.label),
+            prompt: str(x.prompt),
+            seconds: num(x.seconds, 1, 0.5, 10),
+            volume: num(x.volume, 0.6, 0, 1),
+            audioId: ok ? str(x.audioId) : "",
+            audioFile: ok ? file : "",
+            madeFrom: ok ? str(x.madeFrom) : "",
+          };
+        })
+        .filter((x) => x.prompt),
+    },
+    look: { on: on(e.look), look: pick(part(e.look).look, LOOKS, "none") },
+    textPop: e.textPop === true,
+    endCard: { on: on(e.endCard) && str(part(e.endCard).text).trim() !== "", text: str(part(e.endCard).text).slice(0, 120), seconds: num(part(e.endCard).seconds, 2.5, 1, 5) },
+    rounds: objs(e.rounds).map((r) => ({ feedback: str(r.feedback), reply: str(r.reply), at: str(r.at) })),
+    scenesKey: str(e.scenesKey),
+    approvedAt: str(e.approvedAt),
+    costUsd: num(e.costUsd, 0),
   };
 }
 

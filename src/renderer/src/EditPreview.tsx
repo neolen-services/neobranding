@@ -2,7 +2,7 @@
 // while it is on screen and kept at the right point of its file; each placed sound has its own audio element.
 // Looks and motion are shown with CSS; captions and text are drawn with the same code the export uses.
 import { useEffect, useRef } from "react";
-import { clipAt, clipLength, clipStarts, projectLength, type EditClip, type EditProject, type Look } from "@shared/edit";
+import { clipAt, clipLength, clipStarts, projectLength, TRANSITION_SECONDS, type EditClip, type EditProject, type Look } from "@shared/edit";
 import { api } from "./api";
 import { drawOverlay, fontsReady } from "./EditDraw";
 
@@ -18,7 +18,7 @@ export const LOOK_CSS: Record<Look, string> = {
 };
 
 /** The zoom or pan of a clip `p` of the way through it (0 to 1), as a CSS transform. */
-function motionCss(clip: EditClip, p: number) {
+function motionCss(clip: EditClip, p: number, into = 99) {
   switch (clip.motion) {
     case "zoom-in":
       return `scale(${1 + 0.12 * p})`;
@@ -30,9 +30,22 @@ function motionCss(clip: EditClip, p: number) {
       return `scale(1.15) translateX(${(-6.5 + 13 * p).toFixed(2)}%)`;
     case "pan-right":
       return `scale(1.15) translateX(${(6.5 - 13 * p).toFixed(2)}%)`;
+    case "shake": {
+      const left = Math.max(1 - into / 0.5, 0);
+      return `scale(1.1) translate(${(Math.sin(into * 70) * 2.2 * left).toFixed(2)}%, ${(Math.cos(into * 55) * 1.6 * left).toFixed(2)}%)`;
+    }
     default:
       return "none";
   }
+}
+
+/** How a clip comes in, `into` seconds after it starts: an extra transform and blur for the picture. */
+function arrivalCss(clip: EditClip, into: number) {
+  const left = into < TRANSITION_SECONDS ? 1 - into / TRANSITION_SECONDS : 0;
+  if (!left) return { transform: "", filter: "" };
+  if (clip.transition === "zoom") return { transform: `scale(${1 + 0.3 * left})`, filter: "" };
+  if (clip.transition === "whip") return { transform: `translateX(${(left * 15).toFixed(1)}%)`, filter: `blur(${(left * 18).toFixed(1)}px)` };
+  return { transform: "", filter: "" };
 }
 
 /** How far apart a media element may drift from where it should be before it is moved back. */
@@ -80,9 +93,12 @@ export function EditPreview({
       if (layer) {
         layer.style.opacity = active ? "1" : "0";
         if (active) {
-          const progress = Math.min(Math.max((t - starts[i]) / Math.max(clipLength(c), 0.001), 0), 1);
-          layer.style.transform = motionCss(c, progress);
-          layer.style.filter = LOOK_CSS[c.look];
+          const into = t - starts[i];
+          const progress = Math.min(Math.max(into / Math.max(clipLength(c), 0.001), 0), 1);
+          const arrival = arrivalCss(c, into);
+          const motion = motionCss(c, progress, into);
+          layer.style.transform = [arrival.transform, motion === "none" ? "" : motion].filter(Boolean).join(" ") || "none";
+          layer.style.filter = [LOOK_CSS[c.look] === "none" ? "" : LOOK_CSS[c.look], arrival.filter].filter(Boolean).join(" ") || "none";
         }
       }
       if (!el) return;
@@ -98,7 +114,9 @@ export function EditPreview({
     if (fade.current) {
       const c = at?.clip;
       const into = at ? t - at.start : 1;
-      fade.current.style.opacity = c?.transition === "fade" && into < 0.35 ? String(1 - into / 0.35) : "0";
+      const covers = (c?.transition === "fade" || c?.transition === "flash") && into < TRANSITION_SECONDS;
+      fade.current.style.opacity = covers ? String(1 - into / TRANSITION_SECONDS) : "0";
+      fade.current.style.background = c?.transition === "flash" ? "#ffffff" : "#000000";
     }
     for (const item of p.audio) {
       const el = sounds.current.get(item.id);
