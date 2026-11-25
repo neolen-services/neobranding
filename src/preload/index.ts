@@ -189,7 +189,10 @@ const api = {
   /** Has Claude write the caption, hashtags, title and description for each platform. Uses Claude credit. */
   writePostKit: (videoId: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:postKit", videoId),
   /** Makes the cover picture from the export's frame at `time`; `overlay` is the title drawn as a full-frame PNG. */
-  makeVideoCover: (videoId: string, time: number, title: string, overlay: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:cover", videoId, time, title, overlay),
+  planVideoCover: (videoId: string, feedback: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:planCover", videoId, feedback),
+  makeVideoCover: (videoId: string, scene: number, time: number, title: string, overlay: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:cover", videoId, scene, time, title, overlay),
+  approveVideoCover: (videoId: string, value: boolean | "skip"): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:approveCover", videoId, value),
+  retakeVideoCoverFrames: (videoId: string): Promise<StudioResult<Video>> => ipcRenderer.invoke("videos:retakeCoverFrames", videoId),
   /** Starts a project from a Studio video. */
   editFromVideo: (videoId: string): Promise<EditResult> => ipcRenderer.invoke("edits:fromVideo", videoId),
   /** Hears the words in a file with Deepgram. Uses Deepgram credit. */

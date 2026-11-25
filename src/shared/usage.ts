@@ -1,7 +1,7 @@
 // What the app has used on the services the user connected, shared by the main process and the UI.
 
 export type UsageService = "claude" | "deepgram" | "elevenlabs" | "media";
-export type UsageFeature = "agent" | "analysis" | "ideas" | "script" | "concepts" | "video" | "script_check" | "storyboard" | "animation" | "series" | "transcript" | "voiceover" | "sound_effect" | "music" | "picture" | "clip" | "lipsync" | "editor" | "music_plan" | "effects_plan" | "final_check" | "post_kit";
+export type UsageFeature = "agent" | "analysis" | "ideas" | "script" | "concepts" | "video" | "script_check" | "storyboard" | "animation" | "series" | "transcript" | "voiceover" | "sound_effect" | "music" | "picture" | "clip" | "lipsync" | "editor" | "music_plan" | "effects_plan" | "final_check" | "post_kit" | "cover_plan";
 
 export const USAGE_SERVICES: Record<UsageService, string> = {
   claude: "Claude",
@@ -36,6 +36,7 @@ export const USAGE_FEATURES: Record<UsageFeature, { label: string; service: Usag
   effects_plan: { label: "Effects plans", service: "claude" },
   final_check: { label: "Final checks of exported videos", service: "claude" },
   post_kit: { label: "Posting kits", service: "claude" },
+  cover_plan: { label: "Cover ideas", service: "claude" },
 };
 
 /** One request the app made to a service. One line of usage.jsonl in the data folder. */

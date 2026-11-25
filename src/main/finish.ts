@@ -1,5 +1,5 @@
-// Finishing a Studio video after it is exported: Claude's final check of the exported video, the posting kit for each
-// platform, and the cover picture.
+// Finishing a Studio video: the cover (Claude picks the best moments and words, the creator chooses), Claude's final
+// check of the exported video, and the posting kit for each platform.
 // Plain Node code with relative imports only (used by the desktop app and the dev server).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -12,11 +12,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { estimateCostUsd } from "../shared/analysis";
-import { clipAt, clipStarts, showTime } from "../shared/edit";
-import { FIX_STEPS, parseCharacter, parseVideo, platformLabel, POST_LIMITS, speakerName, type FinalCheck, type PostKit, type StudioResult, type Video } from "../shared/studio";
+import { clipStarts, showTime, type Look } from "../shared/edit";
+import { COVER_TITLE_MAX, coverLookKey, FIX_STEPS, musicScenesKey, parseCharacter, parseVideo, pickedClip, pickedPicture, platformLabel, POST_LIMITS, speakerName, type CoverFrame, type CoverPlan, type FinalCheck, type PostKit, type StudioResult, type Video } from "../shared/studio";
 import type { ApiProvider } from "../shared/settings";
 import { describeClaudeError } from "./analyze";
 import { editOps, LOOK_FILTERS } from "./edit";
+import { mediaFilePath } from "./media";
 import { ensureFfmpeg } from "./research";
 import type { Store } from "./store";
 import { recordClaude } from "./usage";
@@ -25,6 +26,8 @@ const run = promisify(execFile);
 const EXE = process.platform === "win32" ? ".exe" : "";
 /** At most this many frames are shown to Claude, so a check stays a few cents. */
 const MAX_FRAMES = 14;
+/** At most this many candidate frames are taken for the cover. */
+const MAX_COVER_FRAMES = 12;
 
 export type FinishContext = { dataDir: () => string; store: () => Store; key: (provider: ApiProvider) => string };
 
@@ -46,6 +49,26 @@ const FinalCheckSchema = z.object({
   ok: z.boolean(),
   summary: z.string(),
   issues: z.array(z.object({ time: z.number(), scene: z.number(), problem: z.string(), fix: z.string(), step: z.enum(FIX_STEPS), serious: z.boolean() })),
+});
+
+const COVER_SYSTEM = `You choose the cover (the thumbnail) for a finished short vertical video (Reels, Shorts, TikTok): the picture people see in a profile grid and in search, and the few words laid over it. You are shown candidate frames, numbered from 0, with the scene each comes from and no captions or text on them, the script, and what the video is about.
+
+A strong cover frame:
+- has one clear subject (a face, or the key object) large and in focus, with a readable expression or a moment of tension or curiosity;
+- is not blurred, mid-motion, dark, or caught with closed eyes, and shows none of the faults AI pictures have (garbled hands or faces, warped objects, unreadable writing);
+- keeps the middle of the picture free enough for words, so the title does not sit on the subject's face;
+- is true to the video: it promises what the video delivers, never bait.
+
+A strong title is 2 to 6 words (never more than ${COVER_TITLE_MAX} characters), in the video's language, and makes someone want the rest: a question, a bold claim, a number, or a surprising turn that the video pays off. No emoji, no hashtags, no quotation marks.
+
+Give three ideas, best first, each on a different frame: the frame number, the title, and one plain sentence on why that frame and those words would make people tap. Then one sentence saying what the covers are going for.
+
+When the creator gave feedback on earlier ideas, change what they asked for and keep what they did not mention; say in one or two sentences what you changed. Otherwise leave the reply empty.`;
+
+const CoverPlanSchema = z.object({
+  summary: z.string(),
+  reply: z.string(),
+  ideas: z.array(z.object({ frame: z.number(), title: z.string(), why: z.string() })),
 });
 
 const POST_KIT_SYSTEM = `You write what a creator posts with a finished short video on TikTok, Instagram Reels and YouTube Shorts.
@@ -91,6 +114,30 @@ export function finishOps(ctx: FinishContext) {
     const last = render?.exports[0];
     const path = last ? join(ctx.dataDir(), last.file) : "";
     return render && last && existsSync(path) ? { render, last, path } : null;
+  }
+
+  /**
+   * A clean frame of a scene (no captions or text), at `time` seconds into its clip, sized to fill a vertical frame and
+   * coloured as the video's look is. A scene with no clip uses its storyboard. False when the scene has nothing to take it from.
+   */
+  async function sceneFrame(video: Video, index: number, time: number, width: number, target: string): Promise<boolean> {
+    const scene = video.scenes[index];
+    const clip = scene && pickedClip(scene);
+    const take = clip ?? (scene && pickedPicture(scene));
+    const source = take ? mediaFilePath(ctx.dataDir(), take.file) : null;
+    if (!source || !existsSync(source)) return false;
+    const fx = video.effects;
+    const move = fx?.moves.on ? fx.moves.scenes.find((m) => m.scene === index + 1) : undefined;
+    const look = move?.look || (fx?.look.on ? fx.look.look : "");
+    const height = Math.round((width * 16) / 9 / 2) * 2;
+    const filter = [`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`, look ? LOOK_FILTERS[look as Look] : ""].filter(Boolean).join(",");
+    const bin = await ffmpeg();
+    for (const at of clip ? [time, 0.3] : [0]) {
+      await run(bin, ["-y", "-hide_banner", "-loglevel", "error", ...(clip ? ["-ss", Math.max(at, 0).toFixed(2)] : []), "-i", source, "-frames:v", "1", "-vf", filter, "-q:v", "3", target], { windowsHide: true }).catch(() => undefined);
+      // A time past the end of a shorter clip makes no frame; then the start of it is used.
+      if (existsSync(target)) return true;
+    }
+    return false;
   }
 
   return {
@@ -251,26 +298,165 @@ export function finishOps(ctx: FinishContext) {
     },
 
     /**
-     * Makes the cover picture from the exported video's frame at `time`, with the title laid over it when `overlay`
-     * (a full-frame transparent PNG drawn by the interface) is given. Kept in the video's own folder.
+     * Takes candidate frames from the scenes and has Claude pick the best three with the words for each. With `feedback`
+     * (the creator's reply to the earlier picks) the same frames are looked at again and only what was asked changes.
+     * Uses Claude credit.
      */
-    async cover(videoId: unknown, time: unknown, title: unknown, overlay: unknown): Promise<StudioResult<Video>> {
+    async planCover(videoId: unknown, feedback: unknown): Promise<StudioResult<Video>> {
       const video = findVideo(videoId);
       if (!video) return { ok: false, error: "That video no longer exists." };
-      const done = lastExport(video.id);
-      if (!done) return { ok: false, error: "Export the video first." };
-      const at = Math.min(Math.max(Number(time) || 0, 0), Math.max(done.last.seconds - 0.05, 0));
+      const apiKey = ctx.key("anthropic");
+      if (!apiKey) return { ok: false, error: "Add your Claude API key in Settings first." };
+      const said = String(feedback ?? "").trim().slice(0, 1500);
+      const key = musicScenesKey(video);
+      const before = video.coverPlan;
+      const reuse = Boolean(said && before && !before.skipped && before.scenesKey === key && before.frames.length > 0 && before.frames.every((f) => existsSync(join(ctx.dataDir(), f.file))));
+      const cast = db().listDocs<unknown>("characters").map(parseCharacter);
+      const brand = db().getBrand();
+
+      let frames: CoverFrame[] = [];
+      const made: string[] = [];
+      if (reuse && before) frames = before.frames;
+      else {
+        // Up to two moments of each scene that has a clip (one when there are many scenes), thinned to the limit.
+        const withClip = video.scenes.map((s, i) => ({ s, i })).filter(({ s }) => pickedClip(s));
+        const pool = withClip.length > 0 ? withClip : video.scenes.map((s, i) => ({ s, i })).filter(({ s }) => pickedPicture(s));
+        const spots = pool.flatMap(({ s, i }) => (withClip.length === 0 ? [{ i, t: 0 }] : pool.length > 6 ? [{ i, t: Math.max(s.seconds * 0.45, 0.2) }] : [{ i, t: Math.max(s.seconds * 0.3, 0.2) }, { i, t: Math.max(s.seconds * 0.65, 0.4) }]));
+        const picked = spots.length > MAX_COVER_FRAMES ? spots.filter((_, n) => n % Math.ceil(spots.length / MAX_COVER_FRAMES) === 0).slice(0, MAX_COVER_FRAMES) : spots;
+        if (picked.length === 0) return { ok: false, error: "Make the clips first: the cover is taken from a scene of the video." };
+        await mkdir(join(ctx.dataDir(), "videos", video.id), { recursive: true });
+        try {
+          for (const spot of picked) {
+            const name = `videos/${video.id}/cf-${randomUUID()}.jpg`;
+            if (await sceneFrame(video, spot.i, spot.t, 540, join(ctx.dataDir(), name))) {
+              made.push(name);
+              frames.push({ scene: spot.i + 1, time: spot.t, file: name });
+            }
+          }
+        } catch (e) {
+          await Promise.all(made.map((f) => rm(join(ctx.dataDir(), f), { force: true })));
+          return { ok: false, error: e instanceof Error ? e.message : "Frames could not be taken from the video." };
+        }
+        if (frames.length === 0) return { ok: false, error: "No picture could be taken from the scenes. Check that their clips play." };
+      }
+
+      const script = video.scenes
+        .map((s, i) => `Scene ${i + 1}: ${s.action}${s.characters.length ? ` In it: ${s.characters.map((id) => cast.find((c) => c.id === id)?.name).filter(Boolean).join(", ")}.` : ""}${s.lines.length ? ` Said: ${s.lines.map((l) => `${speakerName(l.speaker, cast)}: ${l.text}`).join(" / ")}` : ""}`)
+        .join("\n");
+      const earlier = reuse && before ? `WHAT YOU SUGGESTED BEFORE\n${before.ideas.map((x) => `Frame ${x.frame}: "${x.title}"`).join("\n")}${before.rounds.length ? `\n\nTHE FEEDBACK SO FAR\n${before.rounds.map((r) => `Creator: ${r.feedback}${r.reply ? `\nYou: ${r.reply}` : ""}`).join("\n")}` : ""}\n\nTHE CREATOR NOW SAYS\n${said}` : "";
+      try {
+        const client = new Anthropic({ apiKey });
+        const response = await client.beta.messages
+          .stream({
+            model: "claude-opus-5-5",
+            max_tokens: 4000,
+            betas: ["server-side-fallback-2026-07-01"],
+            fallbacks: "default" as const,
+            system: COVER_SYSTEM,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: [
+                      `THE VIDEO\n${video.title}${video.brief ? `\nAbout: ${video.brief}` : ""}${platformLabel(video.platform) ? `\nFor: ${platformLabel(video.platform)}` : ""}${video.language ? `\nLanguage: ${video.language}` : ""}${video.claim ? `\nIts claim: ${video.claim.fact}` : ""}${video.hooks.length ? `\nIts opening hooks: ${video.hooks.join(" / ")}` : ""}`,
+                      brand ? `THE CREATOR\n${brand.name}${brand.topics.length ? `\nTopics: ${brand.topics.join(", ")}` : ""}${brand.audience ? `\nAudience: ${brand.audience}` : ""}${brand.voice.length ? `\nVoice: ${brand.voice.join(", ")}` : ""}` : "",
+                      `THE SCRIPT\n${script}`,
+                      earlier,
+                      "CANDIDATE FRAMES",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n"),
+                  },
+                  ...(await Promise.all(frames.map(async (f, n) => [
+                    { type: "text" as const, text: `Frame ${n} (scene ${f.scene}, ${f.time.toFixed(1)}s in):` },
+                    { type: "image" as const, source: { type: "base64" as const, media_type: "image/jpeg" as const, data: (await readFile(join(ctx.dataDir(), f.file))).toString("base64") } },
+                  ]))).flat(),
+                ],
+              },
+            ],
+            output_config: { format: betaZodOutputFormat(CoverPlanSchema) },
+          })
+          .finalMessage();
+        recordClaude("cover_plan", response.usage, video.title);
+        const out = response.parsed_output;
+        const fail = response.stop_reason === "refusal" ? "Claude declined to choose a cover." : response.stop_reason === "max_tokens" || !out ? "The cover ideas came back incomplete. Try again." : "";
+        if (fail || !out) {
+          await Promise.all(made.map((f) => rm(join(ctx.dataDir(), f), { force: true })));
+          return { ok: false, error: fail };
+        }
+        const seen = new Set<number>();
+        const ideas = out.ideas
+          .map((x) => ({ frame: Math.round(x.frame), title: x.title.replace(/["“”]/g, "").trim().slice(0, COVER_TITLE_MAX), why: x.why.trim() }))
+          .filter((x) => x.frame >= 0 && x.frame < frames.length && !seen.has(x.frame) && seen.add(x.frame))
+          .slice(0, 4);
+        if (ideas.length === 0) {
+          await Promise.all(made.map((f) => rm(join(ctx.dataDir(), f), { force: true })));
+          return { ok: false, error: "Claude gave no usable cover ideas. Try again." };
+        }
+        const plan: CoverPlan = {
+          summary: out.summary.trim(),
+          frames,
+          ideas,
+          rounds: [...(reuse && before ? before.rounds : []), ...(said ? [{ feedback: said, reply: out.reply.trim(), at: new Date().toISOString() }] : [])],
+          scenesKey: key,
+          lookKey: reuse && before ? before.lookKey : coverLookKey(video),
+          skipped: false,
+          costUsd: (reuse && before ? before.costUsd : 0) + estimateCostUsd(response.usage),
+        };
+        const now = findVideo(video.id) ?? video;
+        // Frames of an earlier plan are removed, and a cover already made needs approving again.
+        if (!reuse) await Promise.all((now.coverPlan?.frames ?? []).map((f) => rm(join(ctx.dataDir(), f.file), { force: true })));
+        const saved = { ...now, coverPlan: plan, cover: now.cover ? { ...now.cover, approvedAt: "" } : null };
+        saveVideo(saved);
+        return { ok: true, value: saved };
+      } catch (e) {
+        await Promise.all(made.map((f) => rm(join(ctx.dataDir(), f), { force: true })));
+        return { ok: false, error: describeClaudeError(e) };
+      }
+    },
+
+    /**
+     * Takes the same candidate frames again, with the look as it is now (no Claude, no cost). Claude's picks keep their
+     * frames; a cover already made needs making again, and approving.
+     */
+    async retakeCoverFrames(videoId: unknown): Promise<StudioResult<Video>> {
+      const video = findVideo(videoId);
+      const plan = video?.coverPlan;
+      if (!video || !plan || plan.frames.length === 0) return { ok: false, error: "There are no cover frames to take again." };
+      const made: CoverFrame[] = [];
+      try {
+        for (const f of plan.frames) {
+          const name = `videos/${video.id}/cf-${randomUUID()}.jpg`;
+          if (!(await sceneFrame(video, f.scene - 1, f.time, 540, join(ctx.dataDir(), name)))) throw new Error(`Scene ${f.scene} has no clip or picture to take a frame from.`);
+          made.push({ ...f, file: name });
+        }
+      } catch (e) {
+        await Promise.all(made.map((f) => rm(join(ctx.dataDir(), f.file), { force: true })));
+        return { ok: false, error: e instanceof Error ? e.message : "The frames could not be taken again." };
+      }
+      const now = findVideo(video.id) ?? video;
+      await Promise.all(plan.frames.map((f) => rm(join(ctx.dataDir(), f.file), { force: true })));
+      const saved = { ...now, coverPlan: { ...plan, frames: made, lookKey: coverLookKey(video) }, cover: now.cover ? { ...now.cover, approvedAt: "" } : null };
+      saveVideo(saved);
+      return { ok: true, value: saved };
+    },
+
+    /**
+     * Makes the cover picture from a frame of one scene (`time` seconds into its clip), with the title laid over it when
+     * `overlay` (a full-frame transparent PNG drawn by the interface) is given. Kept in the video's own folder. A new
+     * cover needs approving.
+     */
+    async cover(videoId: unknown, scene: unknown, time: unknown, title: unknown, overlay: unknown): Promise<StudioResult<Video>> {
+      const video = findVideo(videoId);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const index = Math.min(Math.max(Math.round(Number(scene) || 1) - 1, 0), Math.max(video.scenes.length - 1, 0));
+      const at = Math.max(Number(time) || 0, 0);
       const work = await mkdtemp(join(tmpdir(), "cover-"));
       try {
-        // The frame comes from the clip under that moment rather than the export, so no caption is burned into the cover.
         const frame = join(work, "frame.jpg");
-        const under = clipAt(done.render, at);
-        const asset = under && done.render.assets.find((a) => a.id === under.clip.assetId);
-        const clean = asset ? join(ctx.dataDir(), asset.file) : "";
-        if (under && asset && existsSync(clean)) {
-          const look = LOOK_FILTERS[under.clip.look];
-          await run(await ffmpeg(), ["-y", "-hide_banner", "-loglevel", "error", ...(asset.kind === "image" ? [] : ["-ss", under.fileTime.toFixed(2)]), "-i", clean, "-frames:v", "1", "-vf", ["scale=1080:1920:force_original_aspect_ratio=increase", "crop=1080:1920", look].filter(Boolean).join(","), "-q:v", "2", frame], { windowsHide: true });
-        } else await writeFile(frame, await frameAt(done.path, at, 0));
+        if (!(await sceneFrame(video, index, at, 1080, frame))) return { ok: false, error: "That scene has no clip or picture to take the cover from." };
         const name = `videos/${video.id}/cover-${randomUUID()}.jpg`;
         const target = join(ctx.dataDir(), name);
         await mkdir(join(ctx.dataDir(), "videos", video.id), { recursive: true });
@@ -285,7 +471,7 @@ export function finishOps(ctx: FinishContext) {
         // The cover it replaces is removed.
         const now = findVideo(video.id) ?? video;
         if (now.cover) await rm(join(ctx.dataDir(), now.cover.file), { force: true });
-        const saved = { ...now, cover: { file: name, time: at, title: String(title ?? "").trim().slice(0, 80) } };
+        const saved = { ...now, cover: { file: name, scene: index + 1, time: at, title: String(title ?? "").trim().slice(0, COVER_TITLE_MAX), approvedAt: "" } };
         saveVideo(saved);
         return { ok: true, value: saved };
       } catch (e) {
@@ -293,6 +479,21 @@ export function finishOps(ctx: FinishContext) {
       } finally {
         await rm(work, { recursive: true, force: true });
       }
+    },
+
+    /** Approves the cover, takes the approval back (false), or chooses to post without a cover of its own ("skip"). */
+    approveCover(videoId: unknown, value: unknown): StudioResult<Video> {
+      const video = findVideo(videoId);
+      if (!video) return { ok: false, error: "That video no longer exists." };
+      const plan: CoverPlan = video.coverPlan ?? { summary: "", frames: [], ideas: [], rounds: [], scenesKey: musicScenesKey(video), lookKey: coverLookKey(video), skipped: false, costUsd: 0 };
+      let saved: Video;
+      if (value === "skip") saved = { ...video, coverPlan: { ...plan, skipped: true, scenesKey: musicScenesKey(video) } };
+      else if (value === true) {
+        if (!video.cover) return { ok: false, error: "Make the cover first." };
+        saved = { ...video, coverPlan: { ...plan, skipped: false }, cover: { ...video.cover, approvedAt: new Date().toISOString() } };
+      } else saved = { ...video, coverPlan: plan.frames.length > 0 ? { ...plan, skipped: false } : null, cover: video.cover ? { ...video.cover, approvedAt: "" } : null };
+      saveVideo(saved);
+      return { ok: true, value: saved };
     },
   };
 }

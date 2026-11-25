@@ -22,9 +22,9 @@ import {
   type Series,
   type Video,
 } from "@shared/studio";
-import { emptyProject, type EditProject } from "@shared/edit";
+import type { EditProject } from "@shared/edit";
 import { api } from "./api";
-import { drawOverlay, fontsReady, overlayFrames } from "./EditDraw";
+import { overlayFrames } from "./EditDraw";
 import { VideoAssets } from "./AssetsView";
 import { CastStep } from "./CastStep";
 import { DeleteButton } from "./CastView";
@@ -212,7 +212,7 @@ export function VideoPage({
         {tab === 3 && approved && !isMotion(video) && <ClipsTab {...shared} progress={progress} onOpenCast={() => setTab(1)} onStoryboards={() => setTab(2)} onNext={() => setTab(4)} />}
         {tab === 3 && approved && isMotion(video) && <MakeTab {...shared} progress={progress} onNext={() => setTab(4)} />}
         {tab === 4 && approved && <MusicStep video={video} setError={setError} setNotice={setNotice} onChange={onChange} onPlay={() => setPlaying(true)} onNext={() => setTab(5)} />}
-        {tab === 5 && approved && <EffectsStep video={video} setError={setError} setNotice={setNotice} onChange={onChange} onPlay={() => setPlaying(true)} onNext={() => setTab(6)} />}
+        {tab === 5 && approved && <EffectsStep video={video} cast={cast} setError={setError} setNotice={setNotice} onChange={onChange} onNext={() => setTab(6)} />}
         {tab === 6 && approved && <ExportTab {...shared} onGoTo={setTab} />}
       </div>
 
@@ -1080,6 +1080,8 @@ function ExportTab({ video, cast, onChange, onGoTo }: Shared & { onGoTo: (tab: n
     musicState(video) !== "approved" && "The music is not approved yet: what is planned is used, or none.",
     effectsState(video) !== "approved" && "The effects are not approved yet: what is planned is used, or none.",
   ].filter((n): n is string => Boolean(n));
+  // The cover made, unless the creator chose to post without one of their own.
+  const cover = video.coverPlan?.skipped ? null : video.cover;
   const fc = video.finalCheck;
   const fcCurrent = Boolean(fc && last && fc.exportFile === last.file);
 
@@ -1206,84 +1208,30 @@ function ExportTab({ video, cast, onChange, onGoTo }: Shared & { onGoTo: (tab: n
             </section>
           )}
 
-          {last && <CoverCard video={video} exportFile={last.file} seconds={last.seconds} onChange={onChange} />}
+          <section className={`${card} flex flex-wrap items-center gap-4`}>
+            {cover && <img src={api.studioFileUrl(cover.file)} alt="The cover" className="aspect-[9/16] w-20 rounded-xl object-cover" />}
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="font-display text-lg font-semibold">Cover</p>
+              <p className="text-sm opacity-65">
+                {cover ? "The picture in your profile grid. Upload it as the cover when you post." : video.coverPlan?.skipped ? "No cover of your own: the platform will use a frame of the video." : "No cover chosen yet."}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {cover && (
+                  <a className={smallButton} href={api.studioFileUrl(cover.file)} download={`${video.title} cover.jpg`}>
+                    Save the cover
+                  </a>
+                )}
+                <button type="button" className={smallButton} onClick={() => onGoTo(5)}>
+                  {cover ? "Change the cover" : video.coverPlan?.skipped ? "Choose a cover after all" : "Choose a cover"}
+                </button>
+              </div>
+            </div>
+          </section>
 
           <PostKitCard video={video} writing={writing} onWrite={() => void writeKit()} />
         </div>
       </div>
     </div>
-  );
-}
-
-/** The cover: a frame of the export, picked with a slider, with an optional title over it. */
-function CoverCard({ video, exportFile, seconds, onChange }: { video: Video; exportFile: string; seconds: number; onChange: (v: Video) => void }) {
-  const [time, setTime] = useState(video.cover?.time ?? Math.min(1, seconds / 2));
-  const [title, setTitle] = useState(video.cover?.title ?? video.overlay ?? "");
-  const [making, setMaking] = useState(false);
-  const [error, setError] = useState("");
-  const preview = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    if (preview.current) preview.current.currentTime = time;
-  }, [time]);
-
-  async function make() {
-    setMaking(true);
-    setError("");
-    try {
-      let overlay = "";
-      if (title.trim()) {
-        await fontsReady();
-        const canvas = document.createElement("canvas");
-        canvas.width = 1080;
-        canvas.height = 1920;
-        const p = { ...emptyProject("cover", "cover"), showCaptions: false, texts: [{ id: "t", text: title.trim(), start: 0, end: 1, position: "middle" as const, style: "title" as const }] };
-        drawOverlay(canvas.getContext("2d")!, p, 0.5);
-        overlay = canvas.toDataURL("image/png");
-      }
-      const result = await api.makeVideoCover(video.id, time, title.trim(), overlay);
-      if (result.ok) onChange(result.value);
-      else setError(result.error);
-    } finally {
-      setMaking(false);
-    }
-  }
-
-  return (
-    <section className={`${card} space-y-3`}>
-      <p className="font-display text-lg font-semibold">Cover</p>
-      <p className="text-sm opacity-65">The picture in your profile grid. Pick the moment, add a few words if you like, and upload it as the cover when you post.</p>
-      <div className="flex flex-wrap gap-4">
-        <div className="relative aspect-[9/16] w-32 overflow-hidden rounded-xl bg-black">
-          <video ref={preview} src={api.studioFileUrl(exportFile)} muted preload="auto" className="h-full w-full object-cover" onLoadedData={(e) => (e.currentTarget.currentTime = time)} />
-          {title.trim() && <p className="absolute inset-x-1 top-1/2 -translate-y-1/2 text-center font-display text-sm font-bold leading-tight text-white [text-shadow:0_1px_3px_#000,0_0_2px_#000]">{title}</p>}
-        </div>
-        <div className="min-w-0 flex-1 space-y-3">
-          <label className="block text-xs">
-            <span className="mb-1 flex justify-between">
-              <span className="opacity-60">Moment</span>
-              <span className="tabular-nums opacity-60">{time.toFixed(1)}s</span>
-            </span>
-            <input type="range" className="w-full accent-[var(--primary)]" min={0} max={Math.max(seconds - 0.05, 0)} step={0.1} value={time} onChange={(e) => setTime(Number(e.target.value))} />
-          </label>
-          <label className="block text-xs">
-            <span className="mb-1 block opacity-60">Title on the cover (optional)</span>
-            <input className={fieldClass} maxLength={60} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="A few words that make people tap" />
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={smallButton} disabled={making} onClick={() => void make()}>
-              {making ? "Making…" : video.cover ? "Make it again" : "Make the cover"}
-            </button>
-            {video.cover && (
-              <a className={smallButton} href={api.studioFileUrl(video.cover.file)} download={`${video.title} cover.jpg`}>
-                Save the cover
-              </a>
-            )}
-          </div>
-          {error && <p className="text-sm text-red-400">{error}</p>}
-        </div>
-        {video.cover && <img src={api.studioFileUrl(video.cover.file)} alt="The cover" className="aspect-[9/16] w-24 rounded-xl object-cover" />}
-      </div>
-    </section>
   );
 }
 

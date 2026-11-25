@@ -206,7 +206,10 @@ export function createHandlers(options: HandlerOptions) {
     /** Has Claude write the caption, hashtags, title and description for each platform. Uses Claude credit. */
     "videos:postKit": (videoId: unknown) => finish.postKit(videoId),
     /** Makes the cover picture from a frame of the export, with the title drawn over it. */
-    "videos:cover": (videoId: unknown, time: unknown, title: unknown, overlay: unknown) => finish.cover(videoId, time, title, overlay),
+    "videos:planCover": (videoId: unknown, feedback: unknown) => finish.planCover(videoId, feedback),
+    "videos:cover": (videoId: unknown, scene: unknown, time: unknown, title: unknown, overlay: unknown) => finish.cover(videoId, scene, time, title, overlay),
+    "videos:approveCover": (videoId: unknown, value: unknown) => finish.approveCover(videoId, value),
+    "videos:retakeCoverFrames": (videoId: unknown) => finish.retakeCoverFrames(videoId),
     "edits:transcribe": (id: unknown, assetId: unknown) => edits.transcribe(id, assetId, key("deepgram")),
     /** Makes the MP4. `overlays` are the captions and text drawn by the interface. */
     "edits:export": (id: unknown, overlays: unknown) => edits.exportVideo(id, overlays),

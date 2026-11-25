@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrandKit } from "@shared/brand";
 import { ideaKind, type Idea } from "@shared/ideas";
 import type { ResearchItem } from "@shared/research";
-import { CHARACTER_STYLES, MAX_IDEAS, VIDEO_STYLES, boardId, effectsState, isMotion, joinState, musicState, pickedClip, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
+import { CHARACTER_STYLES, MAX_IDEAS, VIDEO_STYLES, boardId, coverState, effectsState, isMotion, joinState, musicState, pickedClip, productionLabel, storyboardApproved, PRODUCTIONS, SPEAKER_ME, SPEAKER_NARRATOR, type Character, type Production, type Video } from "@shared/studio";
 import { api } from "./api";
 
 export const fieldClass =
@@ -707,8 +707,14 @@ export function videoProgress(video: Video, cast: Character[], brand: BrandKit |
     return { ...base, done: 4, tab: 4, next, waiting: true };
   }
   const effects = effectsState(video);
-  if (effects !== "approved") {
+  if (effects !== "approved" && !video.exportedAt) {
     const next = effects === "none" ? "Choose the effects" : effects === "stale" ? "Plan the effects again: the script changed" : effects === "unmade" ? "Make the sound effects" : "Approve the effects";
+    return { ...base, done: 5, tab: 5, next, waiting: true };
+  }
+  // The cover is part of the same step. A video exported before it existed is not held back by it.
+  const cover = coverState(video);
+  if (cover !== "approved" && !video.exportedAt) {
+    const next = cover === "none" ? "Choose the cover" : cover === "stale" ? "Choose the cover again: the script changed" : cover === "planned" ? "Make the cover" : "Approve the cover";
     return { ...base, done: 5, tab: 5, next, waiting: true };
   }
   if (!video.exportedAt) return { ...base, done: 6, tab: 6, next: "Export the video", waiting: true };

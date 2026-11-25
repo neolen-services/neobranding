@@ -453,8 +453,10 @@ export type Video = {
   finalCheck: FinalCheck | null;
   /** What to post with it on each platform, or null until it is written. */
   postKit: PostKit | null;
-  /** The cover picture made from the export, or null. */
-  cover: { file: string; time: number; title: string } | null;
+  /** The cover picture, or null until one is made. */
+  cover: VideoCover | null;
+  /** The moments Claude picked for the cover and the creator's rounds of feedback, or null until planned. */
+  coverPlan: CoverPlan | null;
   /** How it did after posting, typed in by the creator. null until then. */
   results: VideoResults | null;
   /** Estimated Claude cost of writing it, in US dollars. */
@@ -532,7 +534,8 @@ export type TakeResult = { ok: true; video: Video } | { ok: false; error: string
 /** How far a video has got: an index into VIDEO_STAGES. */
 export function videoStage(video: Video): number {
   if (video.scenes.length === 0 || !video.approvedAt) return 0;
-  if (video.results || video.exportedAt || video.effects?.approvedAt) return 6;
+  // Effects and the cover are one step: it is behind a video once both are approved.
+  if (video.results || video.exportedAt || (video.effects?.approvedAt && coverState(video) === "approved")) return 6;
   if (video.effects || video.music?.approvedAt) return 5;
   if (video.music) return 4;
   if (video.scenes.some((s) => s.clips.length > 0)) return 3;
@@ -764,15 +767,94 @@ export function parseVideo(input: unknown): Video {
     exportedAt: str(i.exportedAt),
     finalCheck: parseFinalCheck(i.finalCheck),
     postKit: parsePostKit(i.postKit),
-    cover: (() => {
-      const c = i.cover && typeof i.cover === "object" ? (i.cover as Record<string, unknown>) : null;
-      return c && /^videos\/[\w-]{1,64}\/[\w-]{1,64}\.jpg$/.test(str(c.file)) ? { file: str(c.file), time: typeof c.time === "number" ? c.time : 0, title: str(c.title) } : null;
-    })(),
+    cover: parseCover(i.cover),
+    coverPlan: parseCoverPlan(i.coverPlan),
     results: i.results ? parseResults(i.results) : null,
     costUsd: typeof i.costUsd === "number" ? i.costUsd : 0,
     createdAt: str(i.createdAt) || now(),
     updatedAt: str(i.updatedAt) || now(),
   };
+}
+
+/** One small, clean frame (no captions or text) taken from a scene, a candidate for the cover. */
+export type CoverFrame = { scene: number; time: number; file: string };
+
+/** One of Claude's suggestions: a frame, the few words over it, and why it would make people tap. */
+export type CoverIdea = { frame: number; title: string; why: string };
+
+/** The cover picture: a frame of one scene with the title laid over it. */
+export type VideoCover = {
+  file: string;
+  /** The scene it was taken from (numbered from 1) and where in that scene's clip, in seconds. */
+  scene: number;
+  time: number;
+  title: string;
+  /** When the creator approved it, or "". */
+  approvedAt: string;
+};
+
+/**
+ * The cover plan: candidate frames taken from the scenes, Claude's best picks among them with a title for each, and the
+ * rounds of the creator's feedback. `skipped` is the creator's choice to post without a cover of their own.
+ */
+export type CoverPlan = {
+  summary: string;
+  frames: CoverFrame[];
+  ideas: CoverIdea[];
+  rounds: { feedback: string; reply: string; at: string }[];
+  /** The scenes it was planned for, so a changed script shows the plan is out of date. */
+  scenesKey: string;
+  /** The look the frames were taken with (see coverLookKey), so a changed look shows they should be taken again; "" when unknown. */
+  lookKey: string;
+  skipped: boolean;
+  costUsd: number;
+};
+
+/** The most characters a cover title may have. */
+export const COVER_TITLE_MAX = 60;
+
+const COVER_FILE = /^videos\/[\w-]{1,64}\/[\w-]{1,64}\.jpg$/;
+
+function parseCover(input: unknown): VideoCover | null {
+  const c = input && typeof input === "object" ? (input as Record<string, unknown>) : null;
+  if (!c || !COVER_FILE.test(str(c.file))) return null;
+  return { file: str(c.file), scene: typeof c.scene === "number" ? Math.max(0, Math.round(c.scene)) : 0, time: typeof c.time === "number" ? c.time : 0, title: str(c.title), approvedAt: str(c.approvedAt) };
+}
+
+function parseCoverPlan(input: unknown): CoverPlan | null {
+  if (!input || typeof input !== "object") return null;
+  const p = input as Record<string, unknown>;
+  const frames = objs(p.frames)
+    .map((f) => ({ scene: typeof f.scene === "number" ? Math.max(1, Math.round(f.scene)) : 1, time: typeof f.time === "number" ? Math.max(f.time, 0) : 0, file: str(f.file) }))
+    .filter((f) => COVER_FILE.test(f.file));
+  return {
+    summary: str(p.summary),
+    frames,
+    ideas: objs(p.ideas)
+      .map((x) => ({ frame: typeof x.frame === "number" ? Math.round(x.frame) : -1, title: str(x.title).slice(0, COVER_TITLE_MAX), why: str(x.why) }))
+      .filter((x) => x.frame >= 0 && x.frame < frames.length),
+    rounds: objs(p.rounds).map((r) => ({ feedback: str(r.feedback), reply: str(r.reply), at: str(r.at) })),
+    scenesKey: str(p.scenesKey),
+    lookKey: str(p.lookKey),
+    skipped: p.skipped === true,
+    costUsd: typeof p.costUsd === "number" ? p.costUsd : 0,
+  };
+}
+
+/** The colour looks in use, which the cover's frames are taken with. */
+export function coverLookKey(video: Pick<Video, "effects">): string {
+  const fx = video.effects;
+  return `L:${fx?.look.on ? fx.look.look : "-"}|${fx?.moves.on ? fx.moves.scenes.map((m) => m.look || "-").join(",") : ""}`;
+}
+
+/** Where a video's cover stands: planned, made, approved, or skipped (counted as approved). */
+export function coverState(video: Video): "none" | "stale" | "planned" | "made" | "approved" {
+  const p = video.coverPlan;
+  if (!p) return video.cover?.approvedAt ? "approved" : video.cover ? "made" : "none";
+  if (p.skipped) return "approved";
+  if (p.scenesKey !== musicScenesKey(video)) return "stale";
+  if (!video.cover) return "planned";
+  return video.cover.approvedAt ? "approved" : "made";
 }
 
 /** Where in Studio a problem found in the finished video is put right. */
